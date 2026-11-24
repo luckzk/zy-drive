@@ -1,0 +1,19 @@
+services:
+  agent:
+    build: ../..
+    image: zy-drive-agent:0.1.0
+    container_name: mcm-agent
+    restart: unless-stopped
+    environment:
+      # API token: set a real one. The Agent API must sit behind HTTPS
+      # (reverse proxy terminates TLS); never expose :8080 bare.
+      - MCM_AGENT_TOKEN=${MCM_AGENT_TOKEN:-change-me}
+    volumes:
+      - mcm-agent-data:/data
+    ports:
+      # Bind to localhost and reverse-proxy it (Caddy/Nginx), or put it
+      # on your Tailscale network. Do not publish 8080 to the internet.
+      - "127.0.0.1:8080:8080"
+
+volumes:
+  mcm-agent-data:

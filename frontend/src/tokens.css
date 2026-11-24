@@ -1,0 +1,68 @@
+/* Drime 实测设计 tokens（2026-11-24 用户在 DevTools 中量出）。
+   品牌绿 #56E16C 是主按钮填充（白字）；次要文字是深绿 #00261D
+   60% 透明度，不是灰色。页面底 #FFFFFF，内层容器 rounded-2xl 16px。
+   未实测项（卡片标题 h3、环形图中心数字、卡片背景、边框、危险红）
+   目前用截图估算值，已在注释中标明，实测后替换。 */
+:root {
+  --brand: #56e16c;
+  --brand-ink: #ffffff;
+  --ink: #111111;
+  --ink-secondary: rgba(0, 38, 29, 0.6);
+  --paper: #ffffff;
+  --card: #f5f5f5; /* 估算，待实测 */
+  --border: #e5e5e5; /* 估算，待实测 */
+  --danger: #ef4444; /* 估算，待实测 */
+  --radius: 16px;
+  --font-sans: 'Schibsted Grotesk', system-ui, -apple-system, 'PingFang SC',
+    'Microsoft YaHei', sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 16px;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 550;
+  line-height: 28px;
+}
+h2 {
+  font-size: 16px;
+  font-weight: 550;
+  line-height: 24px;
+}
+p,
+td {
+  font-size: 14px;
+  line-height: 20px;
+}
+thead th {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--ink-secondary);
+}
+button {
+  font-size: 14px;
+  font-weight: 500;
+}
+.btn-primary {
+  background: var(--brand);
+  color: var(--brand-ink);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+}
+.card {
+  background: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.muted {
+  color: var(--ink-secondary);
+}

@@ -1,0 +1,30 @@
+# Binaries and build output
+/build/
+/dist/
+zy-drive
+mcm-desktop
+mcm-agent
+mcm
+
+# Local databases and secrets — never commit
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.env
+config.yaml
+config.json
+secrets/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+
+# Go
+*.test
+*.out
+
+# OS
+.DS_Store
+Thumbs.db

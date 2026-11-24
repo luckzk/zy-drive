@@ -1,0 +1,13 @@
+{
+ "bindings": "frontend/src/mygo.ts",
+ "buildCommand": "npm run build --prefix frontend",
+ "devCommand": "npm run dev --prefix frontend",
+ "devUrl": "http://localhost:5173",
+ "frontendDist": "frontend/dist",
+ "identifier": "com.luckzk.zy-drive",
+ "main": "./cmd/desktop",
+ "name": "ZyDrive",
+ "out": "build",
+ "slug": "zy-drive",
+ "version": "0.1.0"
+}
