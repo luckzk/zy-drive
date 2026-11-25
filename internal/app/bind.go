@@ -70,6 +70,49 @@ func (s *DesktopService) Transfers() []*domain.Transfer { return s.app.Transfers
 // ListAgents returns the configured server Agents.
 func (s *DesktopService) ListAgents() []*domain.Agent { return s.app.ListAgents() }
 
+// SaveAgent adds or edits an Agent (name/address), persisting it.
+func (s *DesktopService) SaveAgent(ag *domain.Agent) (*domain.Agent, error) {
+	return s.app.SaveAgent(ag)
+}
+
+// RemoveAgent unregisters an Agent.
+func (s *DesktopService) RemoveAgent(id string) error { return s.app.RemoveAgent(id) }
+
+// SetDefaultAgent flags one Agent as the default executor.
+func (s *DesktopService) SetDefaultAgent(id string) error { return s.app.SetDefaultAgent(id) }
+
+// AgentTestResult is the outcome of TestAgent: reachable or not, with
+// the versions the Agent reported when reachable.
+type AgentTestResult struct {
+	Online          bool   `json:"online"`
+	Version         string `json:"version,omitempty"`
+	ProtocolVersion string `json:"protocolVersion,omitempty"`
+	Message         string `json:"message"`
+}
+
+// TestAgent calls the Agent's unauthenticated /api/health and reports
+// whether it answers and which versions it runs. It never sends any
+// credential: health needs no token.
+func (s *DesktopService) TestAgent(ctx context.Context, id string) (*AgentTestResult, error) {
+	return s.app.TestAgent(ctx, id)
+}
+
+// UpdateMountGroup changes a mount's sidebar group.
+func (s *DesktopService) UpdateMountGroup(id, group string) error {
+	return s.app.UpdateMountGroup(id, group)
+}
+
+// ListSyncJobs returns saved sync jobs (creation order).
+func (s *DesktopService) ListSyncJobs() []*domain.SyncJob { return s.app.ListSyncJobs() }
+
+// SaveSyncJob validates and persists a sync job.
+func (s *DesktopService) SaveSyncJob(job *domain.SyncJob) (*domain.SyncJob, error) {
+	return s.app.SaveSyncJob(job)
+}
+
+// DeleteSyncJob removes a saved sync job. It never touches cloud data.
+func (s *DesktopService) DeleteSyncJob(id string) error { return s.app.DeleteSyncJob(id) }
+
 // AgentStatus summarises the Agent list for the sidebar card.
 func (s *DesktopService) AgentStatus() domain.AgentStatus { return s.app.AgentStatus() }
 

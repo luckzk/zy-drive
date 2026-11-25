@@ -1,107 +1,188 @@
-// App — desktop shell skeleton (mygo Web frontend mode).
-// Layout (borrowed from Pail's structure, rewritten for multi-cloud):
-//   left: Mount list (one entry per account, not per vendor)
-//   middle: file table (name / size / time, multi-select, breadcrumbs)
-//   right: inspector (generic info on top, provider-specific "Advanced"
-//          collapsed below, shown only when Caps says the feature exists)
-//   bottom: transfer queue
-//   top: command palette placeholder (Ctrl+K)
+// App — desktop shell (mygo Web frontend mode), rebuilt from the
+// user-confirmed UI Demo (v8, 2026-11-24). Layout:
+//   top: ZyDrive + search (Ctrl+K) + 新建同步
+//   left: navigation + mounts grouped + Agent summary card (kept on
+//         every page, including the sync dual-pane)
+//   middle: file browsing (Inspector on demand) / sync jobs (scheme A
+//           dual-pane) / settings (Agent list)
+//   bottom-right: transfer capsule (no permanent bottom bar)
 //
-// This file is UI only: it calls the app layer through the api client
-// (mygo.Bind in the desktop shell, HTTP in the dev shell). It never
-// calls a cloud API directly and never contains vendor branches —
-// differences come from the Mount's Caps.
-//
-// Sync-task UI (2026-11-24 decision): the sync wizard is dual-pane —
-// left file manager = source, right file manager = target — because
-// picking source and target side by side is easier to understand than
-// two dropdowns. See pages/SyncJobs.tsx.
-import { useState } from 'react'
-import FileTable from './components/FileTable'
-import Inspector from './components/Inspector'
-import SyncWizard from './pages/SyncJobs'
-
-type Mount = {
-  id: string
-  displayName: string
-  provider: string
-  status: string
-  used?: string
-}
-
-const DEMO_MOUNTS: Mount[] = [
-  { id: 'm-s3', displayName: '我的 R2', provider: 's3', status: 'ok', used: '12.4 GB / 100 GB' },
-  { id: 'm-dropbox', displayName: 'Dropbox', provider: 'dropbox', status: 'ok', used: '3.1 GB / 2 TB' },
-  { id: 'm-drive', displayName: '工作 Drive', provider: 'drive', status: 'auth_expired', used: '—' },
-]
+// All data comes from the backend through api/client (mygo.Bind).
+// There is no demo data anywhere: no mounts means an empty state
+// with an add-drive guide, never invented drives or files.
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type { Agent, AgentStatus, Mount, Transfer } from './mygo'
+import { api, friendlyError } from './api/client'
+import Sidebar, { type Page } from './components/Sidebar'
+import FileBrowser from './components/FileBrowser'
+import TransferDock from './components/TransferDock'
+import CommandPalette from './components/CommandPalette'
+import AddMountDialog from './components/AddMountDialog'
+import SyncJobsPage from './pages/SyncJobs'
+import SettingsPage from './pages/Settings'
 
 export default function App() {
-  const [activeMount, setActiveMount] = useState(DEMO_MOUNTS[0])
-  const [showSync, setShowSync] = useState(false)
+  const [page, setPage] = useState<Page>('browse')
+  const [mounts, setMounts] = useState<Mount[]>([])
+  const [agents, setAgents] = useState<Agent[]>([])
+  const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
+  const [transfers, setTransfers] = useState<Transfer[]>([])
+  const [activeMountId, setActiveMountId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [showPalette, setShowPalette] = useState(false)
+  const [showAddMount, setShowAddMount] = useState(false)
+
+  const activeMountIdRef = useRef<string | null>(null)
+  const setActiveMount = (id: string | null) => {
+    activeMountIdRef.current = id
+    setActiveMountId(id)
+  }
+
+  const loadMounts = useCallback(async () => {
+    try {
+      const ms = await api.listMounts()
+      setMounts(ms)
+      setLoadError(null)
+      if (ms.length > 0 && !ms.some((m) => m.id === activeMountIdRef.current)) {
+        setActiveMount(ms[0].id)
+      }
+    } catch (e) {
+      setLoadError(friendlyError(e))
+    }
+  }, [])
+
+  const loadAgents = useCallback(async () => {
+    try {
+      setAgents(await api.listAgents())
+      setAgentStatus(await api.agentStatus())
+    } catch {
+      // Agent list is non-fatal for browsing; the Settings page
+      // reports its own load error.
+    }
+  }, [])
+
+  const loadTransfers = useCallback(async () => {
+    try {
+      setTransfers(await api.transfers())
+    } catch {
+      // Dock polling is best-effort; a failed poll keeps old data.
+    }
+  }, [])
+
+  useEffect(() => {
+    setLoading(true)
+    void Promise.all([loadMounts(), loadAgents(), loadTransfers()]).finally(() => setLoading(false))
+  }, [loadMounts, loadAgents, loadTransfers])
+
+  // Poll the transfer queue while the app is open.
+  useEffect(() => {
+    const t = setInterval(() => void loadTransfers(), 5000)
+    return () => clearInterval(t)
+  }, [loadTransfers])
+
+  // Ctrl+K opens the command palette.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setShowPalette((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
+  const activeMount = mounts.find((m) => m.id === activeMountId) ?? null
+
+  const selectMount = (m: Mount) => {
+    setActiveMount(m.id)
+    setPage('browse')
+  }
+
+  const goCreateSync = () => {
+    setPage('sync')
+  }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
-      <header
-        style={{ display: 'flex', gap: 12, alignItems: 'center', padding: '10px 16px', borderBottom: '1px solid var(--border)' }}
-      >
+    <div className="app-shell">
+      <header className="app-header">
         <h1 style={{ margin: 0 }}>ZyDrive</h1>
         <input
-          placeholder="搜索全部网盘…  (Ctrl+K)"
+          className="input"
+          style={{ flex: 1 }}
+          placeholder="搜索全部网盘… (Ctrl+K)"
           onFocus={() => setShowPalette(true)}
-          style={{ flex: 1, padding: '8px 12px', border: '1px solid var(--border)', borderRadius: 8 }}
+          readOnly
         />
-        <button className="btn-primary" onClick={() => setShowSync(true)}>
+        <button className="btn-primary" onClick={goCreateSync}>
           新建同步
         </button>
       </header>
 
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <aside style={{ width: 240, borderRight: '1px solid var(--border)', padding: 12, overflowY: 'auto' }}>
-          <h2>网盘</h2>
-          {DEMO_MOUNTS.map((m) => (
-            <div
-              key={m.id}
-              onClick={() => setActiveMount(m)}
-              className="card"
-              style={{
-                padding: 10,
-                marginBottom: 8,
-                cursor: 'pointer',
-                borderColor: m.id === activeMount.id ? 'var(--brand)' : undefined,
-              }}
-            >
-              <div>{m.displayName}</div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                {m.provider} · {m.status === 'ok' ? m.used : '需要重新授权'}
-              </div>
+      <div className="app-body">
+        <Sidebar
+          page={page}
+          onNavigate={setPage}
+          mounts={mounts}
+          activeMountId={activeMountId}
+          onSelectMount={selectMount}
+          agentStatus={agentStatus}
+          onGroupsChanged={() => void loadMounts()}
+        />
+
+        <main style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+          {page === 'browse' && (
+            <>
+              {loading ? (
+                <p className="muted" style={{ padding: 16 }}>
+                  加载中…
+                </p>
+              ) : loadError ? (
+                <div style={{ padding: 16 }}>
+                  <div className="error-box">{loadError}</div>
+                  <button className="btn" onClick={() => void loadMounts()}>
+                    重试
+                  </button>
+                </div>
+              ) : mounts.length === 0 ? (
+                <div style={{ padding: 16 }}>
+                  <div className="empty">
+                    <h2>还没有添加网盘</h2>
+                    <p>添加一个网盘后，就能在这里浏览、上传、下载，在同步任务里跨网盘复制。</p>
+                    <button className="btn-primary" onClick={() => setShowAddMount(true)}>
+                      添加网盘
+                    </button>
+                  </div>
+                </div>
+              ) : activeMount ? (
+                <FileBrowser key={activeMount.id} mount={activeMount} />
+              ) : null}
+            </>
+          )}
+          {page === 'sync' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+              <SyncJobsPage mounts={mounts} agents={agents} onRan={() => void loadTransfers()} />
             </div>
-          ))}
-          <button style={{ width: '100%', marginTop: 8 }}>+ 添加网盘（三步向导）</button>
-        </aside>
-
-        <main style={{ flex: 1, padding: 16, overflowY: 'auto' }}>
-          <div className="muted" style={{ marginBottom: 8 }}>
-            {activeMount.displayName} / 照片 / 2026
-          </div>
-          <FileTable mountId={activeMount.id} />
+          )}
+          {page === 'settings' && (
+            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+              <SettingsPage />
+            </div>
+          )}
         </main>
-
-        <Inspector mountId={activeMount.id} />
       </div>
 
-      <footer style={{ borderTop: '1px solid var(--border)', padding: '8px 16px' }}>
-        <span className="muted">传输队列：暂无任务（V0.1 骨架，队列由 internal/transfer 实现）</span>
-      </footer>
+      <TransferDock transfers={transfers} />
 
       {showPalette && (
-        <div className="card" style={{ position: 'fixed', top: 64, left: '50%', transform: 'translateX(-50%)', width: 480, padding: 16 }}>
-          <h2>命令面板</h2>
-          <p className="muted">上传、下载、复制到…、新建同步任务（V0.1 骨架）</p>
-          <button onClick={() => setShowPalette(false)}>关闭</button>
-        </div>
+        <CommandPalette
+          activeMount={activeMount}
+          onClose={() => setShowPalette(false)}
+          onPick={(m) => selectMount(m)}
+        />
       )}
-      {showSync && <SyncWizard onClose={() => setShowSync(false)} mounts={DEMO_MOUNTS} />}
+      {showAddMount && <AddMountDialog onClose={() => setShowAddMount(false)} />}
     </div>
   )
 }

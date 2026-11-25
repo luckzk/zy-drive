@@ -93,9 +93,9 @@ deploy/agent/      Agent Dockerfile + compose
 6. 跑 `internal/storage/contracttest` 一致性套件：分页、空目录、同名文件、续传、Token 刷新、429 退避。
 7. 补增量策略：有游标接游标，没有就声明全量刷新间隔。
 
-## mygo 接线说明（V0.1 骨架阶段）
+## mygo 接线说明
 
-桌面 UI 已定版（2026-11-24 晚，方案 A），`cmd/desktop` 当前是 mygo
+桌面 UI 已按定版 Demo（2026-11-24 晚，方案 A）搬进真实前端：分组侧栏、按需 Inspector、双栏同步任务、右下角传输胶囊、Agent 列表。数据全部走 `mygo.Bind`，无 mock。`cmd/desktop` 当前是 mygo
 窗口 + dev 壳回落：`cmd/desktop/mygo.go` 负责窗口、菜单、托盘与
 `mygo.Bind`，Bind 目标是 `internal/app/bind.go` 的 `DesktopService`
 （专用类型，避免 `*App` 的非 JSON 方法让 Bind panic）。TS 客户端

@@ -2,7 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"time"
 
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/sync"
@@ -107,6 +110,54 @@ func ValidateJob(job *domain.SyncJob) error {
 	}
 	if job.RunOn == domain.RunOnLocal && job.AgentID != "" {
 		return fmt.Errorf("app: agentId is set but runOn is local")
+	}
+	return nil
+}
+
+// ListSyncJobs returns saved jobs from SQLite (creation order). Empty
+// when nothing was ever saved — never demo jobs.
+func (a *App) ListSyncJobs() []*domain.SyncJob {
+	if a.DB == nil {
+		return []*domain.SyncJob{}
+	}
+	jobs, err := a.DB.ListSyncJobs()
+	if err != nil {
+		return []*domain.SyncJob{}
+	}
+	return jobs
+}
+
+// SaveSyncJob validates and persists a job, assigning an ID and
+// timestamps when missing. Returns the stored job.
+func (a *App) SaveSyncJob(job *domain.SyncJob) (*domain.SyncJob, error) {
+	if err := ValidateJob(job); err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if job.ID == "" {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, fmt.Errorf("app: save sync job: %w", err)
+		}
+		job.ID = "job-" + hex.EncodeToString(b[:])
+		job.CreatedAt = now
+	}
+	job.UpdatedAt = now
+	if job.Compare == "" {
+		job.Compare = domain.CompareSizeTime
+	}
+	if a.DB != nil {
+		if err := a.DB.SaveSyncJob(job); err != nil {
+			return nil, err
+		}
+	}
+	return job, nil
+}
+
+// DeleteSyncJob removes a saved job. It never touches cloud data.
+func (a *App) DeleteSyncJob(id string) error {
+	if a.DB != nil {
+		return a.DB.DeleteSyncJob(id)
 	}
 	return nil
 }

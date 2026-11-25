@@ -41,6 +41,17 @@ export interface AgentStatus {
 }
 
 /**
+ * AgentTestResult is the outcome of TestAgent: reachable or not, with
+ * the versions the Agent reported when reachable.
+ */
+export interface AgentTestResult {
+  online: boolean;
+  version?: string;
+  protocolVersion?: string;
+  message: string;
+}
+
+/**
  * Caps is the capability table. UI and the sync engine decide what to
  * show and what to do by reading Caps only — e.g. a menu item is hidden
  * when the capability is absent, never shown greyed-out and dead.
@@ -311,18 +322,38 @@ export const DesktopService = {
   agentStatus: bind<[], AgentStatus>("DesktopService.AgentStatus", () => []),
   /** Browse lists a directory (cache-first, background refresh). */
   browse: bind<[string, string], Node[]>("DesktopService.Browse", (mountID: string, ref: string) => [mountID, ref]),
+  /** DeleteSyncJob removes a saved sync job. It never touches cloud data. */
+  deleteSyncJob: bind<[string], void>("DesktopService.DeleteSyncJob", (id: string) => [id]),
   /** ListAgents returns the configured server Agents. */
   listAgents: bind<[], (Agent | null)[]>("DesktopService.ListAgents", () => []),
   /** ListMounts returns mounts for the sidebar. */
   listMounts: bind<[], (Mount | null)[]>("DesktopService.ListMounts", () => []),
+  /** ListSyncJobs returns saved sync jobs (creation order). */
+  listSyncJobs: bind<[], (SyncJob | null)[]>("DesktopService.ListSyncJobs", () => []),
   /** PreviewSync builds a sync plan for confirmation. */
   previewSync: bind<[SyncJob | null], Plan | null>("DesktopService.PreviewSync", (job: SyncJob | null) => [job]),
+  /** RemoveAgent unregisters an Agent. */
+  removeAgent: bind<[string], void>("DesktopService.RemoveAgent", (id: string) => [id]),
   /** RunSync executes a confirmed plan. */
   runSync: bind<[SyncJob | null, Plan | null], Run | null>("DesktopService.RunSync", (job: SyncJob | null, plan: Plan | null) => [job, plan]),
+  /** SaveAgent adds or edits an Agent (name/address), persisting it. */
+  saveAgent: bind<[Agent | null], Agent | null>("DesktopService.SaveAgent", (ag: Agent | null) => [ag]),
+  /** SaveSyncJob validates and persists a sync job. */
+  saveSyncJob: bind<[SyncJob | null], SyncJob | null>("DesktopService.SaveSyncJob", (job: SyncJob | null) => [job]),
   /** Search searches a mount. LocalOnly reports "本地结果". */
   search: bind<[string, string], SearchResult | null>("DesktopService.Search", (mountID: string, query: string) => [mountID, query]),
+  /** SetDefaultAgent flags one Agent as the default executor. */
+  setDefaultAgent: bind<[string], void>("DesktopService.SetDefaultAgent", (id: string) => [id]),
+  /**
+   * TestAgent calls the Agent's unauthenticated /api/health and reports
+   * whether it answers and which versions it runs. It never sends any
+   * credential: health needs no token.
+   */
+  testAgent: bind<[string], AgentTestResult | null>("DesktopService.TestAgent", (id: string) => [id]),
   /** Transfers lists transfers for the bottom queue panel. */
   transfers: bind<[], (Transfer | null)[]>("DesktopService.Transfers", () => []),
+  /** UpdateMountGroup changes a mount's sidebar group. */
+  updateMountGroup: bind<[string, string], void>("DesktopService.UpdateMountGroup", (id: string, group: string) => [id, group]),
   /** ValidateJob checks a sync job configuration before it is saved. */
   validateJob: bind<[SyncJob | null], void>("DesktopService.ValidateJob", (job: SyncJob | null) => [job]),
 } as const;

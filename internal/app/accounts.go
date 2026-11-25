@@ -52,3 +52,17 @@ func (a *App) ListMounts() []*domain.Mount {
 func (a *App) RemoveMount(id string) {
 	delete(a.mounts, id)
 }
+
+// UpdateMountGroup changes a mount's sidebar group. Groups are
+// display-only and live as long as the mount does; mounts themselves
+// are session-only in V0.1 (no mount persistence yet), so a group
+// assignment does not survive a restart either.
+func (a *App) UpdateMountGroup(id, group string) error {
+	h, ok := a.mounts[id]
+	if !ok {
+		return fmt.Errorf("app: unknown mount %q", id)
+	}
+	h.Mount.Group = group
+	a.mounts[id] = h
+	return nil
+}

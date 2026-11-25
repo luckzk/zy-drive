@@ -1,31 +1,37 @@
-// FileTable — the middle file list. Sortable, multi-select, breadcrumbs
-// live in App. Empty state shows the add-guide, never demo files
-// pretending to be real data (the DEMO rows below are the UI-demo
-// placeholder and are removed when the Bind client lands).
-import { useState } from 'react'
+// FileTable — the middle file list. Rows come from the backend via
+// api.browse; this component never invents rows. Click selects (and
+// opens the Inspector), double-click enters a folder, checkbox
+// toggles multi-select. Clicking an already-selected row deselects it.
+import type { Node } from '../mygo'
+import { formatSize, formatTime } from '../lib/format'
 
-type Row = { name: string; size: string; time: string; isDir: boolean }
-
-const PLACEHOLDER_ROWS: Row[] = [
-  { name: '照片', size: '—', time: '2026-11-24 10:02', isDir: true },
-  { name: '2026-11-24-行程.pdf', size: '1.2 MB', time: '2026-11-24 09:41', isDir: false },
-  { name: '备份.zip', size: '84.5 MB', time: '2026-11-23 18:20', isDir: false },
-]
-
-export default function FileTable({ mountId }: { mountId: string }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-  const toggle = (name: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(name)) next.delete(name)
-      else next.add(name)
-      return next
-    })
+export default function FileTable({
+  nodes,
+  selectedId,
+  checked,
+  onSelect,
+  onToggleCheck,
+  onOpen,
+}: {
+  nodes: Node[]
+  selectedId: string | null
+  checked: Set<string>
+  onSelect: (n: Node | null) => void
+  onToggleCheck: (n: Node) => void
+  onOpen: (n: Node) => void
+}) {
+  if (nodes.length === 0) {
+    return (
+      <div className="empty">
+        <h2>这个文件夹是空的</h2>
+        <p>把文件拖进来，或点右上角上传。</p>
+      </div>
+    )
   }
   return (
-    <table style={{ width: '100%', borderCollapse: 'collapse' }} data-mount={mountId}>
+    <table className="file-table">
       <thead>
-        <tr style={{ textAlign: 'left' }}>
+        <tr>
           <th style={{ width: 32 }}></th>
           <th>名称</th>
           <th>大小</th>
@@ -33,16 +39,38 @@ export default function FileTable({ mountId }: { mountId: string }) {
         </tr>
       </thead>
       <tbody>
-        {PLACEHOLDER_ROWS.map((r) => (
-          <tr key={r.name} style={{ background: selected.has(r.name) ? '#f0fdf4' : undefined }}>
-            <td>
-              <input type="checkbox" checked={selected.has(r.name)} onChange={() => toggle(r.name)} />
-            </td>
-            <td>{r.isDir ? '📁 ' : '📄 '}{r.name}</td>
-            <td>{r.size}</td>
-            <td className="muted">{r.time}</td>
-          </tr>
-        ))}
+        {nodes.map((n) => {
+          const key = n.ref || n.path
+          const isSelected = selectedId === key
+          return (
+            <tr
+              key={key}
+              className={isSelected ? 'selected' : undefined}
+              onClick={() => onSelect(isSelected ? null : n)}
+              onDoubleClick={() => {
+                if (n.isDir) onOpen(n)
+              }}
+            >
+              <td onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={checked.has(key)}
+                  onChange={() => onToggleCheck(n)}
+                  aria-label={`选择 ${n.name}`}
+                />
+              </td>
+              <td>
+                <span className="row-name">
+                  <span aria-hidden>{n.isDir ? '📁' : '📄'}</span>
+                  <span>{n.name}</span>
+                  {n.isDir && <span className="muted">›</span>}
+                </span>
+              </td>
+              <td>{n.isDir ? '—' : formatSize(n.size)}</td>
+              <td className="muted">{formatTime(n.modTime)}</td>
+            </tr>
+          )
+        })}
       </tbody>
     </table>
   )

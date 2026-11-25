@@ -1,60 +1,79 @@
-// Inspector — the right-hand details panel.
-// Top: generic info every cloud has (name, size, time, source).
-// Below: "Advanced" collapsed by default. Professional features
-// (versions, sharing, encryption, storage class, presigned URLs) are
-// rendered only when the mount's Caps says the provider supports them —
-// present when supported, hidden otherwise, never greyed-out and dead.
+// Inspector — the right-hand details panel. It only renders when the
+// user selected a file or folder (on-demand); otherwise the parent
+// does not mount it at all, so the table takes the full width.
+// Top: generic info every cloud has. Below: "高级", collapsed by
+// default. Professional items are listed only when the mount's Caps
+// says the provider supports them — present when supported, hidden
+// otherwise, never greyed-out and dead. The actions themselves
+// (generate a share link, list versions) are not wired in V0.1, and
+// the panel says so instead of showing a dead button.
 import { useState } from 'react'
+import type { Caps, Mount, Node } from '../mygo'
+import { formatSize, formatTime } from '../lib/format'
 
-type Caps = {
-  supportsVersions?: boolean
-  supportsShare?: boolean
-  supportsEncryption?: boolean
-  supportsStorageClass?: boolean
-  supportsPresignedUrl?: boolean
+function capsList(caps: Caps): string[] {
+  const out: string[] = []
+  if (caps.supportsVersions) out.push('历史版本')
+  if (caps.supportsShare) out.push('分享链接')
+  if (caps.supportsEncryption) out.push('服务端加密')
+  if (caps.supportsStorageClass) out.push('存储类型')
+  if (caps.supportsPresignedUrl) out.push('预签名链接')
+  if (caps.supportsSearch) out.push('服务端搜索')
+  if (caps.supportsDelta) out.push('增量同步')
+  if (caps.supportsThumbnail) out.push('缩略图')
+  if (caps.supportsResumableUpload) out.push('断点续传')
+  return out
 }
 
-const CAPS_BY_MOUNT: Record<string, Caps> = {
-  'm-s3': {
-    supportsVersions: true,
-    supportsShare: true,
-    supportsEncryption: true,
-    supportsStorageClass: true,
-    supportsPresignedUrl: true,
-  },
-  'm-dropbox': { supportsVersions: true, supportsShare: true },
-  'm-drive': { supportsVersions: true, supportsShare: true },
-}
-
-export default function Inspector({ mountId }: { mountId: string }) {
+export default function Inspector({ node, mount, onClose }: { node: Node; mount: Mount | null; onClose: () => void }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const caps = CAPS_BY_MOUNT[mountId] ?? {}
+  const supported = mount ? capsList(mount.caps) : []
 
   return (
-    <aside style={{ width: 280, borderLeft: '1px solid var(--border)', padding: 16, overflowY: 'auto' }}>
-      <h2>详情</h2>
-      <p>
-        <strong>2026-11-24-行程.pdf</strong>
+    <aside style={{ width: 280, flexShrink: 0, borderLeft: '1px solid var(--border)', padding: 16, overflowY: 'auto' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <h2 style={{ margin: 0 }}>详情</h2>
+        <button className="icon-btn" onClick={onClose} aria-label="关闭详情">
+          ✕
+        </button>
+      </div>
+      <p style={{ marginTop: 12 }}>
+        <strong>{node.name}</strong>
       </p>
-      <p className="muted">大小 1.2 MB · 修改于 2026-11-24 09:41</p>
-      <p className="muted">来源：{mountId}</p>
+      <p className="muted">
+        {node.isDir ? '文件夹' : `大小 ${formatSize(node.size)}`} · 修改于 {formatTime(node.modTime)}
+      </p>
+      <p className="muted" style={{ wordBreak: 'break-all' }}>
+        路径：{node.path}
+      </p>
+      {mount && <p className="muted">来源：{mount.displayName}</p>}
+      {node.hash && (
+        <p className="muted">
+          校验值（{node.hashKind ?? 'hash'}）：{node.hash}
+        </p>
+      )}
+      {node.mime && <p className="muted">类型：{node.mime}</p>}
 
       <div style={{ marginTop: 16 }}>
-        <button onClick={() => setAdvancedOpen((v) => !v)}>
+        <button className="btn btn-sm" onClick={() => setAdvancedOpen((v) => !v)}>
           高级 {advancedOpen ? '▾' : '▸'}
         </button>
         {advancedOpen && (
           <div style={{ marginTop: 8 }}>
-            {caps.supportsVersions && <p>版本：查看历史版本</p>}
-            {caps.supportsShare && <p>分享：生成分享链接</p>}
-            {caps.supportsEncryption && <p>加密：SSE-S3 / SSE-KMS</p>}
-            {caps.supportsStorageClass && <p>存储类型：标准 / 低频访问</p>}
-            {caps.supportsPresignedUrl && <p>预签名链接：生成临时下载链接</p>}
-            {!caps.supportsVersions &&
-              !caps.supportsShare &&
-              !caps.supportsEncryption &&
-              !caps.supportsStorageClass &&
-              !caps.supportsPresignedUrl && <p className="muted">该网盘暂无高级项</p>}
+            {supported.length > 0 ? (
+              <>
+                <p>该网盘支持：{supported.join('、')}</p>
+                <p className="muted">高级操作（生成分享链接、查看历史版本等）尚未接入，后续版本提供。</p>
+              </>
+            ) : (
+              <p className="muted">该网盘暂无高级项。</p>
+            )}
+            {mount && (
+              <p className="muted">
+                删除方式：{mount.caps.deleteToTrash ? '移入回收站' : '永久删除'}
+                {mount.caps.maxPathLen > 0 ? ` · 路径最长 ${mount.caps.maxPathLen} 字符` : ''}
+              </p>
+            )}
           </div>
         )}
       </div>
