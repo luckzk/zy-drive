@@ -104,6 +104,12 @@ const STUB = `(() => {
       // OneDrive 走自建应用）；BeginOAuth 返回一个环回地址，
       // PollOAuthCallback 立刻返回 done，模拟浏览器自动跳回。
       if (method === 'DesktopService.BuiltinOAuthClientID') return args[0] === 'dropbox' ? 'zydrive-builtin-id' : ''
+      // 自建应用桩（v0.8.3）：默认没保存过自己的应用
+      // （GetCustomOAuthApp 返回 null），保存/删除只记下来、
+      // 不报错；向导里“自己的应用”表单为空。
+      if (method === 'DesktopService.GetCustomOAuthApp') return null
+      if (method === 'DesktopService.SaveCustomOAuthApp') return null
+      if (method === 'DesktopService.DeleteCustomOAuthApp') return null
       if (method === 'DesktopService.BeginOAuth') return { authUrl: 'https://www.dropbox.com/oauth2/authorize?client_id=x&response_type=code&redirect_uri=http://localhost:54321&state=stub-state', state: 'stub-state' }
       if (method === 'DesktopService.PollOAuthCallback') return { status: 'done', code: 'stub-code-1' }
       if (method === 'DesktopService.ExchangeOAuthCode') return { accessToken: 'stub-access', refreshToken: 'stub-refresh' }
@@ -237,6 +243,37 @@ try {
     if (providerGrid.columns !== 2) failures.push(`添加网盘第 1 步应是两列网格，实测 ${providerGrid.columns} 列`)
     if (!providerGrid.allHaveLogo) failures.push('添加网盘卡片里有卡片没有品牌 logo（SVG）')
     await page.screenshot({ path: path.join(SHOTS, '01a-wizard-providers.png') })
+    // 1a2. 第 1 步无遮挡（v0.8.3）：内容区独立滚动、底部栏固
+    // 定——把内容区滚到底后，最后一行卡片必须完整可见，且任
+    // 何卡片都不能与底部操作栏相交。
+    const noOverlap = await page.evaluate(() => {
+      const body = document.querySelector('.dialog-body')
+      const footer = document.querySelector('.dialog-actions')
+      const cards = [...document.querySelectorAll('.provider-card')]
+      if (!body || !footer) return { hasBody: !!body, hasFooter: !!footer }
+      body.scrollTop = body.scrollHeight
+      const bodyRect = body.getBoundingClientRect()
+      const footerRect = footer.getBoundingClientRect()
+      const last = cards[cards.length - 1]?.getBoundingClientRect()
+      return {
+        hasBody: true,
+        hasFooter: true,
+        footerStatic: getComputedStyle(footer).position === 'static',
+        atBottom: body.scrollHeight - body.scrollTop - body.clientHeight <= 1,
+        lastRowVisible: last ? last.bottom <= bodyRect.bottom + 1 : false,
+        intersectingFooter: cards.filter((c) => {
+          const r = c.getBoundingClientRect()
+          return !(r.bottom <= footerRect.top + 1 || r.top >= footerRect.bottom - 1)
+        }).length,
+      }
+    })
+    console.log('wizard step1 no-overlap:', JSON.stringify(noOverlap))
+    if (!noOverlap.hasBody) failures.push('添加网盘对话框没有 .dialog-body（内容区应独立滚动）')
+    if (!noOverlap.hasFooter) failures.push('添加网盘对话框没有 .dialog-actions（底部操作栏）')
+    if (noOverlap.hasBody && noOverlap.footerStatic === false) failures.push('底部操作栏应固定不动（flex 布局），实测仍是 sticky')
+    if (noOverlap.hasBody && !noOverlap.atBottom) failures.push('第 1 步内容区滚不到底')
+    if (noOverlap.hasBody && !noOverlap.lastRowVisible) failures.push('第 1 步最后一行网盘卡片没有完整可见（被底部栏遮住）')
+    if (noOverlap.hasBody && noOverlap.intersectingFooter > 0) failures.push(`第 1 步有 ${noOverlap.intersectingFooter} 张卡片与底部操作栏相交（被遮挡）`)
     await page.getByText('S3 / R2 / 兼容 S3').click()
     await page.waitForTimeout(300)
     const providerSelected = await page.evaluate(() => {
@@ -366,6 +403,22 @@ try {
     await page.waitForTimeout(300)
     await page.getByRole('button', { name: '下一步', exact: true }).click()
     await page.waitForTimeout(300)
+    // v0.8.3：授权方式是二选一卡片（不是三角折叠），默认官方
+    // 应用；自建表单在“自己的应用”卡片后面。先点自己的应用，
+    // 再查 Dropbox 的字段。
+    const dbxChoice = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      const cards = [...(d?.querySelectorAll('.provider-card') ?? [])].map((c) => c.textContent?.trim())
+      const selected = [...(d?.querySelectorAll('.provider-card.selected') ?? [])].map((c) => c.textContent?.trim())
+      return { cards, selected, hasDetails: (d?.querySelectorAll('details') ?? []).length }
+    })
+    console.log('dropbox choice cards:', JSON.stringify(dbxChoice))
+    if (!dbxChoice.cards.some((t) => t?.includes('官方应用（一键授权）'))) failures.push('Dropbox 第 2 步没有“官方应用（一键授权）”选项卡片')
+    if (!dbxChoice.cards.some((t) => t?.includes('自己的应用'))) failures.push('Dropbox 第 2 步没有“自己的应用”选项卡片')
+    if (!dbxChoice.selected.some((t) => t?.includes('官方应用'))) failures.push('Dropbox 第 2 步默认应选中“官方应用（一键授权）”')
+    if (dbxChoice.hasDetails > 0) failures.push(`添加网盘向导里还有 ${dbxChoice.hasDetails} 个 <details> 三角折叠（应已全部删掉）`)
+    await page.locator('.provider-card', { hasText: '自己的应用' }).first().click()
+    await page.waitForTimeout(300)
     const dbxStep2 = await page.locator('.dialog').textContent()
     console.log('dropbox step2:', JSON.stringify(dbxStep2?.slice(0, 400)))
     if (!dbxStep2?.includes('App key')) failures.push('Dropbox 第 2 步没有自己的字段名“App key”')
@@ -373,6 +426,31 @@ try {
     if (!dbxStep2?.includes('files.metadata.read')) failures.push('Dropbox 第 2 步没有自己的权限说明（files.metadata.read）')
     if (dbxStep2?.includes('OAuth 客户端 ID')) failures.push('Dropbox 第 2 步串了 Drive 的字段名“OAuth 客户端 ID”')
     if (dbxStep2?.includes('Google Cloud Console')) failures.push('Dropbox 第 2 步串了 Drive 的指引（Google Cloud Console）')
+    // 第 2 步长表单可滚动到底（v0.8.3）：内容区能纵向滚动，
+    // 滚到底后最后一项完整可见，“下一步：测试”按钮固定可见。
+    const dbxScroll = await page.evaluate(() => {
+      const body = document.querySelector('.dialog-body')
+      if (!body) return { hasBody: false }
+      body.scrollTop = body.scrollHeight
+      const items = [...body.querySelectorAll('.field, .notice-box, p')]
+      const last = items[items.length - 1]?.getBoundingClientRect()
+      const bodyRect = body.getBoundingClientRect()
+      const nextBtn = [...document.querySelectorAll('.dialog-actions button')].find((b) => b.textContent?.trim() === '下一步：测试')
+      const btnRect = nextBtn?.getBoundingClientRect()
+      return {
+        hasBody: true,
+        scrollable: body.scrollHeight > body.clientHeight,
+        atBottom: body.scrollHeight - body.scrollTop - body.clientHeight <= 1,
+        lastVisible: last ? last.bottom <= bodyRect.bottom + 1 : false,
+        nextBtnInViewport: btnRect ? btnRect.bottom <= 800 && btnRect.top >= 0 : false,
+      }
+    })
+    console.log('dropbox step2 scroll:', JSON.stringify(dbxScroll))
+    if (!dbxScroll.hasBody) failures.push('OAuth 第 2 步没有 .dialog-body（内容区应独立滚动）')
+    if (dbxScroll.hasBody && !dbxScroll.scrollable) failures.push('Dropbox 第 2 步长表单不能滚动（内容区应能纵向滚动）')
+    if (dbxScroll.hasBody && !dbxScroll.atBottom) failures.push('Dropbox 第 2 步内容区滚不到底')
+    if (dbxScroll.hasBody && !dbxScroll.lastVisible) failures.push('Dropbox 第 2 步滚到底后最后一项没有完整可见')
+    if (dbxScroll.hasBody && !dbxScroll.nextBtnInViewport) failures.push('Dropbox 第 2 步“下一步：测试”按钮不在视口内（底部栏应固定可见）')
     await page.screenshot({ path: path.join(SHOTS, '01e-wizard-dropbox.png') })
     await page.locator('.dialog-actions >> text=上一步').click()
     await page.waitForTimeout(300)
@@ -391,11 +469,14 @@ try {
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
 
-    // 1g. 一键授权自动回调（A+B）：Dropbox 配了内置 Client ID
-    // （桩），第 2 步有一键授权卡片，自建应用收进“高级”折叠；
-    // 点“打开浏览器授权”后，桩的 PollOAuthCallback 立刻返回
-    // done，Token 应自动换好填进表单（不用手动粘贴 code），
-    // 手动粘贴框仍在（浏览器没跳回时的兜底）。
+    // 1g. 一键授权自动回调 + 二选一卡片（v0.8.3）：Dropbox 配了
+    // 内置 Client ID（桩），第 2 步是“官方应用（一键授权）”与
+    // “自己的应用”两个并排选项卡片（没有三角折叠），默认官方
+    // 应用；点“打开浏览器授权”后，桩的 PollOAuthCallback 立刻
+    // 返回 done，Token 应自动换好填进表单（不用手动粘贴 code），
+    // 手动粘贴框仍在（浏览器没跳回时的兜底）。切到“自己的应用”
+    // 填 Client ID 点“保存为我的应用”，再切回官方应用，一键
+    // 授权必须还在（内置不受影响）。
     await page.getByRole('button', { name: '添加网盘', exact: true }).click()
     await page.waitForTimeout(400)
     await page.locator('.provider-card', { hasText: 'Dropbox' }).first().click()
@@ -404,7 +485,10 @@ try {
     await page.waitForTimeout(500)
     const oneclick = await page.locator('.dialog').textContent()
     if (!oneclick?.includes('一键授权')) failures.push('Dropbox 第 2 步没有一键授权卡片（桩配了内置 Client ID）')
-    if (!oneclick?.includes('高级：用自己的应用')) failures.push('一键授权时自建应用入口没有收进“高级”折叠')
+    if (!oneclick?.includes('自己的应用')) failures.push('Dropbox 第 2 步没有“自己的应用”选项卡片')
+    if (oneclick?.includes('高级：用自己的应用')) failures.push('自建应用入口还收在“高级”三角折叠里（应已改成二选一卡片）')
+    const noDetails = await page.evaluate(() => document.querySelectorAll('.dialog details').length)
+    if (noDetails > 0) failures.push(`添加网盘向导里还有 ${noDetails} 个 <details> 三角折叠（应已全部删掉）`)
     await page.getByRole('button', { name: '打开浏览器授权', exact: true }).click()
     await page.waitForTimeout(3000)
     const autoTokens = await page.evaluate(() => {
@@ -426,6 +510,29 @@ try {
     if (!autoTokens.text.includes('Token 已换取成功')) failures.push('自动回调后没有显示“Token 已换取成功”')
     if (!autoTokens.hasPasteBox) failures.push('手动粘贴 code 的兜底框不见了（浏览器没跳回时要用）')
     await page.screenshot({ path: path.join(SHOTS, '01g-wizard-oneclick.png') })
+    // 切到自己的应用：填 Client ID，保存为我的应用。
+    await page.locator('.provider-card', { hasText: '自己的应用' }).first().click()
+    await page.waitForTimeout(300)
+    const customForm = await page.locator('.dialog').textContent()
+    if (!customForm?.includes('App key')) failures.push('切到“自己的应用”后没有出现自建表单（App key）')
+    if (!customForm?.includes('保存为我的应用')) failures.push('“自己的应用”下没有“保存为我的应用”按钮')
+    await page.getByRole('button', { name: '保存为我的应用', exact: true }).click()
+    await page.waitForTimeout(300)
+    const saveEmpty = await page.locator('.dialog').textContent()
+    if (!saveEmpty?.includes('请先填 Client ID')) failures.push('空 Client ID 点“保存为我的应用”没有提示先填 Client ID')
+    const customInputs = page.locator('.dialog input')
+    await customInputs.nth(2).fill('my-dbx-key')
+    await page.getByRole('button', { name: '保存为我的应用', exact: true }).click()
+    await page.waitForTimeout(300)
+    const saveDone = await page.locator('.dialog').textContent()
+    if (!saveDone?.includes('已保存为“我的应用”')) failures.push('填了 Client ID 点“保存为我的应用”后没有显示已保存')
+    await page.screenshot({ path: path.join(SHOTS, '01h-wizard-custom-app.png') })
+    // 切回官方应用：内置一键授权必须还在。
+    await page.locator('.provider-card', { hasText: '官方应用（一键授权）' }).first().click()
+    await page.waitForTimeout(300)
+    const backToBuiltin = await page.locator('.dialog').textContent()
+    if (!backToBuiltin?.includes('一键授权（ZyDrive 官方应用）')) failures.push('切回官方应用后一键授权不见了（内置应不受自建应用影响）')
+    if (!backToBuiltin?.includes('打开浏览器授权')) failures.push('切回官方应用后没有“打开浏览器授权”按钮')
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
   }
@@ -661,6 +768,39 @@ try {
   await page.waitForTimeout(1200)
   await page.screenshot({ path: path.join(SHOTS, '03b-sync-create.png') })
 
+  // 3b2. 默认排除规则（v0.8.3）：新建任务的过滤规则框默认预
+  // 填 9 条规则，每条有对应的人话说明；“恢复默认”与“清空”
+  // 按钮都在输入框旁，点了都生效。
+  const excludeDefaults = await page.evaluate(() => {
+    const ta = document.querySelector('.dual-box textarea')
+    const box = document.querySelector('.dual-box')
+    return {
+      value: ta ? ta.value : null,
+      hasReset: !!([...(box?.querySelectorAll('button') ?? [])].find((b) => b.textContent?.trim() === '恢复默认')),
+      hasClear: !!([...(box?.querySelectorAll('button') ?? [])].find((b) => b.textContent?.trim().startsWith('清空'))),
+      notes: box?.textContent ?? '',
+    }
+  })
+  console.log('exclude defaults:', JSON.stringify({ value: excludeDefaults.value, hasReset: excludeDefaults.hasReset, hasClear: excludeDefaults.hasClear }))
+  const wantRules = ['.DS_Store', 'Thumbs.db', 'desktop.ini', '._*', '*.tmp', '~$*', '.git/', 'node_modules/', '*.log']
+  for (const r of wantRules) {
+    if (!excludeDefaults.value?.split('\n').includes(r)) failures.push(`新建任务的过滤规则默认没有 ${r}`)
+  }
+  if (!excludeDefaults.notes.includes('macOS 文件夹配置文件')) failures.push('过滤规则没有 .DS_Store 的人话说明')
+  if (!excludeDefaults.notes.includes('Office')) failures.push('过滤规则没有 ~$* 的人话说明（Office 临时锁文件）')
+  if (!excludeDefaults.notes.includes('Git 仓库')) failures.push('过滤规则没有 .git/ 的人话说明')
+  if (!excludeDefaults.hasReset) failures.push('过滤规则旁没有“恢复默认”按钮')
+  if (!excludeDefaults.hasClear) failures.push('过滤规则旁没有“清空”按钮')
+  // 清空 → 恢复默认，来回都生效。
+  await page.getByRole('button', { name: '清空（全部同步）', exact: true }).click()
+  await page.waitForTimeout(200)
+  const cleared = await page.locator('.dual-box textarea').inputValue()
+  if (cleared !== '') failures.push(`点“清空”后过滤规则框应为空，实测 ${JSON.stringify(cleared)}`)
+  await page.getByRole('button', { name: '恢复默认', exact: true }).click()
+  await page.waitForTimeout(200)
+  const restored = await page.locator('.dual-box textarea').inputValue()
+  if (!restored.includes('.DS_Store') || !restored.includes('node_modules/')) failures.push('点“恢复默认”后默认规则没有回来')
+
   // 3c. 双栏点选（VISUAL_MOUNTS 才有网盘可点）：单击一行即选中，
   // 选中行有明显选中态（绿底 + 左绿边 + 勾选标记），两栏各自
   // 独立；双栏上方回显的源/目标路径就是选中的路径；双击文件
@@ -700,6 +840,86 @@ try {
     if (!enterCheck.echo.includes('照片')) failures.push(`双击“照片”进入后回显的源路径没有“照片”，实测 ${JSON.stringify(enterCheck.echo)}`)
     if (enterCheck.stillSelected) failures.push('双击进入文件夹后旧的选中行还留在选中态（进入后应以进入的文件夹为根）')
     await page.screenshot({ path: path.join(SHOTS, '03d-sync-enter-folder.png') })
+
+    // 3c2. 双栏多选（v0.8.3）：复选框多选、已选数量与清单、清空
+    // 选择、Shift 连选、全选本页；多选态（复选框打勾 + 淡底）
+    // 必须与单选根（绿底 + 左绿边 + 勾选标记）区分开；点复选
+    // 框不能同时把行选成同步根。批量创建：每项一个任务。
+    const multiState = () =>
+      page.evaluate(() => {
+        const panes = [...document.querySelectorAll('.dual-panes .pane')]
+        const src = panes[0]
+        const rows = [...(src?.querySelectorAll('.pane-row') ?? [])]
+        const multi = rows.filter((r) => r.classList.contains('multiselected'))
+        const text = src?.textContent ?? ''
+        const first = multi[0] ? getComputedStyle(multi[0]) : null
+        return {
+          count: multi.length,
+          summary: /已选 \d+ 项/.test(text) ? (text.match(/已选 \d+ 项/) ?? [''])[0] : null,
+          names: multi.map((r) => r.textContent ?? ''),
+          selectedRows: rows.filter((r) => r.classList.contains('selected')).length,
+          bg: first?.backgroundColor ?? null,
+          hasGreenEdge: first ? first.boxShadow.includes('86, 225, 108') : false,
+        }
+      })
+    // 勾两项：行程.pdf、预算.xlsx。
+    await srcPane.locator('.pane-row', { hasText: '行程.pdf' }).locator('.row-checkbox').click()
+    await page.waitForTimeout(300)
+    await srcPane.locator('.pane-row', { hasText: '预算.xlsx' }).locator('.row-checkbox').click()
+    await page.waitForTimeout(300)
+    let ms = await multiState()
+    console.log('multi 2:', JSON.stringify(ms))
+    if (ms.count !== 2) failures.push(`勾了 2 个复选框，多选应为 2 项，实测 ${ms.count}`)
+    if (ms.summary !== '已选 2 项') failures.push(`多选 2 项后清单应显示“已选 2 项”，实测 ${JSON.stringify(ms.summary)}`)
+    if (!ms.names.some((n) => n.includes('行程.pdf')) || !ms.names.some((n) => n.includes('预算.xlsx'))) {
+      failures.push(`多选清单里应有“行程.pdf”和“预算.xlsx”，实测 ${JSON.stringify(ms.names)}`)
+    }
+    if (ms.selectedRows !== 0) failures.push('点复选框后行被选成了同步根（复选框只应多选，不应动单选根）')
+    if (ms.bg !== 'rgb(238, 244, 255)') failures.push(`多选行底色应为淡蓝灰 rgb(238, 244, 255)，与单选根的淡绿区分开，实测 ${ms.bg}`)
+    if (ms.hasGreenEdge) failures.push('多选行不应有单选根的左绿边（两者必须区分开）')
+    // Shift 连选：上次勾的是预算.xlsx，Shift 点封面.png，
+    // 应连选预算.xlsx、分享.pptx、封面.png，加上行程.pdf 共 4 项。
+    await srcPane.locator('.pane-row', { hasText: '封面.png' }).locator('.row-checkbox').click({ modifiers: ['Shift'] })
+    await page.waitForTimeout(300)
+    ms = await multiState()
+    console.log('multi shift:', JSON.stringify(ms))
+    if (ms.count !== 4) failures.push(`Shift 连选后多选应为 4 项，实测 ${ms.count}`)
+    if (ms.summary !== '已选 4 项') failures.push(`Shift 连选后清单应显示“已选 4 项”，实测 ${JSON.stringify(ms.summary)}`)
+    // 全选本页：12 行全选。
+    await srcPane.locator('label', { hasText: '全选本页' }).click()
+    await page.waitForTimeout(300)
+    ms = await multiState()
+    console.log('multi select-all:', JSON.stringify(ms))
+    if (ms.count !== 12) failures.push(`全选本页后多选应为 12 项，实测 ${ms.count}`)
+    // 清空选择：清单消失。
+    await srcPane.getByRole('button', { name: '清空选择', exact: true }).click()
+    await page.waitForTimeout(300)
+    ms = await multiState()
+    if (ms.count !== 0) failures.push(`点“清空选择”后多选应为 0 项，实测 ${ms.count}`)
+    if (ms.summary !== null) failures.push('点“清空选择”后“已选 N 项”清单还显示着')
+    // 批量创建：再勾 2 项（行程.pdf、预算.xlsx），填任务名，
+    // 点“创建 2 个任务”，列表里应出现 2 个任务（每项一个）。
+    await srcPane.locator('.pane-row', { hasText: '行程.pdf' }).locator('.row-checkbox').click()
+    await page.waitForTimeout(200)
+    await srcPane.locator('.pane-row', { hasText: '预算.xlsx' }).locator('.row-checkbox').click()
+    await page.waitForTimeout(300)
+    await page.locator('.dual-box .field input').first().fill('批量测试')
+    await page.waitForTimeout(300)
+    const batchEcho = await page.locator('.sync-sel-echo').textContent()
+    if (!batchEcho?.includes('将创建 2 个任务')) failures.push(`多选 2 项后回显应说“将创建 2 个任务”，实测 ${JSON.stringify(batchEcho)}`)
+    await page.screenshot({ path: path.join(SHOTS, '03e-sync-multiselect.png') })
+    await page.getByRole('button', { name: '创建 2 个任务', exact: true }).click()
+    await page.waitForTimeout(800)
+    const batchResult = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.job-card')].map((c) => c.textContent ?? '')
+      const info = document.querySelector('.notice-box')?.textContent ?? ''
+      return { cards, info }
+    })
+    console.log('batch create:', JSON.stringify(batchResult))
+    if (!batchResult.cards.some((t) => t.includes('批量测试 — 行程.pdf'))) failures.push('批量创建后列表里没有“批量测试 — 行程.pdf”任务')
+    if (!batchResult.cards.some((t) => t.includes('批量测试 — 预算.xlsx'))) failures.push('批量创建后列表里没有“批量测试 — 预算.xlsx”任务')
+    if (!batchResult.info.includes('已创建 2 个同步任务')) failures.push('批量创建后没有“已创建 2 个同步任务”的提示')
+    await page.screenshot({ path: path.join(SHOTS, '03f-sync-batch-created.png') })
     await page.locator('.dual-box >> text=取消').click().catch(() => {})
     await page.waitForTimeout(400)
   }

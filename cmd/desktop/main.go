@@ -85,15 +85,26 @@ func main() {
 	application := app.New(db, registry, queue)
 	application.SetSecrets(secrets)
 
-	// Builtin shared OAuth apps (B, one-click authorization): an
-	// optional <configDir>/oauth-clients.json maps provider kinds
-	// to the ZyDrive official Client IDs (see
-	// internal/app/builtin_oauth.go for the registration
-	// checklist). Missing file = not configured = the wizard falls
-	// back to the self-built app flow; a bad file is logged, never
-	// fatal — it must not stop the app from starting.
-	if err := app.LoadBuiltinOAuthClients(filepath.Join(dir, "oauth-clients.json")); err != nil {
-		log.Printf("desktop: oauth-clients.json: %v (one-click authorization stays off)", err)
+	// Builtin shared OAuth apps (B, one-click authorization): the
+	// IDs live in internal/app/builtin-oauth-clients.json, embedded
+	// into the binary (see internal/app/builtin_oauth.go). Nothing
+	// to load from disk here — a missing or malformed embedded file
+	// falls back to the code constants, never a fatal error.
+	//
+	// The user's OWN OAuth apps live separately in
+	// <configDir>/custom-oauth-clients.json (see internal/app/
+	// custom_oauth.go). The old oauth-clients.json override file —
+	// which used to overwrite the builtin per provider — is
+	// migrated into the custom store on startup and then retired
+	// (renamed to .migrated), so its values are never lost and
+	// never again applied as a builtin override.
+	if n, err := application.MigrateLegacyOAuthClients(filepath.Join(dir, "oauth-clients.json"), filepath.Join(dir, "custom-oauth-clients.json")); err != nil {
+		log.Printf("desktop: oauth-clients.json migration: %v", err)
+	} else if n > 0 {
+		log.Printf("desktop: migrated %d provider(s) from oauth-clients.json into custom-oauth-clients.json (builtin untouched)", n)
+	}
+	if err := application.LoadCustomOAuthClients(filepath.Join(dir, "custom-oauth-clients.json")); err != nil {
+		log.Printf("desktop: custom-oauth-clients.json: %v (own apps unavailable this run)", err)
 	}
 
 	// Restore persisted mounts (and their groups) from SQLite;

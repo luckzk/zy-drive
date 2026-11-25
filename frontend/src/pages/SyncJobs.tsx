@@ -21,6 +21,31 @@ import DualPane from '../components/DualPane'
 
 const LOCAL_ROOT: SideSel = { mountId: 'local', ref: 'local:///', label: '本地 /' }
 
+// The default exclude rules a NEW job starts with (v0.8.3): the
+// junk every cloud folder accumulates — OS thumbnails, Office
+// locks, temp files, VCS and dependency trees, logs. The user can
+// edit or delete any of them; empty = sync everything. These are
+// not display-only: they run in the engine's compare stage
+// (internal/sync/scan.go Matches, tested in scan_test.go) —
+// folder rules (.git/, node_modules/) recursively exclude the
+// whole subtree. Existing jobs keep their own saved rules
+// (initial wins, never overwritten by these defaults).
+const DEFAULT_EXCLUDE_RULES = ['.DS_Store', 'Thumbs.db', 'desktop.ini', '._*', '*.tmp', '~$*', '.git/', 'node_modules/', '*.log']
+
+// Plain-language note per default rule, shown under the textarea
+// so the list is not just a string of symbols.
+const EXCLUDE_RULE_NOTES: Record<string, string> = {
+  '.DS_Store': 'macOS 文件夹配置文件（图标位置、显示方式），同步了也没用',
+  'Thumbs.db': 'Windows 缩略图缓存',
+  'desktop.ini': 'Windows 文件夹配置文件',
+  '._*': 'macOS 在外置盘 / 网盘上留下的资源叉文件',
+  '*.tmp': '临时文件',
+  '~$*': 'Office 打开文档时生成的临时锁文件',
+  '.git/': 'Git 仓库目录（含全部历史），整个排除',
+  'node_modules/': 'Node.js 依赖目录，整个排除（可重新安装）',
+  '*.log': '日志文件',
+}
+
 function rootSel(m: Mount): SideSel {
   return { mountId: m.id, ref: m.rootRef, label: m.displayName }
 }
@@ -95,6 +120,7 @@ function SyncJobEditor({
   agents,
   defaultCompare,
   onSaved,
+  onBatchSaved,
   onCancel,
   onRan,
 }: {
@@ -105,6 +131,9 @@ function SyncJobEditor({
   // jobs keep their own value (initial wins, never overwritten).
   defaultCompare: SyncJob['compare']
   onSaved: (job: SyncJob) => void
+  // Batch creation (multi-select): all created jobs at once, so the
+  // page can add them and close the editor in one step.
+  onBatchSaved?: (jobs: SyncJob[]) => void
   onCancel: () => void
   onRan: () => void
 }) {
@@ -120,7 +149,9 @@ function SyncJobEditor({
   })
   const [direction, setDirection] = useState<SyncJob['direction']>(initial?.direction ?? 'copy')
   const [compare, setCompare] = useState<SyncJob['compare']>(initial?.compare ?? defaultCompare)
-  const [excludeText, setExcludeText] = useState((initial?.exclude ?? []).join('\n'))
+  const [excludeText, setExcludeText] = useState(
+    initial ? (initial?.exclude ?? []).join('\n') : DEFAULT_EXCLUDE_RULES.join('\n'),
+  )
   const [runOn, setRunOn] = useState<'local' | 'agent'>(initial?.runOn === 'agent' || initial?.runOn === 'server' ? 'agent' : 'local')
   const [agentId, setAgentId] = useState(initial?.agentId ?? '')
   const [plan, setPlan] = useState<Plan | null>(null)
@@ -225,6 +256,78 @@ function SyncJobEditor({
     }
   }
 
+  // ---- Batch creation (multi-select, v0.8.3) ----
+  // Semantics, decided against the existing model rather than
+  // changing it: SyncJob is single-source / single-target, so a
+  // batch is one job per selected entry — never one job holding
+  // many entries. Source multi-select drives the batch (each
+  // selected source entry = one job, all to the same target
+  // root); target multi-select adds destinations (each selected
+  // target entry = one more destination); both multi-selected
+  // means the cartesian product, one job per (source, target)
+  // pair. Folder entries are recursive (contain all contents),
+  // like the sync compare itself. Job names are the typed name
+  // plus " — entry name" (and " → target name" when there are
+  // several targets), so the list stays readable.
+  //
+  // A batch is created only — never run immediately: the preview
+  // above only covers the root pair, and running an un-previewed
+  // batch (mirror deletes!) blind would be unsafe. The user runs
+  // each created job from the list, where its own preview and
+  // delete confirmation apply.
+  const srcMulti = src.multi ?? []
+  const dstMulti = dst.multi ?? []
+  const batchSources = srcMulti.length > 0 ? srcMulti : [{ ref: src.ref, label: src.label }]
+  const batchTargets = dstMulti.length > 0 ? dstMulti : [{ ref: dst.ref, label: dst.label }]
+  const batchCount = batchSources.length * batchTargets.length
+  const isBatch = srcMulti.length > 0 || dstMulti.length > 0
+
+  const handleBatchCreate = async () => {
+    setBusy(true)
+    setError(null)
+    setDoneMsg(null)
+    try {
+      const base = name.trim() || '未命名同步任务'
+      const created: SyncJob[] = []
+      for (const s of batchSources) {
+        for (const d of batchTargets) {
+          const jobName =
+            batchCount > 1
+              ? batchTargets.length > 1
+                ? `${base} — ${s.label} → ${d.label}`
+                : `${base} — ${s.label}`
+              : base
+          const job = jobFromEditor({
+            id: newId('job'),
+            name: jobName,
+            src: { ...src, ref: s.ref, label: s.label },
+            dst: { ...dst, ref: d.ref, label: d.label },
+            direction,
+            compare,
+            exclude,
+            runOn: effectiveRunOn,
+            agentId: effectiveRunOn === 'agent' ? agentId : '',
+            enabled: true,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          })
+          const saved = await api.saveSyncJob(job)
+          if (!saved) throw new Error('保存任务失败')
+          created.push(saved)
+        }
+      }
+      if (onBatchSaved) onBatchSaved(created)
+      else for (const c of created) onSaved(c)
+      setDoneMsg(
+        `已创建 ${created.length} 个同步任务（每项一个任务，文件夹包含其下全部内容）。只创建、没有运行：请在列表里逐个确认差异后再开始同步。`,
+      )
+    } catch (e) {
+      setError(friendlyError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const counts = plan ? planCounts(plan) : null
   const deletes = plan?.items.filter((it) => it.action === 'delete') ?? []
 
@@ -242,12 +345,15 @@ function SyncJobEditor({
       {/* 选中回显：创建/保存任务用的就是这两条路径，与双栏里选
           中的完全一致。没选中的行时，默认就是当前文件夹（双栏里
           标“当前文件夹”），所以这里永远有值，不存在“以为选了其
-          实没选”的空态，按钮也不需要为此禁用。 */}
+          实没选”的空态，按钮也不需要为此禁用。多选时回显批量
+          数量：每项一个任务，文件夹包含其下全部内容。 */}
       <p className="sync-sel-echo" style={{ fontSize: 13, margin: '8px 0 0', wordBreak: 'break-all' }}>
         源：{src.label || '（未选）'} → 目标：{dst.label || '（未选）'}
+        {isBatch && ` · 多选批量：将创建 ${batchCount} 个任务（源 ${srcMulti.length > 0 ? `${srcMulti.length} 项` : '根目录'} × 目标 ${dstMulti.length > 0 ? `${dstMulti.length} 项` : '根目录'}）`}
       </p>
       <p className="muted" style={{ fontSize: 12, margin: '4px 0 0' }}>
         单击一行选中它作为同步根目录（文件或文件夹都可以）；双击文件夹进入，点面包屑回到当前文件夹。两边各自独立选。
+        勾选复选框可多选（Shift 连选、全选本页）：每项生成一个任务，文件夹包含其下全部内容。
       </p>
 
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 16 }}>
@@ -312,6 +418,25 @@ function SyncJobEditor({
               onChange={(e) => setExcludeText(e.target.value)}
               placeholder={'*.tmp\n.DS_Store\nnode_modules'}
             />
+            <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+              <button className="btn btn-sm" onClick={() => setExcludeText(DEFAULT_EXCLUDE_RULES.join('\n'))}>
+                恢复默认
+              </button>
+              <button className="btn btn-sm" onClick={() => setExcludeText('')}>
+                清空（全部同步）
+              </button>
+            </div>
+            {/* Plain-language notes for the default rules, so the
+                field is not just a string of symbols. The list
+                documents the defaults; the textarea above is what
+                actually runs (edit / delete freely). */}
+            <ul style={{ margin: '8px 0 0', paddingLeft: 16, fontSize: 12 }} className="muted">
+              {DEFAULT_EXCLUDE_RULES.map((r) => (
+                <li key={r} style={{ marginBottom: 2 }}>
+                  <code>{r}</code> — {EXCLUDE_RULE_NOTES[r]}
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
       </div>
@@ -365,16 +490,31 @@ function SyncJobEditor({
       {error && <div className="error-box">{error}</div>}
       {doneMsg && <div className="notice-box" style={{ borderColor: 'var(--brand)' }}>{doneMsg}</div>}
 
+      {isBatch && (
+        <div className="notice-box" style={{ borderColor: 'var(--brand)' }}>
+          多选批量创建：源已选 {srcMulti.length} 项、目标已选 {dstMulti.length} 项，将创建 {batchCount} 个任务（每项一个任务，文件夹包含其下全部内容）。
+          只创建、不运行——上面差异预览只对应根目录这一对，批量任务请在列表里逐个确认后再开始同步。
+        </div>
+      )}
+
       <div className="dialog-actions">
         <button className="btn" onClick={onCancel}>
           取消
         </button>
-        <button className="btn" disabled={busy} onClick={() => void handleSave()}>
-          保存任务
-        </button>
-        <button className="btn-primary" disabled={busy || planLoading} onClick={() => void handleRun()}>
-          {initial ? '保存并开始同步' : '创建并开始同步'}
-        </button>
+        {isBatch ? (
+          <button className="btn-primary" disabled={busy} onClick={() => void handleBatchCreate()}>
+            {busy ? '创建中…' : `创建 ${batchCount} 个任务`}
+          </button>
+        ) : (
+          <>
+            <button className="btn" disabled={busy} onClick={() => void handleSave()}>
+              保存任务
+            </button>
+            <button className="btn-primary" disabled={busy || planLoading} onClick={() => void handleRun()}>
+              {initial ? '保存并开始同步' : '创建并开始同步'}
+            </button>
+          </>
+        )}
       </div>
     </div>
   )
@@ -393,6 +533,7 @@ export default function SyncJobsPage({
   const [jobs, setJobs] = useState<SyncJob[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [info, setInfo] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [highlightId, setHighlightId] = useState<string | null>(null)
@@ -438,6 +579,23 @@ export default function SyncJobsPage({
     setTimeout(() => {
       highlightRef.current[saved.id]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     }, 100)
+  }
+
+  // Batch creation (multi-select): all created jobs land at once,
+  // the editor closes, the first new job is highlighted, and a
+  // notice says how many were created (they are created only —
+  // the user runs each from the list).
+  const afterBatchSaved = (created: SyncJob[]) => {
+    setJobs((prev) => [...prev, ...created])
+    setCreating(false)
+    setExpandedId(null)
+    setInfo(`已创建 ${created.length} 个同步任务（每项一个任务，文件夹包含其下全部内容）。只创建、没有运行：请逐个点“立即同步”，差异预览在每个任务里看。`)
+    if (created.length > 0) {
+      setHighlightId(created[0].id)
+      setTimeout(() => {
+        highlightRef.current[created[0].id]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }, 100)
+    }
   }
 
   const runNow = async (job: SyncJob) => {
@@ -496,6 +654,14 @@ export default function SyncJobsPage({
       </div>
 
       {error && <div className="error-box">{error}</div>}
+      {info && (
+        <div className="notice-box" style={{ borderColor: 'var(--brand)' }}>
+          {info}
+          <button className="btn btn-sm" style={{ marginLeft: 8 }} onClick={() => setInfo(null)}>
+            知道了
+          </button>
+        </div>
+      )}
 
       <Accordion open={creating}>
         <SyncJobEditor
@@ -504,6 +670,7 @@ export default function SyncJobsPage({
           agents={agents}
           defaultCompare={defaultCompare}
           onSaved={afterSaved}
+          onBatchSaved={afterBatchSaved}
           onCancel={() => setCreating(false)}
           onRan={onRan}
         />
@@ -587,6 +754,7 @@ export default function SyncJobsPage({
                   agents={agents}
                   defaultCompare={defaultCompare}
                   onSaved={afterSaved}
+                  onBatchSaved={afterBatchSaved}
                   onCancel={() => setExpandedId(null)}
                   onRan={onRan}
                 />

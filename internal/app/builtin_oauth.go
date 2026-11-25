@@ -1,8 +1,9 @@
 package app
 
 import (
+	_ "embed"
 	"encoding/json"
-	"os"
+	"log"
 	"strings"
 	"sync"
 
@@ -48,19 +49,24 @@ import (
 // (advanced fold) for that provider — never an error, never a
 // blank page.
 //
-// ── How a Client ID takes effect ───────────────────────────────
-// The constants below are the defaults (a developer edit, then
-// rebuild). To override one without rebuilding, drop a JSON file
-// named `oauth-clients.json` next to master.key in the config dir
-// (~/.config/zy-drive/oauth-clients.json):
-//   {"dropbox": "<App key>", "drive": "<Client ID>", "onedrive": "<应用程序（客户端）ID>"}
-// Keys are provider kinds; a non-empty value overrides the
-// builtin default for that provider, an absent/empty value keeps
-// the default. The file is read once at desktop startup
-// (cmd/desktop/main.go); unknown keys are ignored. Client IDs are
-// public identifiers, not secrets — they appear in the authorize
-// URL in the browser anyway — but the file still lives in the
-// config dir (0700), never in the repo.
+// ── Where the builtin IDs live ─────────────────────────────────
+// The source of truth is builtin-oauth-clients.json, next to this
+// file in the repo (plaintext — Client IDs are public identifiers,
+// not secrets; the file header says so). It is embedded into the
+// binary with go:embed, so the shipped app always carries it:
+// a developer edits that one file and rebuilds, no code change.
+// If the embedded file is missing or malformed, the constants
+// below (same values) stand in, so a bad edit can never break
+// startup. The full registration steps live in docs/oauth-apps/.
+//
+// A user's OWN app never lives here: it is stored separately in
+// <configDir>/custom-oauth-clients.json (internal/app/
+// custom_oauth.go), one entry per provider, and switching to it
+// in the wizard never touches the builtin values — switching back
+// to "官方应用" always finds them intact. The old
+// oauth-clients.json override file (which DID overwrite the
+// builtin per provider) is migrated away on startup, never
+// applied: see MigrateLegacyOAuthClients.
 //
 // ── Shared-client risk, stated plainly ─────────────────────────
 // A shared OAuth client is a single point of failure: if the
@@ -69,19 +75,19 @@ import (
 // 2026 for exactly this reason), one-click authorization breaks
 // for every user at once — while a self-built app keeps working,
 // because its quota and standing are the user's own. That is why
-// the self-built entry ("高级：用自己的应用") is permanent, is
-// never removed, and is one click away from the one-click button.
+// the self-built entry ("自己的应用") is permanent, is never
+// removed, and is one click away from the one-click button.
 // Users who hit limits or who prefer not to depend on the shared
 // app should use their own app.
 
-// builtinClientIDs are the ZyDrive official app Client IDs
-// shipped as defaults. All three providers are registered
-// (2026-11-25, app "ZyDrive-app" in all three consoles).
-// Leave a provider "" and the wizard falls back to the
-// self-built flow. oauth-clients.json can override any of these
-// per provider (non-empty values only); it never has to repeat
-// them.
-var builtinClientIDs = map[domain.ProviderKind]string{
+//go:embed builtin-oauth-clients.json
+var builtinOAuthClientsJSON []byte
+
+// builtinClientIDFallbacks are the same three Client IDs, as code
+// constants. They only stand in when the embedded JSON cannot be
+// read or parsed — the JSON file is the source of truth, these
+// are the safety net, and both must be kept in sync.
+var builtinClientIDFallbacks = map[domain.ProviderKind]string{
 	domain.ProviderDropbox:  "ocx73kxhcpga24m", // Dropbox App key, app "ZyDrive-app", Full Dropbox
 	domain.ProviderDrive:    "504630572830-9nkremocc6fsmbrg0lpk5n185ii4b447.apps.googleusercontent.com", // Google OAuth 客户端 ID, 应用类型“桌面应用”, app "ZyDrive-app"
 	domain.ProviderOneDrive: "367e206e-fdfb-4372-8380-7f795ee42533", // Azure 应用程序（客户端）ID, app "ZyDrive-app", 移动和桌面应用程序, http://localhost
@@ -93,51 +99,61 @@ var (
 )
 
 func init() {
-	for p, id := range builtinClientIDs {
-		if strings.TrimSpace(id) != "" {
-			builtinClients[p] = strings.TrimSpace(id)
-		}
-	}
+	builtinClients = loadBuiltinClients()
 }
 
-// LoadBuiltinOAuthClients applies an oauth-clients.json file (the
-// no-rebuild override path). A non-empty value overrides the
-// builtin default for that provider; an absent/empty value keeps
-// the default. Missing file: silently nothing (the defaults
-// stand). Malformed file: the error is returned and the caller
-// logs it — a bad file must never stop the app from starting,
-// and it must never silently enable a wrong client.
-func LoadBuiltinOAuthClients(path string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
+// loadBuiltinClients parses the embedded JSON; on any failure it
+// returns the code constants and logs why, so a bad edit to the
+// JSON file is loud but never fatal.
+func loadBuiltinClients() map[domain.ProviderKind]string {
+	return loadBuiltinClientsFrom(builtinOAuthClientsJSON)
+}
+
+// loadBuiltinClientsFrom is the testable core: the JSON bytes are
+// the source of truth, the code constants are the fallback.
+func loadBuiltinClientsFrom(raw []byte) map[domain.ProviderKind]string {
+	out := map[domain.ProviderKind]string{}
+	for p, id := range builtinClientIDFallbacks {
+		if strings.TrimSpace(id) != "" {
+			out[p] = strings.TrimSpace(id)
 		}
-		return err
+	}
+	if len(raw) == 0 {
+		return out
 	}
 	var file map[string]string
 	if err := json.Unmarshal(raw, &file); err != nil {
-		return err
+		log.Printf("builtin-oauth-clients.json: malformed (%v), using code constants", err)
+		return out
 	}
-	builtinMu.Lock()
-	defer builtinMu.Unlock()
 	for key, id := range file {
+		// Keys starting with "_" are comments/metadata, not providers.
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
 		p := domain.ProviderKind(strings.TrimSpace(key))
 		switch p {
 		case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderOneDrive:
 			if strings.TrimSpace(id) != "" {
-				builtinClients[p] = strings.TrimSpace(id)
+				out[p] = strings.TrimSpace(id)
+			} else {
+				delete(out, p)
 			}
+		default:
+			// Unknown keys are ignored, never an error.
 		}
 	}
-	return nil
+	return out
 }
 
 // BuiltinOAuthClientID returns the configured shared ZyDrive
 // OAuth Client ID for a provider, or "" when the official app is
 // not registered yet. The wizard treats "" as "offer the
 // self-built flow only". Client IDs are public, so returning one
-// to the frontend is safe; there is never a secret here.
+// to the frontend is safe; there is never a secret here. A user's
+// own app never changes this value — it lives in the separate
+// custom store (custom_oauth.go) and the wizard picks between
+// the two explicitly.
 func (a *App) BuiltinOAuthClientID(provider domain.ProviderKind) string {
 	builtinMu.RLock()
 	defer builtinMu.RUnlock()

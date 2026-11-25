@@ -148,6 +148,18 @@ export interface Caps {
 export type CompareMode = "size+time" | "size" | "checksum";
 
 /**
+ * CustomOAuthApp is one provider's user-owned OAuth app. The
+ * Secret travels in memory only, from this store to the wizard
+ * form to the token exchange; it is never stored in plaintext.
+ */
+export interface CustomOAuthApp {
+  clientId: string;
+  /** in-memory only */
+  clientSecret?: string;
+  hasSecret: boolean;
+}
+
+/**
  * Mount is one account of one cloud as shown in the left sidebar, e.g.
  * "工作 Drive". The UI is organised by Mount, not by vendor: one account
  * may expose several mounts (e.g. two S3 buckets as two entries).
@@ -556,10 +568,24 @@ export const DesktopService = {
    * instant feedback in the Settings page before saving.
    */
   checkDownloadDir: bind<[string], void>("DesktopService.CheckDownloadDir", (path: string) => [path]),
+  /**
+   * DeleteCustomOAuthApp removes the user's own OAuth app for a
+   * provider. The builtin official app is untouched — the wizard
+   * falls back to it immediately.
+   */
+  deleteCustomOAuthApp: bind<[ProviderKind], void>("DesktopService.DeleteCustomOAuthApp", (provider: ProviderKind) => [provider]),
   /** DeleteSyncJob removes a saved sync job. It never touches cloud data. */
   deleteSyncJob: bind<[string], void>("DesktopService.DeleteSyncJob", (id: string) => [id]),
   /** ExchangeOAuthCode swaps a pasted authorization code for tokens. */
   exchangeOAuthCode: bind<[ProviderKind, string, string, string, string, string], OAuthTokens | null>("DesktopService.ExchangeOAuthCode", (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) => [provider, clientID, clientSecret, code, state, tokenURL]),
+  /**
+   * GetCustomOAuthApp returns the user's own saved OAuth app for a
+   * provider (separate store, never the builtin), or nil when none
+   * is saved. The secret, when one is saved, comes back in memory
+   * only — it is the user's own credential, for the wizard to pass
+   * to the exchange; it is never logged or written out unencrypted.
+   */
+  getCustomOAuthApp: bind<[ProviderKind], CustomOAuthApp | null>("DesktopService.GetCustomOAuthApp", (provider: ProviderKind) => [provider]),
   /**
    * GetOpenAtLogin reports whether the app starts at login (mygo).
    * Errors in the dev shell / non-packaged runs, where mygo cannot
@@ -607,6 +633,13 @@ export const DesktopService = {
   runSync: bind<[SyncJob | null, Plan | null], Run | null>("DesktopService.RunSync", (job: SyncJob | null, plan: Plan | null) => [job, plan]),
   /** SaveAgent adds or edits an Agent (name/address), persisting it. */
   saveAgent: bind<[Agent | null], Agent | null>("DesktopService.SaveAgent", (ag: Agent | null) => [ag]),
+  /**
+   * SaveCustomOAuthApp stores the user's own OAuth app for a
+   * provider (Client ID in plaintext, Secret encrypted with the
+   * master key). It never touches the builtin official apps.
+   * An empty Client ID deletes the saved app instead.
+   */
+  saveCustomOAuthApp: bind<[ProviderKind, string, string], void>("DesktopService.SaveCustomOAuthApp", (provider: ProviderKind, clientID: string, clientSecret: string) => [provider, clientID, clientSecret]),
   /**
    * SaveSettings validates and persists the whole settings struct.
    * An invalid download folder (or enum value) fails the whole save.

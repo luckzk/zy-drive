@@ -57,16 +57,65 @@ func scanInto(ctx context.Context, p storage.Provider, ref, prefix string, snap 
 
 // Matches reports whether a path passes the exclude patterns.
 // Patterns are matched against the base name and the full path.
+// Two pattern shapes get directory semantics, because that is what
+// users mean when they write them:
+//
+//   - A trailing slash (".git/", "node_modules/") names a
+//     directory: the directory itself and everything under it,
+//     at any depth, is excluded. (Before v0.8.3 the trailing
+//     slash never matched anything: path.Match needs a full-string
+//     match, and neither the base name nor the full path ends in
+//     "/".)
+//   - A bare name with no glob characters and no slash
+//     ("node_modules", ".DS_Store") matches when ANY path segment
+//     equals it, so a directory named that way excludes its whole
+//     subtree too — not just a file of that name.
+//
+// Glob patterns ("*.tmp", "._*", "~$*") keep the old behavior:
+// path.Match against the base name and the full path.
 func Matches(pathStr string, patterns []string) bool {
 	base := path.Base(pathStr)
 	for _, pat := range patterns {
 		if pat == "" {
 			continue
 		}
+		// Directory pattern: trailing "/" names a directory and
+		// everything under it, at any depth.
+		if strings.HasSuffix(pat, "/") {
+			if dirNameMatches(pathStr, strings.TrimSuffix(pat, "/")) {
+				return true
+			}
+			continue
+		}
+		// Bare name (no glob meta, no "/"): matches when any path
+		// segment equals it — a directory of that name excludes
+		// its whole subtree.
+		if !strings.ContainsAny(pat, "*?[\\") && !strings.Contains(pat, "/") {
+			if dirNameMatches(pathStr, pat) {
+				return true
+			}
+			continue
+		}
 		if ok, _ := path.Match(pat, base); ok {
 			return true
 		}
 		if ok, _ := path.Match(pat, pathStr); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// dirNameMatches reports whether any segment of pathStr equals name
+// (so "node_modules" matches "node_modules", "a/node_modules/b.js"
+// and "a/node_modules" alike). The base name alone is not enough:
+// a file deep under an excluded directory must match too.
+func dirNameMatches(pathStr, name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, seg := range strings.Split(pathStr, "/") {
+		if seg == name {
 			return true
 		}
 	}

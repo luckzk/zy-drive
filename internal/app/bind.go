@@ -166,6 +166,30 @@ func (s *DesktopService) BuiltinOAuthClientID(provider domain.ProviderKind) stri
 	return s.app.BuiltinOAuthClientID(provider)
 }
 
+// GetCustomOAuthApp returns the user's own saved OAuth app for a
+// provider (separate store, never the builtin), or nil when none
+// is saved. The secret, when one is saved, comes back in memory
+// only — it is the user's own credential, for the wizard to pass
+// to the exchange; it is never logged or written out unencrypted.
+func (s *DesktopService) GetCustomOAuthApp(provider domain.ProviderKind) *CustomOAuthApp {
+	return s.app.GetCustomOAuthApp(provider)
+}
+
+// SaveCustomOAuthApp stores the user's own OAuth app for a
+// provider (Client ID in plaintext, Secret encrypted with the
+// master key). It never touches the builtin official apps.
+// An empty Client ID deletes the saved app instead.
+func (s *DesktopService) SaveCustomOAuthApp(provider domain.ProviderKind, clientID, clientSecret string) error {
+	return s.app.SaveCustomOAuthApp(provider, clientID, clientSecret)
+}
+
+// DeleteCustomOAuthApp removes the user's own OAuth app for a
+// provider. The builtin official app is untouched — the wizard
+// falls back to it immediately.
+func (s *DesktopService) DeleteCustomOAuthApp(provider domain.ProviderKind) error {
+	return s.app.DeleteCustomOAuthApp(provider)
+}
+
 // ExchangeOAuthCode swaps a pasted authorization code for tokens.
 func (s *DesktopService) ExchangeOAuthCode(ctx context.Context, provider domain.ProviderKind, clientID, clientSecret, code, state, tokenURL string) (*OAuthTokens, error) {
 	return s.app.ExchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL)

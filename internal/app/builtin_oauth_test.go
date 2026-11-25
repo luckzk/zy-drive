@@ -1,8 +1,6 @@
 package app
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/luckzk/zy-drive/internal/domain"
@@ -10,9 +8,10 @@ import (
 
 // TestBuiltinOAuthClientID: the shipped defaults are the three
 // registrations the user completed 2026-11-25 (Dropbox, Drive
-// and OneDrive, app "ZyDrive-app" in all three consoles). A
-// loaded oauth-clients.json overrides exactly the providers it
-// names (non-empty values), and unknown keys are ignored.
+// and OneDrive, app "ZyDrive-app" in all three consoles). They
+// come from the embedded builtin-oauth-clients.json (with the
+// code constants as fallback), and a user's own app never changes
+// them — see TestCustomOAuthAppNeverTouchesBuiltin.
 func TestBuiltinOAuthClientID(t *testing.T) {
 	a := newTestApp(t)
 	if got := a.BuiltinOAuthClientID(domain.ProviderDropbox); got != "ocx73kxhcpga24m" {
@@ -24,73 +23,37 @@ func TestBuiltinOAuthClientID(t *testing.T) {
 	if got := a.BuiltinOAuthClientID(domain.ProviderOneDrive); got != "367e206e-fdfb-4372-8380-7f795ee42533" {
 		t.Fatalf("BuiltinOAuthClientID(onedrive) = %q, want the ZyDrive-app Azure Client ID", got)
 	}
+	// Drime has no builtin OAuth app (PAT-only in the wizard).
+	if got := a.BuiltinOAuthClientID(domain.ProviderDrime); got != "" {
+		t.Fatalf("BuiltinOAuthClientID(drime) = %q, want empty (no builtin Drime app)", got)
+	}
+}
 
-	// Save/restore: builtinClients is process-wide; a test that
-	// fills it must not leak into other tests' fallback assertions.
-	builtinMu.Lock()
-	saved := builtinClients
-	builtinClients = map[domain.ProviderKind]string{}
-	builtinMu.Unlock()
-	defer func() {
-		builtinMu.Lock()
-		builtinClients = saved
-		builtinMu.Unlock()
-	}()
-
-	dir := t.TempDir()
-	// Unknown keys are ignored; a provider left out keeps its
-	// builtin default (here: drive is not in the file, and the
-	// map was reset, so drive stays "" in this isolated run —
-	// the point is the file does not touch providers it omits).
-	if err := os.WriteFile(filepath.Join(dir, "oauth-clients.json"),
-		[]byte(`{"dropbox": "dbx-app-key", "unknown-provider": "x"}`), 0o600); err != nil {
-		t.Fatalf("write oauth-clients.json: %v", err)
+// TestLoadBuiltinClientsJSON: the embedded JSON is the source of
+// truth; "_comment" keys are ignored, unknown providers are
+// ignored, an empty value clears that provider, and a malformed
+// file falls back to the code constants instead of failing.
+func TestLoadBuiltinClientsJSON(t *testing.T) {
+	good := loadBuiltinClientsFrom([]byte(`{"_comment": "note", "dropbox": "dbx-key", "drive": "", "unknown": "x", "onedrive": "ms-id"}`))
+	if got := good[domain.ProviderDropbox]; got != "dbx-key" {
+		t.Fatalf("dropbox = %q, want dbx-key", got)
 	}
-	if err := LoadBuiltinOAuthClients(filepath.Join(dir, "oauth-clients.json")); err != nil {
-		t.Fatalf("LoadBuiltinOAuthClients: %v", err)
+	if _, ok := good[domain.ProviderDrive]; ok {
+		t.Fatalf("drive should be cleared by an empty value, got %q", good[domain.ProviderDrive])
 	}
-	if got := a.BuiltinOAuthClientID(domain.ProviderDropbox); got != "dbx-app-key" {
-		t.Fatalf("BuiltinOAuthClientID(dropbox) = %q, want dbx-app-key (file overrides the builtin default)", got)
+	if got := good[domain.ProviderOneDrive]; got != "ms-id" {
+		t.Fatalf("onedrive = %q, want ms-id", got)
 	}
-	if got := a.BuiltinOAuthClientID(domain.ProviderDrive); got != "" {
-		t.Fatalf("BuiltinOAuthClientID(drive) = %q, want empty (not in the file, map was reset)", got)
-	}
-	// A malformed file is an error, never a silent partial load.
-	if err := os.WriteFile(filepath.Join(dir, "bad.json"), []byte(`{not json`), 0o600); err != nil {
-		t.Fatalf("write bad.json: %v", err)
-	}
-	if err := LoadBuiltinOAuthClients(filepath.Join(dir, "bad.json")); err == nil {
-		t.Fatalf("malformed oauth-clients.json: want an error")
-	}
-	// A missing file is simply "not configured".
-	if err := LoadBuiltinOAuthClients(filepath.Join(dir, "missing.json")); err != nil {
-		t.Fatalf("missing oauth-clients.json: %v", err)
+	if len(good) != 2 {
+		t.Fatalf("want exactly 2 providers after ignoring _comment/unknown, got %v", good)
 	}
 
-	// Override semantics with the builtin defaults in place: a
-	// file naming only OneDrive must leave the Dropbox/Drive
-	// defaults untouched.
-	builtinMu.Lock()
-	builtinClients = map[domain.ProviderKind]string{
-		domain.ProviderDropbox:  "ocx73kxhcpga24m",
-		domain.ProviderDrive:    "504630572830-9nkremocc6fsmbrg0lpk5n185ii4b447.apps.googleusercontent.com",
-		domain.ProviderOneDrive: "",
+	// Malformed JSON: the constants stand in (all three present).
+	bad := loadBuiltinClientsFrom([]byte(`{not json`))
+	if len(bad) != 3 {
+		t.Fatalf("malformed JSON should fall back to 3 constants, got %v", bad)
 	}
-	builtinMu.Unlock()
-	if err := os.WriteFile(filepath.Join(dir, "override.json"),
-		[]byte(`{"onedrive": "ms-app-id"}`), 0o600); err != nil {
-		t.Fatalf("write override.json: %v", err)
-	}
-	if err := LoadBuiltinOAuthClients(filepath.Join(dir, "override.json")); err != nil {
-		t.Fatalf("LoadBuiltinOAuthClients override: %v", err)
-	}
-	if got := a.BuiltinOAuthClientID(domain.ProviderOneDrive); got != "ms-app-id" {
-		t.Fatalf("BuiltinOAuthClientID(onedrive) = %q, want ms-app-id", got)
-	}
-	if got := a.BuiltinOAuthClientID(domain.ProviderDropbox); got != "ocx73kxhcpga24m" {
-		t.Fatalf("BuiltinOAuthClientID(dropbox) = %q, want the builtin default kept", got)
-	}
-	if got := a.BuiltinOAuthClientID(domain.ProviderDrive); got != "504630572830-9nkremocc6fsmbrg0lpk5n185ii4b447.apps.googleusercontent.com" {
-		t.Fatalf("BuiltinOAuthClientID(drive) = %q, want the builtin default kept", got)
+	if bad[domain.ProviderDropbox] != "ocx73kxhcpga24m" {
+		t.Fatalf("malformed fallback dropbox = %q, want the builtin default", bad[domain.ProviderDropbox])
 	}
 }

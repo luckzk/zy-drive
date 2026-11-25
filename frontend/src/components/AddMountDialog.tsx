@@ -7,12 +7,18 @@
 //        browser jumps back with the code automatically — the
 //        frontend polls PollOAuthCallback and exchanges without
 //        the user copying anything; manual code paste stays as
-//        the fallback. (B) if a builtin ZyDrive official Client
-//        ID is configured, a one-click card ("用 ZyDrive 官方应用
-//        授权") is the primary path and the self-built app form
-//        lives in an "高级" fold; without a builtin ID the
-//        self-built form shows directly — never an error, never
-//        a blank page.
+//        the fallback. (B) the authorization source is an
+//        explicit two-choice card row — "官方应用（一键授权）"
+//        vs "自己的应用" — never a <details> triangle fold:
+//        the builtin ZyDrive official Client ID is the primary
+//        path, the user's own app (stored separately in
+//        custom-oauth-clients.json, never overwriting the
+//        builtin) is the second card; switching back to official
+//        always finds the builtin intact. Without a builtin ID
+//        the official card is disabled and "自己的应用" is the
+//        default — never an error, never a blank page. The
+//        per-provider app-console guide is an always-visible
+//        info box, also never a <details> fold.
 //      - Key-based (S3 / Drime / local folder): (C) one page —
 //        fields + "测试连接" + "保存" on the same page, no step 3.
 //        Saving is never blocked by the probe any more: a passed
@@ -22,6 +28,11 @@
 //   3. OAuth only: test & save — the backend probes the root
 //      listing first and only persists when the probe succeeds,
 //      so a failed test never saves a broken mount.
+//
+// Dialog layout: .dialog-flex — the title and the footer stay
+// fixed; only the .dialog-body scrolls. Step 1's provider grid
+// is never covered by the footer, and long step-2 forms scroll
+// to the bottom with the buttons always visible.
 //
 // Dropbox / Drive / OneDrive auth, in order of preference:
 //   a. One-click (builtin ZyDrive official app, public client +
@@ -43,7 +54,7 @@
 // Credentials are typed on the user's own Mac, encrypted at rest
 // (AES-256-GCM, master key in the config dir), and never uploaded.
 import { useEffect, useRef, useState } from 'react'
-import type { AddMountInput, Mount, ProviderKind } from '../mygo'
+import type { AddMountInput, CustomOAuthApp, Mount, ProviderKind } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { useClosing } from './motion'
 import { BrandLogo, IconCheck } from './icons'
@@ -233,6 +244,19 @@ export default function AddMountDialog({
   // (B) builtin one-click client id: null = not loaded yet,
   // '' = official app not registered (self-built flow only).
   const [builtinClientId, setBuiltinClientId] = useState<string | null>(null)
+  // (B) which app to authorize with — an explicit two-choice
+  // card row, never a fold: 'builtin' = the ZyDrive official
+  // app (one-click), 'custom' = the user's own app, stored
+  // separately and never overwriting the builtin. Default is
+  // builtin; when no builtin is configured it flips to custom.
+  const [appSource, setAppSource] = useState<'builtin' | 'custom'>('builtin')
+  // The user's own saved app for this provider (null = none
+  // saved yet). The secret comes back in memory only, to prefill
+  // the form for the exchange; it is never persisted by the
+  // frontend anywhere.
+  const [customApp, setCustomApp] = useState<CustomOAuthApp | null>(null)
+  const [customSavedMsg, setCustomSavedMsg] = useState<string | null>(null)
+  const [confirmDeleteCustom, setConfirmDeleteCustom] = useState(false)
   // The Client ID / Secret the current authorize link was built
   // with: the exchange must use these, not whatever the form
   // holds now (the one-click flow never fills the form fields).
@@ -288,8 +312,11 @@ export default function AddMountDialog({
   )
 
   // Entering the OAuth step: ask the backend whether a builtin
-  // ZyDrive official Client ID is configured, and reset any
-  // leftover authorize state from a previous provider.
+  // ZyDrive official Client ID is configured and whether the user
+  // has saved their own app for this provider, and reset any
+  // leftover authorize state from a previous provider. Default
+  // source is the official app; when no builtin is configured
+  // it flips to "自己的应用" so the step is never a dead end.
   useEffect(() => {
     if (step !== 2 || !isOAuthProvider(provider)) return
     stopWaiting(false)
@@ -297,10 +324,24 @@ export default function AddMountDialog({
     setCode('')
     setOauthMsg(null)
     setBuiltinClientId(null)
+    setCustomApp(null)
+    setCustomSavedMsg(null)
+    setConfirmDeleteCustom(false)
+    setAppSource('builtin')
     void api
       .builtinOAuthClientID(provider)
-      .then((id) => setBuiltinClientId(id ?? ''))
-      .catch(() => setBuiltinClientId(''))
+      .then((id) => {
+        setBuiltinClientId(id ?? '')
+        if (!id) setAppSource('custom')
+      })
+      .catch(() => {
+        setBuiltinClientId('')
+        setAppSource('custom')
+      })
+    void api
+      .getCustomOAuthApp(provider)
+      .then((c) => setCustomApp(c ?? null))
+      .catch(() => setCustomApp(null))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, provider])
 
@@ -523,7 +564,87 @@ export default function AddMountDialog({
     }
   }
 
-  // The self-built app form (B, "高级"): per-provider fields,
+  // Switching the authorization source: drop any half-built
+  // authorize link (its Client ID belongs to the other source),
+  // then fill the form from the chosen source — builtin needs no
+  // form fields, custom prefills from the saved own app. The
+  // builtin is never written to by this switch.
+  const pickAppSource = (src: 'builtin' | 'custom') => {
+    stopWaiting(false)
+    setAuthUrl('')
+    setCode('')
+    setOauthMsg(null)
+    setCustomSavedMsg(null)
+    setConfirmDeleteCustom(false)
+    setAppSource(src)
+    if (src === 'custom') {
+      setClientId(customApp?.clientId ?? '')
+      setClientSecret(customApp?.clientSecret ?? '')
+    } else {
+      setClientId('')
+      setClientSecret('')
+    }
+  }
+
+  // Save the form's Client ID / Secret as "我的应用" for this
+  // provider (separate store, encrypted Secret). The builtin
+  // official app is untouched.
+  const saveCustomApp = async () => {
+    if (!provider || !isOAuthProvider(provider)) return
+    if (!clientId.trim()) {
+      setCustomSavedMsg('请先填 Client ID，才能保存为“我的应用”。')
+      return
+    }
+    try {
+      await api.saveCustomOAuthApp(provider, clientId.trim(), clientSecret)
+      setCustomApp({ clientId: clientId.trim(), clientSecret, hasSecret: clientSecret.trim() !== '' })
+      setCustomSavedMsg('已保存为“我的应用”：下次添加这个网盘时，选“自己的应用”就能直接用，不用再填。')
+    } catch (e) {
+      setCustomSavedMsg(friendlyError(e))
+    }
+  }
+
+  // Delete the saved own app (two clicks). The builtin official
+  // app is untouched — one-click authorization keeps working.
+  const deleteCustomApp = async () => {
+    if (!provider || !isOAuthProvider(provider)) return
+    if (!confirmDeleteCustom) {
+      setConfirmDeleteCustom(true)
+      return
+    }
+    try {
+      await api.deleteCustomOAuthApp(provider)
+      setCustomApp(null)
+      setClientId('')
+      setClientSecret('')
+      setConfirmDeleteCustom(false)
+      setCustomSavedMsg('已删除“我的应用”，一键授权（官方应用）不受影响。')
+    } catch (e) {
+      setCustomSavedMsg(friendlyError(e))
+      setConfirmDeleteCustom(false)
+    }
+  }
+
+  // The Access / Refresh Token fields, shared by both views:
+  // the one-click view shows them once the exchange filled them
+  // (the user sees what was obtained, and can paste a different
+  // token by hand), and the self-built form shows them always.
+  // Both renderings bind the same state, so switching views never
+  // loses the tokens.
+  const tokenFields = (
+    <>
+      <div className="field">
+        <label>Access Token（已通过授权码换取会自动填上；也可直接粘贴）</label>
+        <input className="input" type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
+      </div>
+      <div className="field">
+        <label>Refresh Token（长期有效；有它过期后会自动刷新）</label>
+        <input className="input" type="password" autoComplete="off" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} />
+      </div>
+    </>
+  )
+
+  // The self-built app form (B, "自己的应用"): per-provider fields,
   // guide, scopes and paste hints — the same JSX whether it is
   // shown directly (no builtin client configured) or inside the
   // "高级：用自己的应用" fold (builtin one-click is primary).
@@ -535,16 +656,19 @@ export default function AddMountDialog({
           with Drive/OneDrive, never the fields or copy. */}
       {provider === 'dropbox' && (
         <>
-          <details style={{ marginBottom: 12 }}>
-            <summary style={{ cursor: 'pointer' }}>{OAUTH_HELP.dropbox.title}</summary>
-            <ol style={{ margin: '8px 0', paddingLeft: 20 }}>
+          {/* The app-console guide is always visible (no triangle
+              fold): a user building their own app needs the steps
+              in front of them, not hidden behind a click. */}
+          <div className="notice-box" style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 4 }}>{OAUTH_HELP.dropbox.title}</div>
+            <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
               {OAUTH_HELP.dropbox.steps.map((s, i) => (
                 <li key={i} className="muted" style={{ marginBottom: 4 }}>
                   {s}
                 </li>
               ))}
             </ol>
-          </details>
+          </div>
           <div className="field">
             <label>App key（就是 Client ID）</label>
             <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
@@ -565,14 +689,7 @@ export default function AddMountDialog({
             genAuthLink={() => void genAuthLink(clientId, clientSecret)}
             exchangeCode={() => void exchangeCode()}
           />
-          <div className="field">
-            <label>Access Token（已通过授权码换取会自动填上；也可直接粘贴）</label>
-            <input className="input" type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Refresh Token（长期有效；有它过期后会自动刷新）</label>
-            <input className="input" type="password" autoComplete="off" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} />
-          </div>
+          {tokenFields}
           <p className="muted">
             直接粘贴也可以：Dropbox App Console → 应用 → Settings → 生成的访问令牌（短期，几小时过期）；要长期有效请走上面的授权码流程拿 Refresh Token。
           </p>
@@ -583,16 +700,17 @@ export default function AddMountDialog({
           from Google Cloud Console, Drive scope, Playground hint. */}
       {provider === 'drive' && (
         <>
-          <details style={{ marginBottom: 12 }}>
-            <summary style={{ cursor: 'pointer' }}>{OAUTH_HELP.drive.title}</summary>
-            <ol style={{ margin: '8px 0', paddingLeft: 20 }}>
+          {/* The app-console guide is always visible (no triangle fold). */}
+          <div className="notice-box" style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 4 }}>{OAUTH_HELP.drive.title}</div>
+            <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
               {OAUTH_HELP.drive.steps.map((s, i) => (
                 <li key={i} className="muted" style={{ marginBottom: 4 }}>
                   {s}
                 </li>
               ))}
             </ol>
-          </details>
+          </div>
           <div className="field">
             <label>OAuth 客户端 ID</label>
             <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
@@ -613,14 +731,7 @@ export default function AddMountDialog({
             genAuthLink={() => void genAuthLink(clientId, clientSecret)}
             exchangeCode={() => void exchangeCode()}
           />
-          <div className="field">
-            <label>Access Token（已通过授权码换取会自动填上；也可直接粘贴）</label>
-            <input className="input" type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Refresh Token（长期有效；有它过期后会自动刷新）</label>
-            <input className="input" type="password" autoComplete="off" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} />
-          </div>
+          {tokenFields}
           <p className="muted">
             直接粘贴也可以：Refresh Token 可在 Google OAuth Playground（需选 Drive 权限、勾选 offline）里拿到；只有 Access Token 的话过期后需重新授权。
           </p>
@@ -632,16 +743,17 @@ export default function AddMountDialog({
           so the secret is optional. Graph scopes, not Drive's. */}
       {provider === 'onedrive' && (
         <>
-          <details style={{ marginBottom: 12 }}>
-            <summary style={{ cursor: 'pointer' }}>{OAUTH_HELP.onedrive.title}</summary>
-            <ol style={{ margin: '8px 0', paddingLeft: 20 }}>
+          {/* The app-console guide is always visible (no triangle fold). */}
+          <div className="notice-box" style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 4 }}>{OAUTH_HELP.onedrive.title}</div>
+            <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
               {OAUTH_HELP.onedrive.steps.map((s, i) => (
                 <li key={i} className="muted" style={{ marginBottom: 4 }}>
                   {s}
                 </li>
               ))}
             </ol>
-          </details>
+          </div>
           <div className="field">
             <label>应用程序（客户端）ID</label>
             <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
@@ -662,14 +774,7 @@ export default function AddMountDialog({
             genAuthLink={() => void genAuthLink(clientId, clientSecret)}
             exchangeCode={() => void exchangeCode()}
           />
-          <div className="field">
-            <label>Access Token（已通过授权码换取会自动填上；也可直接粘贴）</label>
-            <input className="input" type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
-          </div>
-          <div className="field">
-            <label>Refresh Token（长期有效；有它过期后会自动刷新）</label>
-            <input className="input" type="password" autoComplete="off" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} />
-          </div>
+          {tokenFields}
           <p className="muted">
             直接粘贴也可以：Refresh Token 可在 Microsoft 的 OAuth 授权流程里拿到（权限须含 offline_access）；只有 Access Token 的话过期后需重新授权。
           </p>
@@ -680,7 +785,7 @@ export default function AddMountDialog({
 
   return (
     <div className={`dialog-backdrop${closing ? ' closing' : ''}`} onClick={requestClose}>
-      <div className={`dialog dialog-wide${closing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+      <div className={`dialog dialog-wide dialog-flex${closing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
         <h1>添加网盘</h1>
         <p className="muted" style={{ margin: '0 0 12px' }}>
           第 {step} 步 / 共 {totalSteps} 步：{stepLabel}
@@ -688,6 +793,10 @@ export default function AddMountDialog({
 
         {step === 1 && (
           <>
+            {/* The grid lives in .dialog-body: it scrolls on its
+                own, the footer stays fixed below it, so the last
+                row is never covered by the button bar. */}
+            <div className="dialog-body">
             {/* Prototype Demo v8 .pickgrid: two-column grid of big-logo
                 cards (32px brand logo + name + one-line sub), the
                 whole card clickable; selected = brand-green border +
@@ -721,6 +830,7 @@ export default function AddMountDialog({
                 </button>
               ))}
             </div>
+            </div>
             <div className="dialog-actions">
               <button className="btn" onClick={requestClose}>
                 取消
@@ -734,6 +844,7 @@ export default function AddMountDialog({
 
         {step === 2 && chosen && isKeyProvider(provider) && (
           <>
+            <div className="dialog-body">
             {/* (C) one-page form: fields + test + save on the same
                 page. No step 3 for S3 / Drime / local. */}
             <div className="field">
@@ -820,6 +931,7 @@ export default function AddMountDialog({
                 : '测试通过 → 点保存即存为已验证；没测或测试失败也能保存，会标成“未验证”，之后在设置页 → 网盘 → 重新测试。'}
             </p>
             <div className="notice-box">凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。</div>
+            </div>
             <div className="dialog-actions">
               <button className="btn" disabled={saving || testState === 'testing'} onClick={() => setStep(1)}>
                 上一步
@@ -839,6 +951,7 @@ export default function AddMountDialog({
 
         {step === 2 && chosen && isOAuthProvider(provider) && (
           <>
+            <div className="dialog-body">
             <div className="field">
               <label>名字</label>
               <input className="input" placeholder="例如：工作 Drive、R2 备份" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
@@ -848,54 +961,110 @@ export default function AddMountDialog({
               <input className="input" placeholder="例如：工作、个人，留空为“未分组”" value={group} onChange={(e) => setGroup(e.target.value)} />
             </div>
 
-            {/* (B) one-click with the builtin ZyDrive official app.
-                Shown only when a builtin Client ID is configured;
-                otherwise the notice below explains why, and the
-                self-built form is the whole step. */}
-            {builtinClientId !== null && builtinClientId !== '' && (
-              <>
-                <div className="notice-box" style={{ borderColor: 'var(--brand)' }}>
-                  <div style={{ marginBottom: 4 }}>一键授权（ZyDrive 官方应用）</div>
-                  <p className="muted" style={{ margin: '0 0 8px' }}>
-                    不用自己建应用：点授权，在浏览器里登录点允许，code 会自动跳回、自动换 Token。
-                  </p>
-                  <OAuthCodeFlow
-                    authUrl={authUrl}
-                    code={code}
-                    setCode={setCode}
-                    oauthBusy={oauthBusy}
-                    oauthMsg={oauthMsg}
-                    waiting={waiting}
-                    onCancelWait={() => stopWaiting(true)}
-                    genAuthLink={() => void genAuthLink(builtinClientId, '')}
-                    exchangeCode={() => void exchangeCode()}
-                    generateLabel="打开浏览器授权"
-                    generatePrimary
-                  />
-                  <p className="muted" style={{ margin: '8px 0 0' }}>
-                    用的是 ZyDrive 官方共享应用（公开客户端，PKCE，不带 Secret）。共享应用有被限流或停用的风险（rclone
-                    的共享客户端正在被逐步停用），想完全自己掌控就用下面的“高级：用自己的应用”。
-                  </p>
-                </div>
-              </>
+            {/* (B) 授权方式二选一：两个并排的选项卡片，与第 1 步
+                大图标网格的选中态一致（品牌绿边框 + 淡绿底 +
+                勾选标记），没有三角折叠。默认官方应用；没有配
+                置官方应用时官方卡片置灰、默认选“自己的应用”。
+                切到自己的应用只用单独存的那份，内置官方应用
+                不受影响，切回来就恢复。 */}
+            <div className="provider-grid" style={{ marginBottom: 12 }}>
+              <button
+                type="button"
+                className={`provider-card${appSource === 'builtin' ? ' selected' : ''}`}
+                aria-pressed={appSource === 'builtin'}
+                disabled={builtinClientId === ''}
+                onClick={() => pickAppSource('builtin')}
+              >
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span className="provider-name">官方应用（一键授权）</span>
+                  <span className="provider-sub" style={{ display: 'block' }}>
+                    {builtinClientId === '' ? '这个网盘的官方应用还没注册好' : '不用自己建应用，点授权就好'}
+                  </span>
+                </span>
+                {appSource === 'builtin' && (
+                  <span className="provider-check" aria-label="已选">
+                    <IconCheck />
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                className={`provider-card${appSource === 'custom' ? ' selected' : ''}`}
+                aria-pressed={appSource === 'custom'}
+                onClick={() => pickAppSource('custom')}
+              >
+                <span style={{ flex: 1, minWidth: 0 }}>
+                  <span className="provider-name">自己的应用</span>
+                  <span className="provider-sub" style={{ display: 'block' }}>
+                    {customApp ? `已保存 ${customApp.clientId}` : '用自己在控制台建的应用，存在本机'}
+                  </span>
+                </span>
+                {appSource === 'custom' && (
+                  <span className="provider-check" aria-label="已选">
+                    <IconCheck />
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {appSource === 'builtin' && builtinClientId !== null && builtinClientId !== '' && (
+              <div className="notice-box" style={{ borderColor: 'var(--brand)' }}>
+                <div style={{ marginBottom: 4 }}>一键授权（ZyDrive 官方应用）</div>
+                <p className="muted" style={{ margin: '0 0 8px' }}>
+                  不用自己建应用：点授权，在浏览器里登录点允许，code 会自动跳回、自动换 Token。
+                </p>
+                <OAuthCodeFlow
+                  authUrl={authUrl}
+                  code={code}
+                  setCode={setCode}
+                  oauthBusy={oauthBusy}
+                  oauthMsg={oauthMsg}
+                  waiting={waiting}
+                  onCancelWait={() => stopWaiting(true)}
+                  genAuthLink={() => void genAuthLink(builtinClientId, '')}
+                  exchangeCode={() => void exchangeCode()}
+                  generateLabel="打开浏览器授权"
+                  generatePrimary
+                />
+                {tokenFields}
+                <p className="muted" style={{ margin: '8px 0 0' }}>
+                  用的是 ZyDrive 官方共享应用（公开客户端，PKCE，不带 Secret）。共享应用有被限流或停用的风险（rclone
+                  的共享客户端正在被逐步停用），想完全自己掌控就用“自己的应用”。
+                </p>
+              </div>
             )}
-            {builtinClientId === '' && (
+            {appSource === 'builtin' && builtinClientId === '' && (
               <div className="notice-box">
-                一键授权还没配置：这个网盘的 ZyDrive 官方应用还没注册好，下面先用自己的应用走授权；注册好后这里会出现一键授权按钮。
+                一键授权还没配置：这个网盘的 ZyDrive 官方应用还没注册好，请选“自己的应用”走授权；注册好后这里会出现一键授权按钮。
               </div>
             )}
 
-            {builtinClientId !== null && builtinClientId !== '' ? (
-              <details className="settings-advanced">
-                <summary>高级：用自己的应用（Client ID / Secret）</summary>
-                <div style={{ marginTop: 12 }}>{selfBuiltForm}</div>
-              </details>
-            ) : (
-              selfBuiltForm
+            {appSource === 'custom' && (
+              <>
+                {customApp && (
+                  <div className="notice-box" style={{ marginBottom: 12 }}>
+                    已保存“我的应用”（Client ID：{customApp.clientId}
+                    {customApp.hasSecret ? '，密钥已保存' : ''}）。下面改了字段后点“保存为我的应用”更新；删掉它也不会影响一键授权。
+                  </div>
+                )}
+                {selfBuiltForm}
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <button className="btn" onClick={() => void saveCustomApp()}>
+                    保存为我的应用
+                  </button>
+                  {customApp && (
+                    <button className="btn" onClick={() => void deleteCustomApp()}>
+                      {confirmDeleteCustom ? '确认删除我的应用？' : '删除我的应用'}
+                    </button>
+                  )}
+                </div>
+                {customSavedMsg && <div className="notice-box">{customSavedMsg}</div>}
+              </>
             )}
 
             {formError && <div className="error-box">{formError}</div>}
             <div className="notice-box">凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。</div>
+            </div>
             <div className="dialog-actions">
               <button className="btn" onClick={() => setStep(1)}>
                 上一步
@@ -912,6 +1081,7 @@ export default function AddMountDialog({
 
         {step === 3 && chosen && isOAuthProvider(provider) && (
           <>
+            <div className="dialog-body">
             <p>
               准备添加 <strong>{displayName.trim() || chosen.name}</strong>（{chosen.name}
               {group.trim() ? ` · 分组“${group.trim()}”` : ''}）。
@@ -940,6 +1110,7 @@ export default function AddMountDialog({
                 </div>
               </>
             )}
+            </div>
             <div className="dialog-actions">
               <button className="btn" disabled={testing} onClick={() => setStep(2)}>
                 上一步

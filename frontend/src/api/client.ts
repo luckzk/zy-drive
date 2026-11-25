@@ -46,6 +46,13 @@ export interface SideSel {
   ref: string
   /** human label, e.g. 'DisplayName / path' or '本地 /abs/path' */
   label: string
+  /** Multi-selected entries on this side (batch creation): each is
+      a driver ref (or 'local://<abs path>' for local sides). A
+      folder entry is recursive — it contains all its contents.
+      Empty or absent = no multi-select; the single sync root
+      (ref) rules. One entry per job at creation time (SyncJob is
+      single-source / single-target), so a batch is N jobs. */
+  multi?: { ref: string; label: string }[]
 }
 
 export const api = {
@@ -83,6 +90,14 @@ export const api = {
   pollOAuthCallback: (state: string) => DesktopService.pollOAuthCallback(state),
   cancelOAuth: (state: string) => DesktopService.cancelOAuth(state),
   builtinOAuthClientID: (provider: ProviderKind) => DesktopService.builtinOAuthClientID(provider),
+  // The user's OWN OAuth app for a provider (separate store,
+  // custom-oauth-clients.json) — never the builtin. The secret,
+  // when saved, comes back in memory only, for the wizard to
+  // pass to the exchange; the frontend never persists it.
+  getCustomOAuthApp: (provider: ProviderKind) => DesktopService.getCustomOAuthApp(provider),
+  saveCustomOAuthApp: (provider: ProviderKind, clientID: string, clientSecret: string) =>
+    DesktopService.saveCustomOAuthApp(provider, clientID, clientSecret),
+  deleteCustomOAuthApp: (provider: ProviderKind) => DesktopService.deleteCustomOAuthApp(provider),
   exchangeOAuthCode: (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) =>
     DesktopService.exchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL),
   getSettings: () => DesktopService.getSettings(),

@@ -12,6 +12,9 @@
 > Bind 已接线（`cmd/desktop/mygo.go`，无 webview 时回落 dev 壳）。
 > 架构设计见 `docs/architecture.md`（仓库版）与
 > `~/workspace/your_files/multi-cloud-manager-architecture/multi-cloud-manager-architecture.pdf`（18 页）。
+> 注册三家官方 OAuth 应用的步骤见 `docs/oauth-apps/`（README 总览 + dropbox / google-drive / onedrive 各一篇）；
+> 内置官方应用的 Client ID 存在 `internal/app/builtin-oauth-clients.json`（公开标识，随程序发版），
+> 用户自己的应用单独存在本机 `~/.config/zy-drive/custom-oauth-clients.json`（Secret 加密），两者永不互相覆盖。
 
 ## 已定决策（不再重议，要改先改架构文档）
 

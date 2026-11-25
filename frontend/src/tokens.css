@@ -339,6 +339,8 @@ button {
   white-space: normal;
 }
 .provider-card:hover { border-color: var(--ink-secondary); }
+.provider-card:disabled { opacity: 0.55; cursor: not-allowed; }
+.provider-card:disabled:hover { border-color: var(--border); }
 .provider-card.selected { border-color: var(--brand); background: #f0fdf4; }
 .provider-card .provider-name { font-size: 14px; font-weight: 400; }
 .provider-card .provider-sub { font-size: 12px; color: var(--ink-secondary); margin-top: 2px; }
@@ -418,6 +420,16 @@ button {
   border-radius: var(--radius); border: 1px solid var(--border);
 }
 .dialog-wide { width: 860px; }
+/* .dialog-flex (AddMountDialog): the title and the footer are
+   fixed flex children; only .dialog-body scrolls. Before v0.8.3
+   the whole dialog scrolled with a sticky footer, and at 800px
+   height the last provider cards sat under the button bar while
+   long step-2 forms could not be scrolled to the bottom. The
+   body has a thin scrollbar in the app's own palette. Other
+   dialogs keep the old whole-dialog scroll. */
+.dialog-flex { display: flex; flex-direction: column; overflow: hidden; }
+.dialog-flex .dialog-body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.dialog-flex .dialog-actions { position: static; flex-shrink: 0; margin-top: 16px; }
 .dialog h1 { margin-top: 0; }
 .dialog-actions {
   display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;
@@ -464,6 +476,18 @@ button {
    DualPane now wires single-click selection to it. */
 .pane-row.selected { background: #f0fdf4; box-shadow: inset 2px 0 0 var(--brand); }
 .pane-row.selected:hover { background: #f0fdf4; }
+/* Multi-select (v0.8.3): checkbox tick + a pale blue-grey fill,
+   deliberately different from the single-select root (pale green
+   + left brand edge + check mark) — the user must never confuse
+   "which items are in the batch" with "which folder is the sync
+   root". A row can be both: multi-selected AND the sync root, and
+   then it shows both (green edge + blue-grey fill + both marks).
+   The per-row checkbox is a plain 16px native checkbox, aligned
+   with the row text. */
+.pane-row.multiselected { background: #eef4ff; }
+.pane-row.multiselected:hover { background: #e3edff; }
+.pane-row.multiselected.selected { background: #e6f7ec; }
+.pane-row .row-checkbox { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
 .pane-check { display: inline-flex; flex-shrink: 0; }
 .plan-summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; margin: 8px 0; }
 .plan-summary b { font-size: 16px; }
@@ -539,6 +563,9 @@ button {
 [data-theme='dark'] .nav-item.active { background: #1e3a26; }
 [data-theme='dark'] .file-table tbody tr.selected,
 [data-theme='dark'] .pane-row.selected { background: #1e3a26; }
+[data-theme='dark'] .pane-row.multiselected { background: #1c2733; }
+[data-theme='dark'] .pane-row.multiselected:hover { background: #22303d; }
+[data-theme='dark'] .pane-row.multiselected.selected { background: #1d3325; }
 [data-theme='dark'] .badge-green { background: #1e3a26; color: #7ee2a0; }
 [data-theme='dark'] .badge-red { background: #3a1d1d; color: #fca5a5; }
 [data-theme='dark'] .badge-amber { background: #3a2c14; color: #fcd34d; }
