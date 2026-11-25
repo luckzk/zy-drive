@@ -10,37 +10,31 @@ import (
 )
 
 // builtin_oauth.go — the built-in shared ZyDrive OAuth apps (B,
-// one-click authorization). The mechanism is code-complete; the
-// registrations themselves are NOT done yet — an agent cannot walk
-// into the Dropbox App Console / Google Cloud Console / Azure
-// portal, create the apps and pass their reviews. Until the user
-// registers them, every BuiltinOAuthClientID below is "" and the
-// wizard falls back to the self-built app flow (advanced fold) —
-// never an error, never a blank page.
+// one-click authorization). Two of the three registrations are
+// DONE (2026-11-25, user registered them and pasted the Client
+// IDs in chat — Client IDs are public identifiers, not secrets,
+// so they ship in this repo as defaults):
 //
-// ── What the user must register (one app per provider) ──────────
-// All three are PUBLIC clients (no secret is ever shipped or sent):
-// the token exchange proves possession with PKCE (S256) only.
-//
-//  1. Dropbox — Dropbox App Console (dropbox.com/developers/apps):
-//     Create app → Scoped access → Full Dropbox (or App folder) →
-//     Permissions: files.metadata.read, files.metadata.write,
-//     files.content.read, files.content.write → Settings →
-//     Redirect URIs: add `http://localhost` (bare loopback; the
-//     runtime port is random per authorization). The App key IS
+//  1. Dropbox — DONE. App Console (dropbox.com/developers/apps),
+//     app "ZyDrive-app", Scoped access, Full Dropbox, "Allow
+//     public clients" (允许公共客户端) ON, Redirect URI
+//     `http://localhost` added. Permissions:
+//     files.metadata.read, files.metadata.write,
+//     files.content.read, files.content.write. The App key IS
 //     the Client ID. No App secret is used (PKCE replaces it).
 //
-//  2. Google Drive — Google Cloud Console (console.cloud.google.com):
-//     New project → "API 和服务" → enable Google Drive API →
-//     "凭据" → 创建凭据 → OAuth 客户端 ID → 应用类型“桌面应用”
-//     → Authorized redirect URIs: add `http://localhost`. The
-//     OAuth 同意屏幕 needs the app published (or the user's own
-//     account added as a test user). The Client ID is the builtin
-//     value; the Client Secret is NOT used (PKCE replaces it).
-//     Scope requested: https://www.googleapis.com/auth/drive.
+//  2. Google Drive — DONE. Google Cloud Console
+//     (console.cloud.google.com), app "ZyDrive-app", OAuth 客户端
+//     ID, 应用类型“桌面应用”, Authorized redirect URI
+//     `http://localhost`. The OAuth 同意屏幕 needs the app
+//     published (or the user's own account added as a test user).
+//     The Client ID is the builtin value; the Client Secret is
+//     NOT used (PKCE replaces it). Scope requested:
+//     https://www.googleapis.com/auth/drive.
 //
-//  3. OneDrive — Azure portal (portal.azure.com → Microsoft Entra
-//     ID → 应用注册 → 新注册): name e.g. "ZyDrive"; "受支持的帐户
+//  3. OneDrive — NOT registered yet (user will do it next).
+//     Azure portal (portal.azure.com → Microsoft Entra ID →
+//     应用注册 → 新注册): name e.g. "ZyDrive"; "受支持的帐户
 //     类型" → "任何组织目录中的帐户和个人 Microsoft 帐户" →
 //     "身份验证" → 添加平台 → "移动和桌面应用程序" → 重定向 URI
 //     `http://localhost` → "API 权限" → 添加权限 → Microsoft
@@ -48,14 +42,21 @@ import (
 //     The "应用程序（客户端）ID" on the 概述 page is the builtin
 //     value. No secret is created (public client + PKCE).
 //
-// ── How a registered Client ID takes effect ─────────────────────
-// Fill the constants below (a developer edit, then rebuild), OR
-// — no rebuild needed — drop a JSON file named
-// `oauth-clients.json` next to master.key in the config dir
+// Until OneDrive is registered, its BuiltinOAuthClientID is ""
+// and the wizard falls back to the self-built app flow (advanced
+// fold) for OneDrive — never an error, never a blank page. The
+// same fallback applies to any provider whose builtin ID is
+// cleared or overridden away.
+//
+// ── How a Client ID takes effect ───────────────────────────────
+// The constants below are the defaults (a developer edit, then
+// rebuild). To override one without rebuilding, drop a JSON file
+// named `oauth-clients.json` next to master.key in the config dir
 // (~/.config/zy-drive/oauth-clients.json):
 //   {"dropbox": "<App key>", "drive": "<Client ID>", "onedrive": "<应用程序（客户端）ID>"}
-// Keys are provider kinds; an empty/absent value means "not
-// configured". The file is read once at desktop startup
+// Keys are provider kinds; a non-empty value overrides the
+// builtin default for that provider, an absent/empty value keeps
+// the default. The file is read once at desktop startup
 // (cmd/desktop/main.go); unknown keys are ignored. Client IDs are
 // public identifiers, not secrets — they appear in the authorize
 // URL in the browser anyway — but the file still lives in the
@@ -73,15 +74,18 @@ import (
 // Users who hit limits or who prefer not to depend on the shared
 // app should use their own app.
 
-// builtinClientIDPlaceholders are the ZyDrive official app Client
-// IDs. Empty until the three registrations above are done — fill
-// them in (or use oauth-clients.json) and one-click authorization
-// lights up for that provider; leave them empty and the wizard
-// falls back to the self-built flow.
-var builtinClientIDPlaceholders = map[domain.ProviderKind]string{
-	domain.ProviderDropbox:  "", // TODO: Dropbox App key, from the App Console (see above)
-	domain.ProviderDrive:    "", // TODO: Google OAuth 客户端 ID, 应用类型“桌面应用”
-	domain.ProviderOneDrive: "", // TODO: Azure 应用程序（客户端）ID
+// builtinClientIDs are the ZyDrive official app Client IDs
+// shipped as defaults. Dropbox and Drive are registered
+// (2026-11-25, app "ZyDrive-app" in both consoles); OneDrive is
+// still "" — fill it in when the Azure registration is done and
+// one-click authorization lights up for OneDrive too. Leave a
+// provider "" and the wizard falls back to the self-built flow.
+// oauth-clients.json can override any of these per provider
+// (non-empty values only); it never has to repeat them.
+var builtinClientIDs = map[domain.ProviderKind]string{
+	domain.ProviderDropbox:  "ocx73kxhcpga24m", // Dropbox App key, app "ZyDrive-app", Full Dropbox
+	domain.ProviderDrive:    "504630572830-9nkremocc6fsmbrg0lpk5n185ii4b447.apps.googleusercontent.com", // Google OAuth 客户端 ID, 应用类型“桌面应用”, app "ZyDrive-app"
+	domain.ProviderOneDrive: "",                // TODO: Azure 应用程序（客户端）ID — register the app, then fill in
 }
 
 var (
@@ -90,7 +94,7 @@ var (
 )
 
 func init() {
-	for p, id := range builtinClientIDPlaceholders {
+	for p, id := range builtinClientIDs {
 		if strings.TrimSpace(id) != "" {
 			builtinClients[p] = strings.TrimSpace(id)
 		}
@@ -98,10 +102,12 @@ func init() {
 }
 
 // LoadBuiltinOAuthClients applies an oauth-clients.json file (the
-// no-rebuild path). Missing file: silently nothing (the
-// placeholders stand). Malformed file: the error is returned and
-// the caller logs it — a bad file must never stop the app from
-// starting, and it must never silently enable a wrong client.
+// no-rebuild override path). A non-empty value overrides the
+// builtin default for that provider; an absent/empty value keeps
+// the default. Missing file: silently nothing (the defaults
+// stand). Malformed file: the error is returned and the caller
+// logs it — a bad file must never stop the app from starting,
+// and it must never silently enable a wrong client.
 func LoadBuiltinOAuthClients(path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -130,9 +136,10 @@ func LoadBuiltinOAuthClients(path string) error {
 
 // BuiltinOAuthClientID returns the configured shared ZyDrive
 // OAuth Client ID for a provider, or "" when the official app is
-// not registered yet. The wizard treats "" as "offer the
-// self-built flow only". Client IDs are public, so returning one
-// to the frontend is safe; there is never a secret here.
+// not registered yet (OneDrive, until its Azure registration is
+// done). The wizard treats "" as "offer the self-built flow
+// only". Client IDs are public, so returning one to the frontend
+// is safe; there is never a secret here.
 func (a *App) BuiltinOAuthClientID(provider domain.ProviderKind) string {
 	builtinMu.RLock()
 	defer builtinMu.RUnlock()
