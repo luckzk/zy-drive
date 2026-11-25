@@ -25,7 +25,7 @@ function nonNull<T>(xs: (T | null)[] | null | undefined): T[] {
 export function friendlyError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e)
   const m = msg.replace(/^(app|cache|sync|transfer|storage):\s*/g, '')
-  if (/not in a mygo|mygo runtime|bind|WebView|ipc/i.test(msg) || /Failed to fetch|NetworkError|Load failed/i.test(msg)) {
+  if (/mygo\s*:\s*runtime|runtime not found|not in a mygo|mygo runtime|bind|WebView|ipc/i.test(msg) || /Failed to fetch|NetworkError|Load failed/i.test(msg)) {
     return '未能连接到桌面后端。请在 ZyDrive 桌面窗口中打开，不要用浏览器直接访问。'
   }
   if (/auth_expired|unauthorized|401|token expired|reauthor/i.test(m)) return '授权已过期，请重新授权后再试。'

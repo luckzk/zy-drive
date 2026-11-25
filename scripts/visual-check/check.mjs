@@ -1,0 +1,193 @@
+// visual-check — 截图自查：写完前端代码后先截图自己看，再推送。
+//
+// 用法（在仓库根目录）：
+//   node scripts/visual-check/check.mjs [shots-dir]
+// 默认截图输出到 scripts/visual-check/shots/（已 gitignore，不推送）。
+//
+// 做法：静态服务跑 frontend/dist（生产构建产物），headless Chromium
+// 1280×800 打开（mygo 窗口尺寸）。因为纯浏览器里没有 mygo 运行时，
+// 脚本在页面加载前注入一个测试专用的 window.mygo 桩：所有 Bind 调用
+// 返回空数据（零网盘、零 Agent、零任务、零传输），只为看布局，不看
+// 数据——桩只活在检查脚本里，不进前端代码。另截一张不注桩的图，
+// 确认 Bind 失败时的人话错误态也能正常渲染。
+import { chromium } from 'playwright-core'
+import http from 'node:http'
+import { createReadStream, existsSync, mkdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+const DIST = path.join(ROOT, 'frontend', 'dist')
+const LOCAL_CHROMIUM = path.join(path.dirname(fileURLToPath(import.meta.url)), '.chromium', 'chrome-linux64', 'chrome')
+const CHROMIUM = existsSync(LOCAL_CHROMIUM) ? LOCAL_CHROMIUM : '/opt/meta-chromium/chrome'
+const SHOTS = path.resolve(process.argv[2] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'shots'))
+mkdirSync(SHOTS, { recursive: true })
+
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' }
+
+// 测试桩：Bind 返回空数据，让 App 走零网盘空态。只看布局不看数据。
+// VISUAL_MOUNTS=1 时注入三条假网盘（仅检查脚本里有，不进前端代码），
+// 用来看分组渲染（组名紧挨数量、悬停出编辑/删除）。
+const CAPS = {
+  canMkdir: true, canRename: true, canDelete: true, deleteToTrash: true,
+  supportsServerSideCopy: false, supportsVersions: false, supportsShare: true,
+  supportsSearch: true, supportsDelta: true, supportsThumbnail: false,
+  supportsResumableUpload: true, supportsEncryption: false, supportsStorageClass: false,
+  supportsPresignedUrl: false, idBased: false, maxFileSize: 0, minPartSize: 0, maxPathLen: 0, illegalChars: '',
+}
+const MOCK_MOUNTS = [
+  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: 'photos', group: '工作', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '/', group: '个人', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: 'root', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', createdAt: '', updatedAt: '' },
+]
+const STUB_MOUNTS = process.env.VISUAL_MOUNTS ? JSON.stringify(MOCK_MOUNTS) : '[]'
+const STUB = `(() => {
+  const empty = { 'DesktopService.ListMounts': ${STUB_MOUNTS}, 'DesktopService.ListAgents': [], 'DesktopService.Transfers': [], 'DesktopService.ListSyncJobs': [] }
+  window.mygo = {
+    locale: 'zh-CN', dir: 'ltr',
+    call: async (method, ...args) => {
+      if (method === 'DesktopService.AgentStatus') return { total: 0, online: 0 }
+      if (method === 'DesktopService.ValidateJob') return null
+      if (method === 'DesktopService.Browse') return []
+      if (method === 'DesktopService.PreviewSync') return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
+      if (method === 'DesktopService.SaveSyncJob') return args[0]
+      if (method in empty) return empty[method]
+      throw new Error('stub: unimplemented ' + method)
+    },
+    callWith: async (method, args) => window.mygo.call(method, ...(args ?? [])),
+  }
+})()`
+
+function serve() {
+  return new Promise((resolve) => {
+    const server = http.createServer(async (req, res) => {
+      try {
+        const url = decodeURIComponent(new URL(req.url, 'http://x').pathname)
+        let file = path.join(DIST, url === '/' ? 'index.html' : url)
+        if (!existsSync(file) || file.endsWith('/')) file = path.join(DIST, 'index.html')
+        const body = await readFile(file)
+        res.writeHead(200, { 'content-type': MIME[path.extname(file)] ?? 'application/octet-stream' })
+        res.end(body)
+      } catch {
+        res.writeHead(404)
+        res.end('not found')
+      }
+    })
+    server.listen(0, '127.0.0.1', () => resolve(server))
+  })
+}
+
+const server = await serve()
+const port = server.address().port
+const browser = await chromium.launch({
+  executablePath: CHROMIUM,
+  args: ['--no-sandbox', '--disable-gpu'],
+})
+const failures = []
+try {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  page.on('pageerror', (e) => failures.push(`pageerror: ${e.message}`))
+  await page.addInitScript(STUB)
+  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' })
+  await page.waitForTimeout(800)
+
+  // 1. 文件浏览页：零网盘空态
+  await page.screenshot({ path: path.join(SHOTS, '01-browse-empty.png') })
+
+  // 2. 点开“+ 新建分组”：重点检查“确定”按钮是否横排、不溢出侧栏
+  await page.getByText('+ 新建分组').click()
+  await page.waitForTimeout(400)
+  const groupCheck = await page.evaluate(() => {
+    const btns = [...document.querySelectorAll('button')].filter((b) => ['确定', '取消'].includes(b.textContent.trim()))
+    const sidebar = document.querySelector('.sidebar')?.getBoundingClientRect()
+    return btns.map((b) => {
+      const r = b.getBoundingClientRect()
+      return { text: b.textContent.trim(), w: Math.round(r.width), h: Math.round(r.height), horizontal: r.width > r.height, overflowSidebar: sidebar ? r.right > sidebar.right + 1 : null }
+    })
+  })
+  console.log('new-group buttons:', JSON.stringify(groupCheck))
+  for (const b of groupCheck) {
+    if (!b.horizontal) failures.push(`按钮“${b.text}”疑似竖排：${b.w}x${b.h}`)
+    if (b.overflowSidebar) failures.push(`按钮“${b.text}”溢出侧栏`)
+  }
+  await page.screenshot({ path: path.join(SHOTS, '02-new-group-open.png') })
+  // 再截一张侧栏局部放大，方便肉眼确认“确定”二字横排
+  const sidebar = await page.$('.sidebar')
+  if (sidebar) await sidebar.screenshot({ path: path.join(SHOTS, '02b-sidebar-new-group.png') })
+  await page.keyboard.press('Escape')
+
+  // 2c. 有网盘时：悬停分组行，编辑/删除按钮应出现（原型要求默认隐藏）
+  if (process.env.VISUAL_MOUNTS) {
+    await page.hover('.group-row').catch(() => failures.push('找不到分组行（.group-row）'))
+    await page.waitForTimeout(300)
+    const groupHover = await page.evaluate(() => {
+      const row = document.querySelector('.group-row')
+      const actions = row?.querySelector('.group-actions')
+      const cs = actions ? getComputedStyle(actions) : null
+      const name = row?.querySelector('.group-name')?.textContent?.trim()
+      const badge = row?.querySelector('.badge')?.textContent?.trim()
+      const nameRect = row?.querySelector('.group-name')?.getBoundingClientRect()
+      const badgeRect = row?.querySelector('.badge')?.getBoundingClientRect()
+      return { name, badge, actionsVisible: cs?.display !== 'none', badgeAdjacent: nameRect && badgeRect ? Math.round(badgeRect.left - nameRect.right) : null }
+    })
+    console.log('group hover:', JSON.stringify(groupHover))
+    if (!groupHover.actionsVisible) failures.push('悬停分组行后编辑/删除按钮没有出现')
+    if (groupHover.badgeAdjacent !== null && groupHover.badgeAdjacent > 12) failures.push(`分组数量徽章离组名太远：${groupHover.badgeAdjacent}px`)
+    const sidebar2 = await page.$('.sidebar')
+    if (sidebar2) await sidebar2.screenshot({ path: path.join(SHOTS, '02c-sidebar-group-hover.png') })
+  }
+
+  // 3. 同步任务页：先列已保存任务（零任务空态）
+  await page.locator('.nav-item', { hasText: '同步任务' }).click()
+  await page.waitForTimeout(600)
+  await page.screenshot({ path: path.join(SHOTS, '03-sync.png') })
+
+  // 3b. 点“创建同步任务”：双栏编辑器应出现在顶部（方案 A）
+  await page.getByRole('button', { name: '创建同步任务' }).click()
+  await page.waitForTimeout(1200)
+  await page.screenshot({ path: path.join(SHOTS, '03b-sync-create.png') })
+
+  // 4. 设置页：Agent 列表（零 Agent 空态）
+  await page.locator('.nav-item', { hasText: '设置' }).click()
+  await page.waitForTimeout(600)
+  await page.screenshot({ path: path.join(SHOTS, '04-settings.png') })
+
+  // 5. 横向溢出自查：整页横向滚动条即为布局问题；同时量顶栏按钮
+  // 是否被裁（右缘超出视口即为问题）
+  const overflow = await page.evaluate(() => {
+    const doc = document.documentElement
+    const headerBtn = [...document.querySelectorAll('.app-header button')].pop()?.getBoundingClientRect()
+    const sidebar = document.querySelector('.sidebar')?.getBoundingClientRect()
+    return {
+      scrollW: doc.scrollWidth,
+      clientW: doc.clientWidth,
+      overflowX: doc.scrollWidth > doc.clientWidth,
+      headerBtnRight: headerBtn ? Math.round(headerBtn.right) : null,
+      viewportW: window.innerWidth,
+      sidebarLeft: sidebar ? Math.round(sidebar.left) : null,
+    }
+  })
+  console.log('page overflow:', JSON.stringify(overflow))
+  if (overflow.overflowX) failures.push(`页面横向溢出：scrollWidth ${overflow.scrollW} > clientWidth ${overflow.clientW}`)
+  if (overflow.headerBtnRight !== null && overflow.headerBtnRight > overflow.viewportW) {
+    failures.push(`顶栏“新建同步”按钮右缘超出视口：right=${overflow.headerBtnRight} > viewport=${overflow.viewportW}`)
+  }
+
+  // 6. 不注桩的图：Bind 失败时的人话错误态
+  const page2 = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  await page2.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' })
+  await page2.waitForTimeout(800)
+  await page2.screenshot({ path: path.join(SHOTS, '05-browse-no-stub.png') })
+  await page2.close()
+} finally {
+  await browser.close()
+  server.close()
+}
+
+if (failures.length) {
+  console.error('VISUAL CHECK FAILED:')
+  for (const f of failures) console.error(' -', f)
+  process.exit(1)
+}
+console.log(`VISUAL CHECK OK — shots in ${SHOTS}`)

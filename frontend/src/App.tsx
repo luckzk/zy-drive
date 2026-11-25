@@ -129,6 +129,7 @@ export default function App() {
           onSelectMount={selectMount}
           agentStatus={agentStatus}
           onGroupsChanged={() => void loadMounts()}
+          onAddMount={() => setShowAddMount(true)}
         />
 
         <main style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

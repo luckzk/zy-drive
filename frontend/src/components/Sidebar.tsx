@@ -27,6 +27,7 @@ export default function Sidebar({
   onSelectMount,
   agentStatus,
   onGroupsChanged,
+  onAddMount,
 }: {
   page: Page
   onNavigate: (p: Page) => void
@@ -35,6 +36,7 @@ export default function Sidebar({
   onSelectMount: (m: Mount) => void
   agentStatus: AgentStatus | null
   onGroupsChanged: () => void
+  onAddMount: () => void
 }) {
   const [extraGroups, setExtraGroups] = useState<string[]>([])
   const [newGroupName, setNewGroupName] = useState('')
@@ -123,6 +125,16 @@ export default function Sidebar({
 
       <div className="nav-section">网盘</div>
       {error && <div className="error-box">{error}</div>}
+      {mounts.length === 0 && (
+        <div style={{ padding: '4px 4px 8px' }}>
+          <p className="muted" style={{ fontSize: 13, margin: '0 0 8px' }}>
+            还没有网盘，先添加一个才能浏览和同步。
+          </p>
+          <button className="btn-primary" style={{ width: '100%' }} onClick={onAddMount}>
+            + 添加网盘
+          </button>
+        </div>
+      )}
       {orderedGroups.map((g) => {
         const members = mountsOf(g)
         const isDeleting = deleting === g
@@ -138,7 +150,7 @@ export default function Sidebar({
                 {renaming === g ? (
                   <input
                     className="input"
-                    style={{ padding: '2px 6px' }}
+                    style={{ padding: '2px 6px', flex: 1, minWidth: 0 }}
                     value={renameValue}
                     autoFocus
                     onChange={(e) => setRenameValue(e.target.value)}
@@ -243,7 +255,10 @@ export default function Sidebar({
       })}
 
       {addingGroup ? (
-        <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+        /* 新建分组改成上下两行：输入框独占一行，按钮在下一行。
+           之前输入框和“确定”并排，输入框 width:100% 把按钮压到只剩
+           30px 宽，“确定”两个字被迫竖排。 */
+        <div style={{ marginTop: 4 }}>
           <input
             className="input"
             placeholder="分组名"
@@ -255,9 +270,14 @@ export default function Sidebar({
               if (e.key === 'Escape') setAddingGroup(false)
             }}
           />
-          <button className="btn-primary" onClick={createGroup}>
-            确定
-          </button>
+          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+            <button className="btn-primary" onClick={createGroup}>
+              确定
+            </button>
+            <button className="btn" onClick={() => setAddingGroup(false)}>
+              取消
+            </button>
+          </div>
         </div>
       ) : (
         <button className="btn" style={{ marginTop: 4 }} onClick={() => setAddingGroup(true)}>

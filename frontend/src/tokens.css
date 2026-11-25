@@ -57,6 +57,10 @@ thead th {
 button {
   font-size: 14px;
   font-weight: 500;
+  /* 按钮文字永不竖排：flex 容器里按钮被挤压时宁可溢出也不换行，
+     2026-11-25 Mac 实测：新建分组的“确定”曾被压成竖排两字。 */
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .btn-primary {
   background: var(--brand);
@@ -106,6 +110,7 @@ button {
   border-radius: 8px;
   padding: 8px 12px;
   width: 100%;
+  min-width: 0;
 }
 .input:focus, .select:focus, .textarea:focus {
   outline: 2px solid var(--brand);

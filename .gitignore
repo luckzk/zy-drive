@@ -21,6 +21,12 @@ frontend/node_modules/
 frontend/dist/
 *.tsbuildinfo
 
+# Visual check (scripts/visual-check): harness deps, browser, shots — never commit
+scripts/visual-check/node_modules/
+scripts/visual-check/.chromium/
+scripts/visual-check/shots/
+scripts/visual-check/package-lock.json
+
 # Go
 *.test
 *.out
