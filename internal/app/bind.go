@@ -116,7 +116,7 @@ func (s *DesktopService) AddMount(ctx context.Context, in AddMountInput) (*domai
 	return s.app.AddMountWithCredentials(ctx, in)
 }
 
-// BeginOAuth builds the authorize URL for Dropbox / Drive.
+// BeginOAuth builds the authorize URL for Dropbox / Drive / Drime.
 func (s *DesktopService) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthStart, error) {
 	return s.app.BeginOAuth(provider, clientID)
 }

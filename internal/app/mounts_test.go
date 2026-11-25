@@ -68,6 +68,74 @@ func mockDriveServer() *httptest.Server {
 	}))
 }
 
+// mockDrimeServer speaks just enough Drime API v1 for the probe:
+// GET /drive/file-entries on the root. failList answers 401.
+func mockDrimeServer(failList bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/drive/file-entries" && r.Method == http.MethodGet {
+			if failList || r.Header.Get("Authorization") != "Bearer test-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]any{"message": "Unauthenticated."})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{
+					{"id": 1001, "name": "照片", "type": "folder", "hash": "hash-1001", "file_size": 0, "parent_id": nil, "workspace_id": 0, "created_at": "2026-11-25T00:00:00.000000Z", "updated_at": "2026-11-25T00:00:00.000000Z"},
+					{"id": 1002, "name": "a.txt", "type": "file", "hash": "hash-1002", "file_size": 3, "mime": "text/plain", "parent_id": nil, "workspace_id": 0, "created_at": "2026-11-25T00:00:00.000000Z", "updated_at": "2026-11-25T00:00:00.000000Z"},
+				},
+				"current_page": 1, "last_page": 1, "total": 2,
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+}
+
+func TestAddDrimeMountMockRoundTrip(t *testing.T) {
+	srv := mockDrimeServer(false)
+	defer srv.Close()
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	a := newTestAppWithDB(t, dbPath)
+	ctx := context.Background()
+	// Personal access token (the recommended Drime auth): no OAuth,
+	// no refresh, never expires.
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "我的 Drime", Provider: domain.ProviderDrime,
+		Group: "个人", AccessToken: "test-token", APIBase: srv.URL + "/api/v1",
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(drime): %v", err)
+	}
+	if m.RootRef != "" {
+		t.Fatalf("drime root: RootRef=%q, want \"\"", m.RootRef)
+	}
+	nodes, err := a.Browse(ctx, m.ID, "")
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("Browse drime: %v, %d nodes", err, len(nodes))
+	}
+	a2 := reopenApp(t, dbPath)
+	mounts := a2.ListMounts()
+	if len(mounts) != 1 || mounts[0].Group != "个人" {
+		t.Fatalf("drime mount after restart: %+v", mounts)
+	}
+	nodes, err = a2.Browse(ctx, mounts[0].ID, "")
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("Browse drime after restart: %v, %d nodes", err, len(nodes))
+	}
+	// A bad token must fail the probe and save nothing.
+	a3 := newTestApp(t)
+	if _, err := a3.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "坏 Drime", Provider: domain.ProviderDrime,
+		AccessToken: "wrong-token", APIBase: srv.URL + "/api/v1",
+	}); err == nil {
+		t.Fatalf("AddMountWithCredentials(drime, bad token): want an error")
+	}
+	if mounts := a3.ListMounts(); len(mounts) != 0 {
+		t.Fatalf("failed drime probe saved %d mount(s)", len(mounts))
+	}
+}
+
 // mockS3Server speaks just enough S3 ListObjectsV2 for the probe.
 // failList answers 403 InvalidAccessKeyId instead.
 func mockS3Server(failList bool) *httptest.Server {

@@ -52,6 +52,7 @@ type AddMountInput struct {
 	TokenURL     string              `json:"tokenUrl,omitempty"`     // OAuth token endpoint override (tests)
 	APIBase      string              `json:"apiBase,omitempty"`      // API base override for Dropbox/Drive (tests / proxied deployments; normally empty)
 	RootID       string              `json:"rootId,omitempty"`       // Drive root folder id, default "root"
+	WorkspaceID  string              `json:"workspaceId,omitempty"`  // Drime workspace id, default "" = personal workspace (0)
 	LocalPath    string              `json:"localPath,omitempty"`    // local mount: absolute folder path
 }
 
@@ -109,7 +110,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		return nil, fmt.Errorf("app: 请给网盘起个名字")
 	}
 	switch in.Provider {
-	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderLocal:
+	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderLocal:
 	default:
 		return nil, fmt.Errorf("app: %s 还在 V0.2 接入，现在加不了", in.Provider)
 	}
@@ -210,7 +211,7 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 		if in.PathStyle {
 			cfg.Extra["pathStyle"] = "true"
 		}
-	case domain.ProviderDropbox, domain.ProviderDrive:
+	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime:
 		if strings.TrimSpace(in.AccessToken) == "" && strings.TrimSpace(in.RefreshToken) == "" {
 			return cfg, creds, fmt.Errorf("app: 需要填 Access Token 或 Refresh Token（用授权码换取，或直接粘贴）")
 		}
@@ -229,6 +230,9 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 		}
 		if in.Provider == domain.ProviderDrive && strings.TrimSpace(in.RootID) != "" {
 			cfg.Extra["rootId"] = strings.TrimSpace(in.RootID)
+		}
+		if in.Provider == domain.ProviderDrime && strings.TrimSpace(in.WorkspaceID) != "" {
+			cfg.Extra["workspace_id"] = strings.TrimSpace(in.WorkspaceID)
 		}
 	case domain.ProviderLocal:
 		abs, err := filepath.Abs(strings.TrimSpace(in.LocalPath))
@@ -261,7 +265,7 @@ func nonSecretConfig(in AddMountInput) map[string]string {
 		if in.PathStyle {
 			cfg["pathStyle"] = "true"
 		}
-	case domain.ProviderDropbox, domain.ProviderDrive:
+	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime:
 		cfg["client_id"] = strings.TrimSpace(in.ClientID)
 		if strings.TrimSpace(in.TokenURL) != "" {
 			cfg["token_url"] = strings.TrimSpace(in.TokenURL)
@@ -271,6 +275,9 @@ func nonSecretConfig(in AddMountInput) map[string]string {
 		}
 		if in.Provider == domain.ProviderDrive && strings.TrimSpace(in.RootID) != "" {
 			cfg["rootId"] = strings.TrimSpace(in.RootID)
+		}
+		if in.Provider == domain.ProviderDrime && strings.TrimSpace(in.WorkspaceID) != "" {
+			cfg["workspace_id"] = strings.TrimSpace(in.WorkspaceID)
 		}
 	case domain.ProviderLocal:
 		abs, _ := filepath.Abs(strings.TrimSpace(in.LocalPath))
@@ -618,6 +625,8 @@ func (a *App) UpdateMountGroup(id, group string) error {
 func humanProbeError(provider domain.ProviderKind, err error) error {
 	msg := err.Error()
 	switch {
+	case strings.Contains(msg, "rate limited (429)"):
+		return fmt.Errorf("app: 对方限流了（429）：请等一会儿再试，不要频繁重试——Drime 限流后可能封一段时间，越试越久")
 	case strings.Contains(msg, "401"), strings.Contains(msg, "invalid_access_token"),
 		strings.Contains(msg, "invalid_token"), strings.Contains(msg, "unauthorized"),
 		strings.Contains(msg, "token expired"), strings.Contains(msg, "invalid_grant"):

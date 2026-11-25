@@ -43,6 +43,8 @@ export interface AddMountInput {
   apiBase?: string;
   /** Drive root folder id, default "root" */
   rootId?: string;
+  /** Drime workspace id, default "" = personal workspace (0) */
+  workspaceId?: string;
   /** local mount: absolute folder path */
   localPath?: string;
 }
@@ -467,7 +469,7 @@ export const DesktopService = {
   addMount: bind<[AddMountInput], Mount | null>("DesktopService.AddMount", (in_: AddMountInput) => [in_]),
   /** AgentStatus summarises the Agent list for the sidebar card. */
   agentStatus: bind<[], AgentStatus>("DesktopService.AgentStatus", () => []),
-  /** BeginOAuth builds the authorize URL for Dropbox / Drive. */
+  /** BeginOAuth builds the authorize URL for Dropbox / Drive / Drime. */
   beginOAuth: bind<[ProviderKind, string], OAuthStart | null>("DesktopService.BeginOAuth", (provider: ProviderKind, clientID: string) => [provider, clientID]),
   /** Browse lists a directory (cache-first, background refresh). */
   browse: bind<[string, string], Node[]>("DesktopService.Browse", (mountID: string, ref: string) => [mountID, ref]),

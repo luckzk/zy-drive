@@ -22,6 +22,7 @@ import (
 	"github.com/luckzk/zy-drive/internal/platform/scheduler"
 	"github.com/luckzk/zy-drive/internal/storage"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
+	"github.com/luckzk/zy-drive/internal/storage/providers/drime"
 	"github.com/luckzk/zy-drive/internal/storage/providers/dropbox"
 	"github.com/luckzk/zy-drive/internal/storage/providers/local"
 	"github.com/luckzk/zy-drive/internal/storage/providers/s3"
@@ -66,6 +67,7 @@ func main() {
 	registry.Register(domain.ProviderS3, s3.New)
 	registry.Register(domain.ProviderDropbox, dropbox.New)
 	registry.Register(domain.ProviderDrive, drive.New)
+	registry.Register(domain.ProviderDrime, drime.New)
 	registry.Register(domain.ProviderLocal, local.New)
 
 	// Scheduler: jobs are stored in the DB; the scheduler only triggers.

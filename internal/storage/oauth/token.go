@@ -83,10 +83,15 @@ func (s *TokenSource) Current() *Token {
 // Refresh forces a refresh on the next Token call, even when the stored
 // token has not expired yet. Used as the http.Client OnAuthExpired hook:
 // a 401 means the token is dead regardless of its recorded expiry.
+//
+// The expiry is set in the past, not to zero: Expired treats a zero
+// expiry as "never expires" (personal access tokens carry none), so
+// zeroing it here would silently return the dead token again and
+// the 401-refresh path would replay the stale token forever.
 func (s *TokenSource) Refresh(ctx context.Context) (string, error) {
 	s.mu.Lock()
 	if s.token != nil {
-		s.token.Expiry = time.Time{}
+		s.token.Expiry = time.Now().Add(-time.Hour)
 	}
 	s.mu.Unlock()
 	return s.Token(ctx)

@@ -31,12 +31,13 @@ UI 只调应用层，应用层只认 Provider 接口，驱动只管一家云的�
 | Dropbox | 真实现 | API v2 HTTP，无第三方 SDK；路径制；分片 4 MiB；mock 契约测试通过 |
 | Google Drive | 真实现 | Drive API v3 HTTP；ID 制，path→ID 映射在驱动内内存缓存；Docs 类导出 docx/xlsx/pptx；mock 契约测试通过 |
 | 本地文件夹 | 真实现 | `local://` 端，只在本机跑 |
-| OneDrive / Drime | 未实现 | V0.2 |
+| Drime | 真实现（V0.5.0） | API v1 HTTP；ID 制，path→ID 映射在驱动内内存缓存；个人访问令牌为主、OAuth PKCE 为辅；简单上传 <5 MiB，分片 5 MiB（create→sign→PUT R2→complete→register）；429 等 60 秒只重试一次；mock 契约测试通过，真机未测 |
+| OneDrive | 未实现 | V0.2 |
 
 验证方式：无真实账号 Token 时，用 `contracttest` + mock HTTP
 服务器证明接口合规（分页/空目录/上传往返/改名/删除/刷新/
 分片），不编造“已连真实账号验证通过”。真机验证待用户提供
-Dropbox / Drive 的测试账号 Token 后再做。
+Dropbox / Drive / Drime 的测试账号 Token 后再做。
 
 ## 同步任务界面（2026-11-24 补充，晚间定版）
 

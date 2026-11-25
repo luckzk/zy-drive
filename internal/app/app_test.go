@@ -9,6 +9,7 @@ import (
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
+	"github.com/luckzk/zy-drive/internal/storage/providers/drime"
 	"github.com/luckzk/zy-drive/internal/storage/providers/dropbox"
 	"github.com/luckzk/zy-drive/internal/storage/providers/local"
 	"github.com/luckzk/zy-drive/internal/storage/providers/s3"
@@ -45,6 +46,7 @@ func newTestAppWithDB(t *testing.T, dbPath string) *App {
 	register(domain.ProviderS3, s3.New)
 	register(domain.ProviderDropbox, dropbox.New)
 	register(domain.ProviderDrive, drive.New)
+	register(domain.ProviderDrime, drime.New)
 	a := New(db, reg, transfer.NewQueue(db))
 	a.SetSecrets(testSecretsStore(t))
 	return a

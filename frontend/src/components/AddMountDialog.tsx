@@ -1,19 +1,26 @@
 // AddMountDialog — the three-step "add a drive" wizard.
-//   1. pick a provider (OneDrive / Drime are honestly marked V0.2 and
-//      cannot be picked yet — their drivers do not exist)
+//   1. pick a provider (OneDrive is honestly marked V0.2 and
+//      cannot be picked yet — its driver does not exist)
 //   2. fill in credentials (per-provider form)
 //   3. test & save: the backend probes the root listing first and
 //      only persists when the probe succeeds, so a failed test never
 //      saves a broken mount.
 //
-// Dropbox / Drive auth, in order of preference:
+// Dropbox / Drive / Drime auth, in order of preference:
 //   a. OAuth Authorization Code flow: paste the app's Client ID /
 //      Secret, generate the authorize link, open it in your own
 //      browser, paste the `code` back, the backend exchanges it for
 //      tokens. No localhost callback is involved (see internal/app/
 //      oauth.go for why), and no client credentials ship with the app
 //      — each user creates their own app.
-//   b. Paste a refresh token / access token directly (fallback).
+//      Drime is a public client: no Client Secret exists (PKCE
+//      instead), and the app must be created with "The whole Drive"
+//      access. For Drime the simpler first choice is (b).
+//   b. Paste a token directly (fallback for Dropbox/Drive, first
+//      choice for Drime): a Dropbox generated access token, a
+//      Google refresh token, or a Drime personal access token
+//      (Settings → Developers → Create token, All permission;
+//      never expires).
 // Credentials are typed on the user's own Mac, encrypted at rest
 // (AES-256-GCM, master key in the config dir), and never uploaded.
 import { useState } from 'react'
@@ -35,7 +42,7 @@ const PROVIDERS: ProviderOption[] = [
   { kind: 'drive', name: 'Google Drive', desc: '用 OAuth 授权码换取 Token，或直接粘贴 Refresh Token。', available: true },
   { kind: 'local', name: '本地文件夹', desc: '这台 Mac 上的一个文件夹，浏览和同步都能用。', available: true },
   { kind: 'onedrive', name: 'OneDrive', desc: '驱动在 V0.2 接入。', available: false, note: 'V0.2' },
-  { kind: 'drime', name: 'Drime', desc: '驱动在 V0.2 接入。', available: false, note: 'V0.2' },
+  { kind: 'drime', name: 'Drime', desc: '用个人访问令牌接入（推荐），或 OAuth 授权码。', available: true },
 ]
 
 const OAUTH_HELP: Record<string, { title: string; steps: string[] }> = {
@@ -57,6 +64,18 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[] }> = {
       '“凭据” → 创建凭据 → OAuth 客户端 ID，应用类型选“桌面应用”。',
       '拿到 Client ID 和 Client Secret；OAuth 同意屏幕先把你自己的 Google 账号加为测试用户。',
       'Authorized redirect URIs 里加 http://localhost。点“生成授权链接”，在浏览器里登录 Google 点允许；浏览器可能显示“无法访问 localhost”，这是正常的——从地址栏复制 code= 后面的值，粘贴回来点“换取 Token”。',
+    ],
+  },
+  drime: {
+    title: '去哪里拿 Client ID（Drime 开发者控制台）',
+    steps: [
+      '先在 Drime 里建应用：打开开发者控制台（drime.cloud 上的 Developer Console），点 Create application。',
+      '选“桌面应用”（desktop app，公开客户端，没有 Secret；Drime 桌面应用必须用 PKCE，后端已经帮你处理了）。',
+      '关键一步：选“整个 Drive”（The whole Drive），不要选“只用自己的文件夹”——选错了只能看到 Applications 里的一个文件夹，同步也用不了；选错之后改不了，只能重建应用。',
+      'Permissions 里勾选 files.read、files.write、folders.read、folders.write、sharing.read、sharing.write。',
+      'Settings 里加一条 redirect URL：http://localhost。拿到 Client ID 后填回来。',
+      '点“生成授权链接”，在浏览器里登录 Drime 点允许；浏览器可能显示“无法访问 localhost”，这是正常的——从地址栏复制 code= 后面的值，粘贴回来点“换取 Token”。授权码只有 60 秒有效，拿到就马上换。',
+      '更简单的做法：不用 OAuth，直接粘贴个人访问令牌（Drime 设置 → Developers → Create token，权限选 All，令牌只显示一次，永不过期）。',
     ],
   },
 }
@@ -105,6 +124,8 @@ export default function AddMountDialog({
   const [oauthMsg, setOauthMsg] = useState<string | null>(null)
   // Local
   const [localPath, setLocalPath] = useState('')
+  // Drime
+  const [workspaceId, setWorkspaceId] = useState('')
   // Step 3
   const [testing, setTesting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -127,6 +148,7 @@ export default function AddMountDialog({
     refreshToken: refreshToken || undefined,
     clientId: clientId.trim() || undefined,
     clientSecret: clientSecret || undefined,
+    workspaceId: workspaceId.trim() || undefined,
     localPath: localPath.trim() || undefined,
   })
 
@@ -146,7 +168,9 @@ export default function AddMountDialog({
         return null
       case 'dropbox':
       case 'drive':
+      case 'drime':
         if (!accessToken.trim() && !refreshToken.trim()) return '请先用授权码换取 Token，或直接粘贴 Access Token / Refresh Token。'
+        if (provider === 'drime' && workspaceId.trim() !== '' && !/^\d+$/.test(workspaceId.trim())) return '工作区 ID 只能是数字，例如 8762；留空就是个人空间。'
         return null
       case 'local':
         if (!localPath.trim()) return '请填本地文件夹的绝对路径，例如 /Users/zy/照片。'
@@ -183,7 +207,7 @@ export default function AddMountDialog({
   }
 
   const genAuthLink = async () => {
-    if (!provider || (provider !== 'dropbox' && provider !== 'drive')) return
+    if (!provider || (provider !== 'dropbox' && provider !== 'drive' && provider !== 'drime')) return
     if (!clientId.trim()) {
       setOauthMsg('请先填 Client ID。')
       return
@@ -204,7 +228,7 @@ export default function AddMountDialog({
   }
 
   const exchangeCode = async () => {
-    if (!provider || (provider !== 'dropbox' && provider !== 'drive')) return
+    if (!provider || (provider !== 'dropbox' && provider !== 'drive' && provider !== 'drime')) return
     if (!code.trim()) {
       setOauthMsg('请先粘贴授权码（code）。')
       return
@@ -212,7 +236,8 @@ export default function AddMountDialog({
     setOauthBusy(true)
     setOauthMsg(null)
     try {
-      const tokens = await api.exchangeOAuthCode(provider, clientId.trim(), clientSecret, code.trim(), oauthState, '')
+      // Drime 是公开客户端，没有 Client Secret：传空字符串，后端不会发送它。
+      const tokens = await api.exchangeOAuthCode(provider, clientId.trim(), provider === 'drime' ? '' : clientSecret, code.trim(), oauthState, '')
       if (!tokens) throw new Error('换取 Token 失败。')
       setAccessToken(tokens.accessToken)
       if (tokens.refreshToken) setRefreshToken(tokens.refreshToken)
@@ -324,8 +349,13 @@ export default function AddMountDialog({
               </>
             )}
 
-            {(provider === 'dropbox' || provider === 'drive') && (
+            {(provider === 'dropbox' || provider === 'drive' || provider === 'drime') && (
               <>
+                {provider === 'drime' && (
+                  <div className="notice-box" style={{ marginBottom: 12 }}>
+                    推荐直接粘贴个人访问令牌（下面 Access Token 那栏）：Drime 设置 → Developers → Create token，权限选 All，令牌只显示一次、永不过期。OAuth 授权码是备选，需要自己先建一个桌面应用。
+                  </div>
+                )}
                 <details style={{ marginBottom: 12 }}>
                   <summary style={{ cursor: 'pointer' }}>{OAUTH_HELP[provider].title}</summary>
                   <ol style={{ margin: '8px 0', paddingLeft: 20 }}>
@@ -340,10 +370,12 @@ export default function AddMountDialog({
                   <label>OAuth 应用的 Client ID</label>
                   <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
                 </div>
-                <div className="field">
-                  <label>OAuth 应用的 Client Secret</label>
-                  <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
-                </div>
+                {provider !== 'drime' && (
+                  <div className="field">
+                    <label>OAuth 应用的 Client Secret</label>
+                    <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
                   <button className="btn" disabled={oauthBusy} onClick={() => void genAuthLink()}>
                     {oauthBusy ? '生成中…' : '生成授权链接'}
@@ -375,10 +407,19 @@ export default function AddMountDialog({
                   <label>Refresh Token（长期有效；有它过期后会自动刷新）</label>
                   <input className="input" type="password" autoComplete="off" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} />
                 </div>
+                {provider === 'drime' && (
+                  <div className="field">
+                    <label>工作区 ID（可选，留空为个人空间）</label>
+                    <input className="input" placeholder="例如：8762" autoComplete="off" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} />
+                    <div className="hint">只挂个人空间就留空；要挂某个团队空间，填它的数字 ID。注意：OAuth 应用如果建的是“只用自己的文件夹”，填了团队空间也会被拒（403）。</div>
+                  </div>
+                )}
                 <p className="muted">
                   {provider === 'dropbox'
                     ? '直接粘贴也可以：Dropbox App Console → Settings → 生成的访问令牌（短期，几小时过期）；要长期有效请走上面的授权码流程拿 Refresh Token。'
-                    : '直接粘贴也可以：Refresh Token 可在 Google OAuth Playground（需选 Drive 权限、勾选 offline）里拿到；只有 Access Token 的话过期后需重新授权。'}
+                    : provider === 'drive'
+                      ? '直接粘贴也可以：Refresh Token 可在 Google OAuth Playground（需选 Drive 权限、勾选 offline）里拿到；只有 Access Token 的话过期后需重新授权。'
+                      : '直接粘贴个人访问令牌：Drime 设置 → Developers → API access tokens → Create token，权限选 All，复制下来粘贴到上面 Access Token 那栏（令牌只显示一次，永不过期，不用填 Refresh Token）。'}
                 </p>
               </>
             )}
@@ -419,6 +460,11 @@ export default function AddMountDialog({
               <p>
                 将挂载：桶 {bucket.trim()}，范围：
                 {prefix.trim() ? `仅前缀 ${prefix.trim().replace(/^\/+|\/+$/g, '')}` : '整个桶'}。
+              </p>
+            )}
+            {provider === 'drime' && (
+              <p>
+                将挂载：Drime {workspaceId.trim() ? `工作区 ${workspaceId.trim()}` : '个人空间'}。
               </p>
             )}
             <p className="muted">点“测试并保存”后会先连一次网盘根目录，通了才保存；不通不会保存，也不会留下坏网盘。</p>

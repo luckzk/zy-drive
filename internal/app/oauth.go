@@ -12,14 +12,14 @@ import (
 	"github.com/luckzk/zy-drive/internal/domain"
 )
 
-// oauth.go — the desktop OAuth Authorization Code flow for Dropbox
-// and Google Drive.
+// oauth.go — the desktop OAuth Authorization Code flow for Dropbox,
+// Google Drive and Drime.
 //
 // Why code + manual copy-paste instead of a localhost callback:
 //   - There are no bundled OAuth client credentials: each user creates
-//     their own app (Dropbox App Console / Google Cloud Console) and
-//     pastes its client id/secret. Shipping a shared client secret in
-//     a public repo would leak it.
+//     their own app (Dropbox App Console / Google Cloud Console /
+//     Drime developer console) and pastes its client id/secret. Shipping
+//     a shared client secret in a public repo would leak it.
 //   - A localhost callback needs the user's app to register an exact
 //     redirect URI and the desktop window to catch the redirect; that
 //     path is unverified in mygo here. The copy-paste flow works with
@@ -30,11 +30,26 @@ import (
 //     code for tokens; tokens are encrypted at rest by AddMount.
 //   - Pasting a refresh/access token directly stays available as a
 //     fallback for users who already have one (e.g. a Dropbox
-//     generated access token).
+//     generated access token, or a Drime personal access token).
 //
 // Redirect URI is always http://localhost: the user adds it once to
 // their app (Dropbox: Settings → Redirect URIs; Google: OAuth client
-// → Authorised redirect URIs, client type "Desktop app").
+// → Authorised redirect URIs, client type "Desktop app"; Drime:
+// developer console → application Settings → redirect URLs).
+//
+// Drime differs from Dropbox/Google in two ways (docs 2026-11-17):
+//   - PKCE is REQUIRED for desktop apps (public clients, S256 only):
+//     BeginOAuth generates the verifier and stores it with the
+//     state; ExchangeOAuthCode sends it back. The code is valid for
+//     60 seconds and works once.
+//   - Desktop apps are public clients: NO client secret is ever
+//     sent (Drime refuses one). The wizard must not ask for it.
+//   - The user must create the Drime application with "The whole
+//     Drive" access (a file manager/sync tool): an app created with
+//     "A folder of its own" only ever sees its own folder under
+//     Applications, and the sync API is unavailable to it. That
+//     choice cannot change once someone has connected, so the
+//     wizard's help text says so up front.
 
 const oauthRedirectURI = "http://localhost"
 
@@ -43,6 +58,7 @@ type oauthProvider struct {
 	tokenURL     string
 	scopes       []string
 	extra        map[string]string // extra authorize-query params
+	pkce         bool              // PKCE (RFC 7636, S256) required, Drime only
 }
 
 var oauthProviders = map[domain.ProviderKind]oauthProvider{
@@ -58,14 +74,26 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 		scopes:       []string{"https://www.googleapis.com/auth/drive"},
 		extra:        map[string]string{"access_type": "offline", "prompt": "consent"},
 	},
+	domain.ProviderDrime: {
+		authEndpoint: "https://app.drime.cloud/oauth/authorize",
+		tokenURL:     "https://app.drime.cloud/oauth/token",
+		scopes:       []string{"files.read", "files.write", "folders.read", "folders.write", "sharing.read", "sharing.write"},
+		pkce:         true,
+	},
 }
 
-// oauthStates holds pending CSRF states: state -> expiry. Single-use:
+// oauthStates holds pending CSRF states: state -> pending exchange
+// (expiry + PKCE verifier when the provider needs one). Single-use:
 // ExchangeOAuthCode deletes the state it accepts, so a captured code
 // URL cannot be replayed after the exchange.
+type oauthPending struct {
+	expiry   time.Time
+	verifier string // PKCE code_verifier, "" when unused
+}
+
 var (
 	oauthMu     sync.Mutex
-	oauthStates = map[string]time.Time{}
+	oauthStates = map[string]oauthPending{}
 )
 
 // OAuthStart is what BeginOAuth returns: the URL to open + the state
@@ -96,6 +124,7 @@ func (a *App) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthS
 	if err != nil {
 		return nil, err
 	}
+	verifier := ""
 	q := url.Values{}
 	q.Set("client_id", strings.TrimSpace(clientID))
 	q.Set("response_type", "code")
@@ -105,8 +134,20 @@ func (a *App) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthS
 	for k, v := range p.extra {
 		q.Set(k, v)
 	}
+	if p.pkce {
+		// Drime desktop apps are public clients: PKCE (S256) is
+		// required and no secret is ever sent. The verifier is
+		// stored with the state and presented at the exchange.
+		v, err := auth.NewPKCEVerifier()
+		if err != nil {
+			return nil, err
+		}
+		verifier = v
+		q.Set("code_challenge", auth.ChallengeForVerifier(v))
+		q.Set("code_challenge_method", "S256")
+	}
 	oauthMu.Lock()
-	oauthStates[state] = time.Now().Add(10 * time.Minute)
+	oauthStates[state] = oauthPending{expiry: time.Now().Add(10 * time.Minute), verifier: verifier}
 	oauthMu.Unlock()
 	return &OAuthStart{AuthURL: p.authEndpoint + "?" + q.Encode(), State: state}, nil
 }
@@ -124,7 +165,7 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 		return nil, fmt.Errorf("app: 需要粘贴授权码（code）")
 	}
 	oauthMu.Lock()
-	expiry, known := oauthStates[state]
+	pending, known := oauthStates[state]
 	if known {
 		delete(oauthStates, state)
 	}
@@ -132,7 +173,7 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 	if !known {
 		return nil, fmt.Errorf("app: 授权链接已失效或已被用过，请重新点“生成授权链接”")
 	}
-	if time.Now().After(expiry) {
+	if time.Now().After(pending.expiry) {
 		return nil, fmt.Errorf("app: 授权链接已过期（10 分钟），请重新生成")
 	}
 	if tokenURL == "" {
@@ -143,6 +184,7 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 		ClientSecret: clientSecret,
 		TokenURL:     tokenURL,
 		RedirectURI:  oauthRedirectURI,
+		CodeVerifier: pending.verifier,
 	}, strings.TrimSpace(code))
 	if err != nil {
 		return nil, err

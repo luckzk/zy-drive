@@ -148,6 +148,30 @@ try {
     await page.screenshot({ path: path.join(SHOTS, '01b-wizard-s3-recap.png') })
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
+
+    // 1c. Drime 向导（V0.5.0）：Drime 必须可选（不再标 V0.2），
+    // 第 2 步以个人访问令牌为主——提示“令牌只显示一次”且没有
+    // Client Secret 字段（Drime 公共客户端不收 secret），另有
+    // 可选的工作区 ID 字段。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    const drimeCard = page.locator('.agent-row', { hasText: 'Drime' }).first()
+    const drimeCardText = await drimeCard.textContent()
+    console.log('drime card:', JSON.stringify(drimeCardText))
+    if (drimeCardText?.includes('V0.2')) failures.push('向导里 Drime 还标着 V0.2（应已可选）')
+    await drimeCard.click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const drimeStep2 = await page.locator('.dialog').textContent()
+    console.log('drime step2:', JSON.stringify(drimeStep2?.slice(0, 400)))
+    if (!drimeStep2?.includes('个人访问令牌')) failures.push('Drime 向导第 2 步没有“个人访问令牌”主入口提示')
+    if (!drimeStep2?.includes('令牌只显示一次')) failures.push('Drime 向导第 2 步没有“令牌只显示一次”的提示')
+    if (drimeStep2?.includes('Client Secret')) failures.push('Drime 向导第 2 步出现了 Client Secret 字段（公共客户端不收 secret，应隐藏）')
+    if (!drimeStep2?.includes('工作区 ID')) failures.push('Drime 向导第 2 步没有“工作区 ID”字段')
+    await page.screenshot({ path: path.join(SHOTS, '01c-wizard-drime.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
   }
 
   // 2. 侧栏 + 菜单（问题 3+4）：网盘标题右边只有一个 + 小按钮；

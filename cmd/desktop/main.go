@@ -21,6 +21,7 @@ import (
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
+	"github.com/luckzk/zy-drive/internal/storage/providers/drime"
 	"github.com/luckzk/zy-drive/internal/storage/providers/dropbox"
 	"github.com/luckzk/zy-drive/internal/storage/providers/local"
 	"github.com/luckzk/zy-drive/internal/storage/providers/s3"
@@ -75,8 +76,9 @@ func main() {
 	registry.Register(domain.ProviderS3, s3.New)
 	registry.Register(domain.ProviderDropbox, dropbox.New)
 	registry.Register(domain.ProviderDrive, drive.New)
+	registry.Register(domain.ProviderDrime, drime.New)
 	registry.Register(domain.ProviderLocal, local.New)
-	// OneDrive / Drime: registered in V0.2 when their drivers land.
+	// OneDrive: registered in V0.2 when its driver lands.
 
 	queue := transfer.NewQueue(db)
 	application := app.New(db, registry, queue)
