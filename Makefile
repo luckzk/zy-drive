@@ -1,7 +1,7 @@
-GO ?= $(HOME)/tools/go/bin/go
+GO ?= go
 GOFLAGS ?= -trimpath
 
-.PHONY: all tidy vet test build build-desktop build-agent build-cli clean run-desktop run-agent
+.PHONY: all tidy vet test build build-frontend build-desktop build-agent build-cli clean run-desktop run-agent
 
 all: tidy vet test build
 
@@ -14,9 +14,12 @@ vet:
 test:
 	$(GO) test ./...
 
-build: build-desktop build-agent build-cli
+build: build-frontend build-desktop build-agent build-cli
 
-build-desktop:
+build-frontend:
+	cd frontend && npm install && npm run build
+
+build-desktop: build-frontend
 	$(GO) build $(GOFLAGS) -o build/mcm-desktop ./cmd/desktop
 
 build-agent:
