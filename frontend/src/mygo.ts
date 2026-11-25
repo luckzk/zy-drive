@@ -187,6 +187,18 @@ export interface Mount {
    */
   rootLabel?: string;
   /**
+   * WorkspaceLabel names the Drime workspace this mount is bound
+   * to, derived from the stored non-secret config — "个人空间"
+   * when no workspace id was given (workspace 0), "工作区 8762"
+   * otherwise. Display only, and it is also the scope the quota
+   * numbers belong to: the Drime quota endpoint is workspace-
+   * scoped (GET /user/space-usage?workspaceId=N), so the sidebar
+   * shows this label next to the quota — a number without its
+   * workspace is how a team-workspace mount ends up looking like
+   * an account total (fixed 2026-11-25). "" for non-Drime mounts.
+   */
+  workspaceLabel?: string;
+  /**
    * EndpointHost is the host of the S3-compatible endpoint
    * (e.g. "<account>.r2.cloudflarestorage.com"), derived from the
    * stored non-secret config. Display only: the sidebar uses it

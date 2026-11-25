@@ -280,6 +280,9 @@ export default function FileBrowser({ mount, quota, onRefreshQuota }: { mount: M
             not a second call): the number here and there never disagree. */}
         <div className="browse-quota" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
+            {/* Drime 容量是工作区口径：数字前面标明是哪个工作区
+                （个人空间 / 工作区 8762），不让用户误以为是账号总量。 */}
+            {mount.workspaceLabel && <div className="quota-text" style={{ marginBottom: 2 }}>{mount.workspaceLabel}容量</div>}
             <QuotaBar quota={quota} />
           </div>
           {quota && !quota.unlimited && !quota.error && (

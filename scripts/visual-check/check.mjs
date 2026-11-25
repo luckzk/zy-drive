@@ -46,7 +46,7 @@ const MOCK_MOUNTS = [
   { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
   { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', verified: true, createdAt: '', updatedAt: '' },
   { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', caps: { ...CAPS, idBased: true }, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', workspaceLabel: '工作区 8762', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
   { id: 'm-local', displayName: '本地照片', provider: 'local', accountId: 'a7', rootRef: '/Users/zy/照片', rootLabel: '/Users/zy/照片', group: '存储 / 备份', caps: CAPS, status: 'ok', verified: false, createdAt: '', updatedAt: '' },
   // 超长网盘名（30 个汉字）：悬停删除按钮时名字必须仍是单行
   // 省略、不换行；它的容量查询失败，侧栏应显示“容量暂不可用”。
@@ -86,7 +86,16 @@ const STUB_NODES = [
 ]
 const STUB_MOUNTS = process.env.VISUAL_MOUNTS ? JSON.stringify(MOCK_MOUNTS) : '[]'
 const STUB_QUOTAS_JSON = process.env.VISUAL_MOUNTS ? JSON.stringify(STUB_QUOTAS) : '[]'
+// VISUAL_SLOW_LOAD=1：ListMounts / MountQuotas 各慢 1200ms 返回，
+// 只为断言首屏加载时序（骨架与网盘行绝不同时出现），不进前端代码。
+const SLOW_MS = process.env.VISUAL_SLOW_LOAD ? 1200 : 0
 const STUB = `(() => {
+  const SLOW_MS = ${SLOW_MS}
+  // 慢速只影响首次调用：首屏加载时序的断言要看到“加载中”
+  // 的样子，但后面的步骤（设置页等）各自调 ListMounts 时
+  // 不应再被拖慢，否则固定等待会赶不上。
+  let slowLeft = SLOW_MS ? 2 : 0
+  const slow = () => { if (slowLeft <= 0) return Promise.resolve(); slowLeft -= 1; return new Promise((r) => setTimeout(r, SLOW_MS)) }
   const empty = { 'DesktopService.ListAgents': [], 'DesktopService.Transfers': [], 'DesktopService.ListSyncJobs': [] }
   // 可变的桩网盘：ListMounts 返回这份 live 列表，AddMount 往里加、
   // TestMount 把 verified 翻成 true，后面的步骤（设置页重新测试）
@@ -98,7 +107,7 @@ const STUB = `(() => {
     on: (name, fn) => { (listeners[name] ??= []).push(fn); return () => { listeners[name] = (listeners[name] ?? []).filter((f) => f !== fn) } },
     once: (name, fn) => { const wrap = (p) => { fn(p); listeners[name] = (listeners[name] ?? []).filter((f) => f !== wrap) }; (listeners[name] ??= []).push(wrap); return () => {} },
     call: async (method, ...args) => {
-      if (method === 'DesktopService.ListMounts') return __mockMounts
+      if (method === 'DesktopService.ListMounts') { await slow(); return __mockMounts }
       if (method === 'DesktopService.AgentStatus') return { total: 0, online: 0 }
       // A/B/C 桩：内置一键授权只给 Dropbox 配了 Client ID（Drive /
       // OneDrive 走自建应用）；BeginOAuth 返回一个环回地址，
@@ -131,7 +140,7 @@ const STUB = `(() => {
         __mockMounts = __mockMounts.filter((x) => x.id !== args[0])
         return null
       }
-      if (method === 'DesktopService.MountQuotas') return ${STUB_QUOTAS_JSON}
+      if (method === 'DesktopService.MountQuotas') { await slow(); return ${STUB_QUOTAS_JSON} }
       if (method === 'DesktopService.ValidateJob') return null
       if (method === 'DesktopService.Browse') return ${JSON.stringify(STUB_NODES)}
       if (method === 'DesktopService.PreviewSync') return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
@@ -192,6 +201,32 @@ try {
   page.on('pageerror', (e) => failures.push(`pageerror: ${e.message}`))
   await page.addInitScript(STUB)
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' })
+
+  // 0b. 首屏加载时序（v0.8.4，VISUAL_MOUNTS + VISUAL_SLOW_LOAD）：
+  // 加载中只有骨架、没有网盘行；加载完成后骨架消失、网盘行
+  // 出现。之前侧栏分组列表在 loading 三元之外无条件渲染，
+  // 骨架还在上面转、网盘已经出来了。
+  if (process.env.VISUAL_MOUNTS && process.env.VISUAL_SLOW_LOAD) {
+    await page.waitForTimeout(300)
+    const loadingMid = await page.evaluate(() => ({
+      sidebarSkeletons: document.querySelectorAll('.sidebar .skeleton').length,
+      mainSkeletons: document.querySelectorAll('main .skeleton').length,
+      mountCards: document.querySelectorAll('.mount-card').length,
+    }))
+    console.log('loading mid-flight:', JSON.stringify(loadingMid))
+    if (loadingMid.sidebarSkeletons === 0 && loadingMid.mainSkeletons === 0) failures.push('加载中没有骨架（应只显示骨架、不渲染网盘行）')
+    if (loadingMid.mountCards !== 0) failures.push(`加载中就出现了 ${loadingMid.mountCards} 张网盘卡片（加载完成前不应渲染已保存的网盘）`)
+    await page.screenshot({ path: path.join(SHOTS, '00-loading.png') })
+    await page.waitForTimeout(1600)
+    const loadingDone = await page.evaluate(() => ({
+      sidebarSkeletons: document.querySelectorAll('.sidebar .skeleton').length,
+      mountCards: document.querySelectorAll('.mount-card').length,
+    }))
+    console.log('loading settled:', JSON.stringify(loadingDone))
+    if (loadingDone.sidebarSkeletons !== 0) failures.push(`加载完成后侧栏还有 ${loadingDone.sidebarSkeletons} 个骨架（应消失）`)
+    if (loadingDone.mountCards === 0) failures.push('加载完成后没有网盘卡片（应出现已保存的网盘）')
+  }
+
   await page.waitForTimeout(800)
 
   // 0. 顶栏品牌 logo：logo.svg 放在 ZyDrive 文字旁、26px 高且加载成功；
@@ -509,6 +544,30 @@ try {
     if (!autoTokens.hasRefresh) failures.push('自动回调后 Refresh Token 没有自动填进表单')
     if (!autoTokens.text.includes('Token 已换取成功')) failures.push('自动回调后没有显示“Token 已换取成功”')
     if (!autoTokens.hasPasteBox) failures.push('手动粘贴 code 的兜底框不见了（浏览器没跳回时要用）')
+    // v0.8.4（Dropbox 一键授权修复）：自动换到 Token 后，同一个
+    // 单次有效的 code 不能再换一次——手动“换取 Token”按钮必须
+    // 变成禁用的“已换到 Token”，并显示链接生成时间（10 分钟有效）。
+    const afterExchange = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      if (!d) return { found: false }
+      const btns = [...d.querySelectorAll('button')]
+      const exBtn = btns.find((b) => (b.textContent ?? '').includes('换取 Token') || (b.textContent ?? '').includes('已换到 Token'))
+      const codeInput = [...d.querySelectorAll('input')].find((i) => (i.getAttribute('placeholder') ?? '').includes('code='))
+      return {
+        found: true,
+        exchangeLabel: exBtn?.textContent ?? '',
+        exchangeDisabled: exBtn ? exBtn.disabled : null,
+        codeInputDisabled: codeInput ? codeInput.disabled : null,
+        hasLinkTime: (d.textContent ?? '').includes('链接生成于'),
+        hasSpentNote: (d.textContent ?? '').includes('不用再换一次'),
+      }
+    })
+    console.log('oneclick after exchange:', JSON.stringify(afterExchange))
+    if (!afterExchange.exchangeLabel.includes('已换到 Token')) failures.push('自动换到 Token 后手动按钮没有变成“已换到 Token”（同一 code 不能再换一次）')
+    if (afterExchange.exchangeDisabled !== true) failures.push('自动换到 Token 后手动“换取 Token”按钮没有禁用（会造成二次换取）')
+    if (afterExchange.codeInputDisabled !== true) failures.push('自动换到 Token 后授权码输入框没有禁用')
+    if (!afterExchange.hasLinkTime) failures.push('授权链接旁没有显示生成时间（code 只有 10 分钟有效）')
+    if (!afterExchange.hasSpentNote) failures.push('自动换到 Token 后没有“不用再换一次”的提示')
     await page.screenshot({ path: path.join(SHOTS, '01g-wizard-oneclick.png') })
     // 切到自己的应用：填 Client ID，保存为我的应用。
     await page.locator('.provider-card', { hasText: '自己的应用' }).first().click()
@@ -666,6 +725,7 @@ try {
       return {
         cardCount: cards.length,
         drimeHasUsage: drime.includes('已用 291.0 GB / 512.0 GB'),
+        drimeHasWorkspace: drime.includes('工作区 8762'),
         drimeHasBar: !!cards.find((c) => c.querySelector('.mount-name')?.textContent?.includes('Drime'))?.querySelector('.quota-fill'),
         s3Unlimited: s3.includes('不限量'),
         localDisk: local.includes('本机磁盘'),
@@ -675,6 +735,7 @@ try {
     })
     console.log('sidebar quotas:', JSON.stringify(quotaCheck))
     if (!quotaCheck.drimeHasUsage) failures.push('侧栏 Drime 卡片没有显示“已用 291.0 GB / 512.0 GB”（compact 版不带“共”字）')
+    if (!quotaCheck.drimeHasWorkspace) failures.push('侧栏 Drime 卡片没有显示工作区“工作区 8762”（容量是工作区口径，数字旁必须标明是哪个工作区）')
     if (!quotaCheck.drimeHasBar) failures.push('侧栏 Drime 卡片没有容量进度条（.quota-fill）')
     if (!quotaCheck.s3Unlimited) failures.push('侧栏 S3 卡片没有显示“不限量”（R2 没有配额接口）')
     if (!quotaCheck.localDisk) failures.push('侧栏本地文件夹卡片没有注明“本机磁盘”')

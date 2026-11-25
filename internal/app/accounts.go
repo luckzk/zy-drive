@@ -170,6 +170,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		AccountID:    secretIDFor(id),
 		RootRef:      rootRefFor(in),
 		RootLabel:    rootLabelFor(in),
+		WorkspaceLabel: workspaceLabelFor(in),
 		EndpointHost: endpointHost(in.Endpoint),
 		Group:        strings.TrimSpace(in.Group),
 		Caps:         p.Caps(),
@@ -347,6 +348,34 @@ func rootRefFor(in AddMountInput) string {
 	}
 }
 
+// workspaceLabelFor is the display label of the Drime workspace an
+// AddMountInput binds to: "个人空间" when no workspace id was given
+// (workspace 0), "工作区 <id>" otherwise. "" for non-Drime mounts.
+// The label is display only, but it is also the quota's scope —
+// the Drime quota endpoint returns the usage of exactly this
+// workspace, so the UI always shows the label next to the numbers.
+func workspaceLabelFor(in AddMountInput) string {
+	if in.Provider != domain.ProviderDrime {
+		return ""
+	}
+	if id := strings.TrimSpace(in.WorkspaceID); id != "" {
+		return "工作区 " + id
+	}
+	return "个人空间"
+}
+
+// workspaceLabelFromConfig is workspaceLabelFor over a persisted
+// non-secret config map (LoadMounts path).
+func workspaceLabelFromConfig(provider domain.ProviderKind, cfg map[string]string) string {
+	if provider != domain.ProviderDrime {
+		return ""
+	}
+	if id := strings.TrimSpace(cfg["workspace_id"]); id != "" {
+		return "工作区 " + id
+	}
+	return "个人空间"
+}
+
 // endpointHost returns the host part of an endpoint URL ("" when
 // empty or unparseable). Display only: the sidebar picks the R2
 // (Cloudflare) or AWS S3 brand mark from it. The host is the public
@@ -429,6 +458,10 @@ func (a *App) LoadMounts() error {
 		// non-secret config on every load (older rows never had
 		// the field; nothing is persisted for it here).
 		m.EndpointHost = endpointHost(pm.Config["endpoint"])
+		// Workspace label (Drime only): recomputed from the stored
+		// non-secret config on every load, so mounts saved before
+		// this field existed still show their workspace.
+		m.WorkspaceLabel = workspaceLabelFromConfig(m.Provider, pm.Config)
 		// Self-heal (2026-11-25, S3 root fix): mounts saved before
 		// the fix carry RootRef "bucket" or "bucket/prefix", which
 		// the browse/sync/upload code treats as a key prefix — the

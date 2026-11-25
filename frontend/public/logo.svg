@@ -1,52 +1,17 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 160" width="200" height="160" role="img" aria-label="ZyDrive logo">
-  <!-- ZyDrive logo — layered green cloud, hand-drawn vector from the
-       approved draft (media-generation-zydrive-logo-layered-green-0).
-       Three large lobes + one small lobe top-right, flat bottom,
-       hollow dip in the middle. No bitmap embedded: pure vector paths.
-       Brand green #56E16C is the top stop of the front-right lobe. -->
-  <defs>
-    <linearGradient id="zy-back-big" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#B9ECC2"/>
-      <stop offset="1" stop-color="#8AD69B"/>
-    </linearGradient>
-    <linearGradient id="zy-back-small" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#C9F2D1"/>
-      <stop offset="1" stop-color="#97DDA9"/>
-    </linearGradient>
-    <linearGradient id="zy-mid" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#93D5A4"/>
-      <stop offset="1" stop-color="#54B874"/>
-    </linearGradient>
-    <linearGradient id="zy-mid-right" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7CCB90"/>
-      <stop offset="1" stop-color="#3E9E60"/>
-    </linearGradient>
-    <linearGradient id="zy-front-left" x1="1" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#46B268"/>
-      <stop offset="0.55" stop-color="#1F8A46"/>
-      <stop offset="1" stop-color="#0E5A2C"/>
-    </linearGradient>
-    <linearGradient id="zy-front-right" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#56E16C"/>
-      <stop offset="0.55" stop-color="#2BAE5C"/>
-      <stop offset="1" stop-color="#128A44"/>
-    </linearGradient>
-    <clipPath id="zy-flat-bottom">
-      <rect x="0" y="0" width="200" height="148" rx="16"/>
-    </clipPath>
-  </defs>
-  <g clip-path="url(#zy-flat-bottom)">
-    <!-- back layer: large dome top-left, small dome top-right -->
-    <circle cx="140" cy="60" r="30" fill="url(#zy-back-small)"/>
-    <circle cx="78" cy="82" r="50" fill="url(#zy-back-big)"/>
-    <!-- middle layer: wide dome -->
-    <ellipse cx="128" cy="102" rx="58" ry="42" fill="url(#zy-mid)"/>
-    <ellipse cx="166" cy="100" rx="28" ry="22" fill="url(#zy-mid-right)"/>
-    <!-- front layer: big circle bottom-left -->
-    <circle cx="52" cy="118" r="46" fill="url(#zy-front-left)"/>
-    <!-- front layer: bottom-right lobe, two overlapping circles
-         so the top edge dips in the middle (hollow) -->
-    <circle cx="112" cy="120" r="36" fill="url(#zy-front-right)"/>
-    <circle cx="168" cy="122" r="32" fill="url(#zy-front-right)"/>
-  </g>
-</svg>
+<!-- ZyDrive logo — user-supplied artwork (2026-11-25); viewBox cropped to the cloud bounds per user decision, drawing untouched. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="141" viewBox="28 87 398 281" role="img" aria-label="ZyDrive logo">
+<defs>
+<linearGradient id="a" x1=".7" y1="0" x2=".2" y2="1"><stop stop-color="#b9f3bf"/><stop offset="1" stop-color="#16964e"/></linearGradient>
+<linearGradient id="b" x1=".7" y1="0" x2=".2" y2="1"><stop stop-color="#d0f8b4"/><stop offset="1" stop-color="#48b96b"/></linearGradient>
+<linearGradient id="c" x1=".6" y1="0" x2=".3" y2="1"><stop stop-color="#a4ec9b"/><stop offset="1" stop-color="#159b49"/></linearGradient>
+<linearGradient id="d" x1=".8" y1="0" x2=".1" y2="1"><stop stop-color="#d0fa9f"/><stop offset="1" stop-color="#35b94f"/></linearGradient>
+<linearGradient id="e" x1=".8" y1="0" x2=".1" y2="1"><stop stop-color="#85e66b"/><stop offset=".55" stop-color="#24ad4d"/><stop offset="1" stop-color="#08783a"/></linearGradient>
+<clipPath id="cloud"><path d="M118 364C70 364 32 326 32 278C32 239 56 206 90 194C87 137 131 91 186 91C229 91 264 116 278 143C313 116 364 141 364 191C399 204 422 237 422 278C422 326 389 364 344 364Z"/></clipPath>
+</defs>
+<g clip-path="url(#cloud)">
+<path fill="url(#b)" d="M0 0H454V454H0Z"/>
+<circle cx="186" cy="188" r="97" fill="url(#a)"/>
+<ellipse cx="307" cy="278" rx="117" ry="100" fill="url(#c)"/>
+<path fill="url(#d)" d="M174 364V283C203 209 301 208 346 276C382 245 422 257 439 289V364Z"/>
+<ellipse cx="130" cy="297" rx="99" ry="106" fill="url(#e)"/>
+</g></svg>

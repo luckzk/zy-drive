@@ -208,7 +208,12 @@ export default function Sidebar({
           </p>
         </div>
       ) : null}
-      {orderedGroups.map((g) => {
+      {/* 首屏加载时序（2026-11-25 修复）：骨架与网盘行绝不同时
+          出现。loading 为真时只渲染上面的骨架块，分组列表与
+          新建分组输入框都要等加载完成再渲染——之前分组列表
+          在三元表达式之外无条件渲染，网盘先出来了、骨架还在
+          上面转。 */}
+      {!loading && orderedGroups.map((g) => {
         const members = mountsOf(g)
         const isDeleting = deleting === g
         return (
@@ -324,6 +329,7 @@ export default function Sidebar({
                       </div>
                       <div className="mount-meta">
                         {m.provider}
+                        {m.workspaceLabel ? ` · ${m.workspaceLabel}` : ''}
                         {st ? ` · ${st}` : ''}
                         {!m.verified && (
                           <span className="badge badge-amber" style={{ marginLeft: 6 }}>
@@ -390,7 +396,7 @@ export default function Sidebar({
           仍是上下两行（输入框独占一行，按钮在下一行），绝不竖排。
           分组本身是 session-only 的 extraGroups（V0.1 既有行为），
           这里不改持久化。 */}
-      {addingGroup && (
+      {addingGroup && !loading && (
         <div style={{ marginTop: 4 }}>
           <input
             className="input"

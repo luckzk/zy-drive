@@ -140,6 +140,12 @@ function OAuthCodeFlow({
   exchangeCode,
   generateLabel,
   generatePrimary,
+  // tokensReady: a token was already obtained from this flow —
+  // the code is spent, exchanging again can only fail.
+  // linkAt: when the current link was minted (ms epoch); the
+  // code lives 10 minutes and is single-use.
+  tokensReady,
+  linkAt,
 }: {
   authUrl: string
   code: string
@@ -154,7 +160,16 @@ function OAuthCodeFlow({
   // primary action ("打开浏览器授权").
   generateLabel?: string
   generatePrimary?: boolean
+  tokensReady?: boolean
+  linkAt?: number | null
 }) {
+  // While the poll is waiting for the browser to jump back, the
+  // code will exchange itself the moment it lands — a manual
+  // paste + click in that window would race it and exchange the
+  // same single-use code twice (Dropbox one-click fix,
+  // 2026-11-25). Manual exchange is only live once waiting stops
+  // (cancelled, timed out, or the jump-back never happened).
+  const manualDisabled = oauthBusy || waiting || !!tokensReady
   return (
     <>
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
@@ -168,6 +183,11 @@ function OAuthCodeFlow({
             <label>授权链接（复制到浏览器里打开，或点下面的按钮）</label>
             <textarea className="textarea" readOnly rows={3} value={authUrl} onFocus={(e) => e.target.select()} />
           </div>
+          {linkAt && (
+            <p className="muted" style={{ margin: '0 0 12px' }}>
+              链接生成于 {new Date(linkAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}，10 分钟内有效；授权码只能用一次，换过就作废了。
+            </p>
+          )}
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
             <button className="btn" onClick={() => window.open(authUrl, '_blank', 'noopener')}>
               在浏览器里打开
@@ -180,16 +200,21 @@ function OAuthCodeFlow({
           </div>
           {waiting && (
             <div className="notice-box">
-              已打开授权页：等你在浏览器里点允许，拿到 code 会自动换 Token，不用复制回来。浏览器没跳回的话，把地址栏里的 code 粘贴到下面，点“换取 Token”。
+              已打开授权页：等你在浏览器里点允许，拿到 code 会自动换 Token。浏览器没跳回？点“取消等待”，再把地址栏里的 code 粘贴到下面点“换取 Token”。
+            </div>
+          )}
+          {tokensReady && (
+            <div className="notice-box">
+              已换到 Token，不用再换一次，点“下一步：测试”继续。想换个账号授权就重新点“生成授权链接”。
             </div>
           )}
           <div className="field">
             <label>授权码（code，浏览器没自动跳回时才需要手动粘贴）</label>
-            <input className="input" placeholder="粘贴 code= 后面的值" autoComplete="off" value={code} onChange={(e) => setCode(e.target.value)} />
+            <input className="input" placeholder="粘贴 code= 后面的值" autoComplete="off" value={code} disabled={manualDisabled} onChange={(e) => setCode(e.target.value)} />
           </div>
           <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button className="btn" disabled={oauthBusy} onClick={exchangeCode}>
-              {oauthBusy ? '换取中…' : '换取 Token'}
+            <button className="btn" disabled={manualDisabled} onClick={exchangeCode}>
+              {oauthBusy ? '换取中…' : waiting ? '等浏览器跳回…' : tokensReady ? '已换到 Token' : '换取 Token'}
             </button>
           </div>
         </>
@@ -241,6 +266,11 @@ export default function AddMountDialog({
   const [code, setCode] = useState('')
   const [oauthBusy, setOauthBusy] = useState(false)
   const [oauthMsg, setOauthMsg] = useState<string | null>(null)
+  // When the current authorize link was minted (ms epoch): the
+  // code is only good for 10 minutes, and a code is single-use,
+  // so the UI shows the time and never lets a dead code be
+  // exchanged twice (Dropbox one-click fix, 2026-11-25).
+  const [linkAt, setLinkAt] = useState<number | null>(null)
   // (B) builtin one-click client id: null = not loaded yet,
   // '' = official app not registered (self-built flow only).
   const [builtinClientId, setBuiltinClientId] = useState<string | null>(null)
@@ -323,6 +353,7 @@ export default function AddMountDialog({
     setAuthUrl('')
     setCode('')
     setOauthMsg(null)
+    setLinkAt(null)
     setBuiltinClientId(null)
     setCustomApp(null)
     setCustomSavedMsg(null)
@@ -481,7 +512,12 @@ export default function AddMountDialog({
         // ~5 minutes: stop asking and say so in plain language.
         // The backend keeps the state until its own 10-minute
         // expiry, so a late jump-back can still be pasted by hand.
-        stopWaiting(true)
+        // NOTE: stopWaiting(false) on purpose — cancelling the
+        // remote state here would delete the verifier the pasted
+        // code still needs, and the paste would die with a
+        // misleading "链接已失效" (Dropbox one-click fix,
+        // 2026-11-25). Full cancel only happens on dialog close.
+        stopWaiting(false)
         setOauthMsg('等了 5 分钟，浏览器还没有跳回（可能本机回调端口被挡住了）：请复制地址栏里的 code 粘贴到下面，点“换取 Token”。')
         return
       }
@@ -523,11 +559,21 @@ export default function AddMountDialog({
     try {
       const start = await api.beginOAuth(provider, id.trim())
       if (!start) throw new Error('生成授权链接失败。')
+      // A fresh link voids everything from the previous one: the
+      // old code (if any) was issued for the old link's verifier
+      // + redirect URI, and exchanging it against the new flow
+      // can only fail with invalid_grant. Clear it so the user
+      // cannot paste a dead code into the new flow (Dropbox
+      // one-click fix, 2026-11-25).
+      setCode('')
+      setAccessToken('')
+      setRefreshToken('')
       setAuthUrl(start.authUrl)
       setOauthState(start.state)
       oauthStateRef.current = start.state
       setLinkClientId(id.trim())
       setLinkClientSecret(secret)
+      setLinkAt(Date.now())
       setOauthMsg('链接已生成：在浏览器里打开它，授权后会自动跳回 ZyDrive，code 会自己换成 Token；如果浏览器没跳回，再把地址栏里的 code 粘贴回来。')
       startWaiting(start.state)
     } catch (e) {
@@ -558,7 +604,13 @@ export default function AddMountDialog({
       if (tokens.refreshToken) setRefreshToken(tokens.refreshToken)
       setOauthMsg(tokens.refreshToken ? 'Token 已换取成功（拿到 Refresh Token，长期有效）。' : 'Token 已换取成功（只拿到 Access Token，过期后需重新授权）。')
     } catch (e) {
-      setOauthMsg(friendlyError(e))
+      const msg = friendlyError(e)
+      setOauthMsg(msg)
+      // A dead code must not linger in the box: if the provider
+      // says the code is used / expired / mismatched, the same
+      // code can never succeed — clear it so the next attempt
+      // cannot be a doomed retry of the same code.
+      if (/已用过|已过期|不匹配/.test(msg)) setCode('')
     } finally {
       setOauthBusy(false)
     }
@@ -574,6 +626,7 @@ export default function AddMountDialog({
     setAuthUrl('')
     setCode('')
     setOauthMsg(null)
+    setLinkAt(null)
     setCustomSavedMsg(null)
     setConfirmDeleteCustom(false)
     setAppSource(src)
@@ -685,9 +738,11 @@ export default function AddMountDialog({
             oauthBusy={oauthBusy}
             oauthMsg={oauthMsg}
             waiting={waiting}
-            onCancelWait={() => stopWaiting(true)}
+            onCancelWait={() => stopWaiting(false)}
             genAuthLink={() => void genAuthLink(clientId, clientSecret)}
             exchangeCode={() => void exchangeCode()}
+                  tokensReady={accessToken !== ''}
+                  linkAt={linkAt}
           />
           {tokenFields}
           <p className="muted">
@@ -727,9 +782,11 @@ export default function AddMountDialog({
             oauthBusy={oauthBusy}
             oauthMsg={oauthMsg}
             waiting={waiting}
-            onCancelWait={() => stopWaiting(true)}
+            onCancelWait={() => stopWaiting(false)}
             genAuthLink={() => void genAuthLink(clientId, clientSecret)}
             exchangeCode={() => void exchangeCode()}
+                  tokensReady={accessToken !== ''}
+                  linkAt={linkAt}
           />
           {tokenFields}
           <p className="muted">
@@ -770,9 +827,11 @@ export default function AddMountDialog({
             oauthBusy={oauthBusy}
             oauthMsg={oauthMsg}
             waiting={waiting}
-            onCancelWait={() => stopWaiting(true)}
+            onCancelWait={() => stopWaiting(false)}
             genAuthLink={() => void genAuthLink(clientId, clientSecret)}
             exchangeCode={() => void exchangeCode()}
+                  tokensReady={accessToken !== ''}
+                  linkAt={linkAt}
           />
           {tokenFields}
           <p className="muted">
@@ -1020,9 +1079,11 @@ export default function AddMountDialog({
                   oauthBusy={oauthBusy}
                   oauthMsg={oauthMsg}
                   waiting={waiting}
-                  onCancelWait={() => stopWaiting(true)}
+                  onCancelWait={() => stopWaiting(false)}
                   genAuthLink={() => void genAuthLink(builtinClientId, '')}
                   exchangeCode={() => void exchangeCode()}
+                  tokensReady={accessToken !== ''}
+                  linkAt={linkAt}
                   generateLabel="打开浏览器授权"
                   generatePrimary
                 />

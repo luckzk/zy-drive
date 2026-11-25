@@ -520,6 +520,7 @@ export default function SettingsPage({
                   {m.group ? ` · 分组“${m.group}”` : ''}
                   {mountStatusLabel(m.status) ? ` · ${mountStatusLabel(m.status)}` : ''}
                   {m.rootLabel || m.rootRef ? ` · ${m.rootLabel || m.rootRef}` : ''}
+                  {m.workspaceLabel ? ` · ${m.workspaceLabel}` : ''}
                 </div>
                 {testMountMsg[m.id] && (
                   <div style={{ fontSize: 13, marginTop: 4 }}>

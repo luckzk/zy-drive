@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -116,12 +117,17 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 // oauthPending is one in-flight authorization: the state the
 // exchange must present, the PKCE verifier, the per-flow loopback
 // redirect URI, and — once the browser jumps back — the caught
-// code. Single-use: ExchangeOAuthCode deletes the state it
-// accepts, so a captured code URL cannot be replayed after the
-// exchange. The listener is closed as soon as the code lands
-// (or when the flow expires / is cancelled); the pending entry
-// itself lives until the exchange consumes it or it expires, so
-// PollOAuthCallback can keep reading the outcome.
+// code. Single-use on SUCCESS: a successful exchange deletes
+// the state so a captured code URL cannot be replayed. A FAILED
+// exchange keeps the state (same verifier + redirect_uri) so the
+// same code can be retried inside the 10-minute expiry —
+// deleting it first used to burn the flow on any token-endpoint
+// failure and the retry then died with a misleading "链接已失效"
+// (fixed 2026-11-25, Dropbox one-click). The listener is closed
+// as soon as the code lands (or when the flow expires / is
+// cancelled); the pending entry itself lives until the exchange
+// consumes it or it expires, so PollOAuthCallback can keep
+// reading the outcome.
 type oauthPending struct {
 	expiry      time.Time
 	verifier    string // PKCE code_verifier
@@ -361,10 +367,20 @@ func (a *App) CancelOAuth(state string) {
 // either the code the loopback listener caught (auto flow) or
 // one pasted by hand (fallback). tokenURL is empty in production
 // (per-provider default); tests pass a mock token endpoint here.
-// The state must be one BeginOAuth issued and not yet used. The
-// redirect_uri sent here is the one BeginOAuth minted for this
-// flow, not a constant: the provider checks it matches the
-// authorize URL exactly.
+// The state must be one BeginOAuth issued. The redirect_uri sent
+// here is the one BeginOAuth minted for this flow, not a constant:
+// the provider checks it matches the authorize URL exactly.
+//
+// Single-use, but only on SUCCESS (2026-11-25 fix): the state
+// used to be deleted before the token call, so any failure at
+// the token endpoint — a network blip, a provider 5xx — burned
+// the flow: the code is single-use at the provider, the state
+// was gone, and the user's retry with the same code died with
+// the misleading "授权链接已失效或已被用过". Now a failed
+// exchange KEEPS the state (same verifier + redirect_uri, still
+// inside the 10-minute expiry), so the same code can be retried;
+// only a successful exchange consumes the state, and a second
+// exchange after success still reports it as used.
 func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSecret, code, state, tokenURL string) (*OAuthTokens, error) {
 	p, ok := oauthProviders[provider]
 	if !ok {
@@ -375,16 +391,14 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 	}
 	oauthMu.Lock()
 	pending, known := oauthStates[state]
-	if known {
-		delete(oauthStates, state)
-	}
 	oauthMu.Unlock()
 	if !known {
 		return nil, fmt.Errorf("app: 授权链接已失效或已被用过，请重新点“生成授权链接”")
 	}
-	// The exchange ends this flow either way: free the port now
-	// (a manual paste never touched it, an auto flow already
-	// closed it after the response — Close is idempotent).
+	// The exchange ends the loopback listener either way: free
+	// the port now (a manual paste never touched it, an auto flow
+	// already closed it after the response — Close is idempotent).
+	// The STATE, however, is only consumed on success (see above).
 	pending.closeListener()
 	if time.Now().After(pending.expiry) {
 		return nil, fmt.Errorf("app: 授权链接已过期（10 分钟），请重新生成")
@@ -392,6 +406,13 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 	if tokenURL == "" {
 		tokenURL = p.tokenURL
 	}
+	// Consistency log (never the code itself): the two things a
+	// provider checks besides the code — the PKCE verifier that
+	// must match the authorize URL's challenge, and the
+	// redirect_uri that must match the authorize URL exactly.
+	// If an exchange fails, this line is what proves (or rules
+	// out) a verifier/redirect mismatch without leaking secrets.
+	log.Printf("oauth exchange: provider=%s verifier_len=%d redirect_uri=%s", provider, len(pending.verifier), pending.redirectURI)
 	access, refresh, err := auth.ExchangeCode(context.Background(), &auth.OAuthConfig{
 		ClientID:     strings.TrimSpace(clientID),
 		ClientSecret: clientSecret,
@@ -400,7 +421,42 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 		CodeVerifier: pending.verifier,
 	}, strings.TrimSpace(code))
 	if err != nil {
-		return nil, err
+		log.Printf("oauth exchange: provider=%s failed (%v), state kept for retry", provider, err)
+		return nil, humanExchangeError(err)
 	}
+	// Success consumes the flow: the code is spent, and the state
+	// must not be replayed.
+	oauthMu.Lock()
+	if cur, ok := oauthStates[state]; ok && cur == pending {
+		delete(oauthStates, state)
+	}
+	oauthMu.Unlock()
 	return &OAuthTokens{AccessToken: access, RefreshToken: refresh}, nil
+}
+
+// humanExchangeError turns a token-endpoint failure into plain
+// language. The raw error carries the provider's own code
+// (invalid_grant, redirect_uri_mismatch, ...); the user gets the
+// Chinese meaning and what to do next, never the raw English
+// "auth: token exchange failed: ..." string.
+func humanExchangeError(err error) error {
+	msg := err.Error()
+	// Strip the raw auth-layer prefix: the user must never see
+	// "auth: token exchange failed: ..." verbatim.
+	msg = strings.TrimPrefix(msg, "auth: token exchange failed: ")
+	msg = strings.TrimPrefix(msg, "auth: ")
+	switch {
+	case strings.Contains(msg, "invalid_grant"):
+		return fmt.Errorf("app: 授权码已用过、已过期，或与本次授权不匹配（换了链接、换了应用都会这样）：请重新点“生成授权链接”，用新链接授权一次")
+	case strings.Contains(msg, "redirect_uri_mismatch"), strings.Contains(msg, "redirect_uri"):
+		return fmt.Errorf("app: 重定向地址与应用里注册的不一致：请检查应用控制台里注册的 redirect URI 是不是 http://localhost，再重新点“生成授权链接”")
+	case strings.Contains(msg, "invalid_client"):
+		return fmt.Errorf("app: Client ID 不对（或这个应用被删了）：请检查一键授权用的官方应用，或改用“自己的应用”重新生成链接")
+	case strings.Contains(msg, "invalid_request"):
+		return fmt.Errorf("app: 换取请求被对方拒绝了（%s）：请重新点“生成授权链接”再试一次", msg)
+	case strings.Contains(msg, "request: "), strings.Contains(msg, "timeout"), strings.Contains(msg, "connection"), strings.Contains(msg, "network"):
+		return fmt.Errorf("app: 连不上对方的换取接口（网络问题），授权码还没用掉：请检查网络后点“换取 Token”再试一次，不用重新授权")
+	default:
+		return fmt.Errorf("app: 换取 Token 失败：%s（授权码还没用掉，可以点“换取 Token”再试一次；不行就重新点“生成授权链接”）", msg)
+	}
 }

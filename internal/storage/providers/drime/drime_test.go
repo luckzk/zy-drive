@@ -50,6 +50,11 @@ type mockDrime struct {
 	links    map[int64]string       // entry id -> share hash
 	fail429  int                    // next N API calls fail with 429
 	validTok string                 // accepted Bearer token
+	// spaceUsageSeen records every workspaceId the quota endpoint
+	// was asked for, in order — the quota is workspace-scoped, so
+	// a test can prove the driver asked for the mount's workspace
+	// instead of the account default.
+	spaceUsageSeen []int
 }
 
 func newMockDrime() *mockDrime {
@@ -207,7 +212,18 @@ func (m *mockDrime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/s3/entries" && r.Method == http.MethodPost:
 		m.handleRegister(w, r)
 	case p == "/user/space-usage" && r.Method == http.MethodGet:
-		m.writeJSON(w, http.StatusOK, map[string]any{"used": 312345678901, "available": 237165364723})
+		// Workspace-scoped, like the real endpoint: each workspace
+		// reports its own numbers, so a test that asks for 8762
+		// and gets the personal numbers back fails loudly.
+		ws, _ := strconv.Atoi(r.URL.Query().Get("workspaceId"))
+		m.mu.Lock()
+		m.spaceUsageSeen = append(m.spaceUsageSeen, ws)
+		m.mu.Unlock()
+		used, avail := int64(100_000_000_000), int64(412_000_000_000) // personal (0)
+		if ws == 8762 {
+			used, avail = 312345678901, 237165364723
+		}
+		m.writeJSON(w, http.StatusOK, map[string]any{"used": used, "available": avail})
 	default:
 		m.writeErr(w, http.StatusNotFound, "mock: no such route "+p)
 	}
@@ -826,21 +842,51 @@ func TestCaps(t *testing.T) {
 	}
 }
 
-func TestDrimeQuota(t *testing.T) {
+// TestDrimeQuotaIsWorkspaceScoped: the quota is the MOUNT's
+// workspace usage, not the account total. Two providers against
+// the same mock — one bound to team workspace 8762, one to the
+// personal workspace (no workspace_id) — must ask for their own
+// workspaceId and get back different numbers. (The old mock
+// returned one fixed pair whatever the query said, so a driver
+// that always asked for workspace 0 would still have passed.)
+func TestDrimeQuotaIsWorkspaceScoped(t *testing.T) {
 	mock := newMockDrime()
-	p, srv := newTestProvider(t, mock)
+	srv := httptest.NewServer(mock)
 	defer srv.Close()
-	qs, ok := any(p).(storage.QuotaSource)
-	if !ok {
-		t.Fatal("drime provider must implement storage.QuotaSource")
+	newProv := func(workspace string) *Provider {
+		t.Helper()
+		extra := map[string]string{"api_base": srv.URL + "/api/v1"}
+		if workspace != "" {
+			extra["workspace_id"] = workspace
+		}
+		p, err := New(storage.Config{Token: "test-token", Extra: extra})
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return p.(*Provider)
 	}
-	used, total, err := qs.Quota(t.Context())
+	team := newProv("8762")
+	used, total, err := team.Quota(t.Context())
 	if err != nil {
-		t.Fatalf("Quota: %v", err)
+		t.Fatalf("team Quota: %v", err)
 	}
-	// Mock returns used=312345678901, available=237165364723:
-	// total is their sum (the API reports no separate total).
+	// Mock team workspace 8762: used=312345678901,
+	// available=237165364723, total is their sum.
 	if used != 312345678901 || total != 549511043624 {
-		t.Fatalf("Quota: got used=%d total=%d, want 312345678901 / 549511043624", used, total)
+		t.Fatalf("team Quota: got used=%d total=%d, want 312345678901 / 549511043624", used, total)
+	}
+	personal := newProv("")
+	used, total, err = personal.Quota(t.Context())
+	if err != nil {
+		t.Fatalf("personal Quota: %v", err)
+	}
+	if used != 100_000_000_000 || total != 512_000_000_000 {
+		t.Fatalf("personal Quota: got used=%d total=%d, want 100000000000 / 512000000000", used, total)
+	}
+	mock.mu.Lock()
+	seen := append([]int(nil), mock.spaceUsageSeen...)
+	mock.mu.Unlock()
+	if len(seen) != 2 || seen[0] != 8762 || seen[1] != 0 {
+		t.Fatalf("space-usage workspaceIds: got %v, want [8762 0]", seen)
 	}
 }

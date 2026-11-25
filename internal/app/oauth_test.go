@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/luckzk/zy-drive/internal/domain"
@@ -266,4 +267,145 @@ func TestOAuthCallbackDenied(t *testing.T) {
 		t.Fatalf("poll after denied: %+v", res)
 	}
 	a.CancelOAuth(start.State)
+}
+
+// TestExchangeRetryAfterFailureKeepsState (Dropbox one-click fix,
+// 2026-11-25): the token endpoint failing must NOT burn the flow.
+// The first exchange fails (provider 500); the same code + state
+// retried must succeed — with the same code_verifier and
+// redirect_uri the authorize URL carried. Only a SUCCESSFUL
+// exchange consumes the state: a third exchange then reports the
+// state as used. Before the fix the state was deleted before the
+// token call, so the retry died with the misleading
+// "授权链接已失效或已被用过" and the user was stuck.
+func TestExchangeRetryAfterFailureKeepsState(t *testing.T) {
+	a := newTestApp(t)
+	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	if err != nil {
+		t.Fatalf("BeginOAuth(dropbox): %v", err)
+	}
+	u, _ := url.Parse(start.AuthURL)
+	redirectURI := u.Query().Get("redirect_uri")
+	challenge := u.Query().Get("code_challenge")
+
+	var calls []struct{ verifier, redirect, code string }
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		calls = append(calls, struct{ verifier, redirect, code string }{
+			r.Form.Get("code_verifier"), r.Form.Get("redirect_uri"), r.Form.Get("code"),
+		})
+		n := len(calls)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if n == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "temporarily_unavailable", "error_description": "try again later"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "dbx-access", "refresh_token": "dbx-refresh",
+			"expires_in": 3600, "token_type": "Bearer",
+		})
+	}))
+	defer srv.Close()
+
+	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL)
+	if err == nil {
+		t.Fatal("first exchange should fail (mock 500)")
+	}
+	if strings.Contains(err.Error(), "已失效或已被用过") {
+		t.Fatalf("failed exchange must NOT report the state as used: %v", err)
+	}
+	if !strings.Contains(err.Error(), "再试一次") {
+		t.Fatalf("failed exchange must say the code can be retried: %v", err)
+	}
+	if strings.Contains(err.Error(), "auth: token exchange failed") {
+		t.Fatalf("failed exchange must not leak the raw provider error: %v", err)
+	}
+
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL)
+	if err != nil {
+		t.Fatalf("retry with the same code+state must succeed: %v", err)
+	}
+	if tokens.AccessToken != "dbx-access" {
+		t.Fatalf("tokens: %+v", tokens)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 2 {
+		t.Fatalf("token endpoint calls: got %d, want 2", len(calls))
+	}
+	for i, c := range calls {
+		if c.code != "code-1" || c.redirect != redirectURI || c.verifier == "" || challengeOf(c.verifier) != challenge {
+			t.Fatalf("call %d: code=%q redirect=%q verifier-matches-challenge=%v", i+1, c.code, c.redirect, challengeOf(c.verifier) == challenge)
+		}
+	}
+	// Success consumed the state: a third exchange reports it used.
+	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL); err == nil || !strings.Contains(err.Error(), "已失效或已被用过") {
+		t.Fatalf("third exchange: got err %v, want the state-used message", err)
+	}
+}
+
+// TestExchangeOldCodeAfterRegenerate (Dropbox one-click fix,
+// 2026-11-25): regenerating the link voids the old flow. The old
+// state's exchange must fail as "used", and a code issued for the
+// old flow exchanged against the new flow's verifier/redirect
+// must fail with invalid_grant — reported in plain language
+// ("重新点'生成授权链接'"), never the raw provider string —
+// while the new flow's state stays alive for a retry with the
+// right code.
+func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
+	a := newTestApp(t)
+	start1, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	if err != nil {
+		t.Fatalf("BeginOAuth #1: %v", err)
+	}
+	start2, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	if err != nil {
+		t.Fatalf("BeginOAuth #2: %v", err)
+	}
+	// The wizard drops the previous link before minting a new one.
+	a.CancelOAuth(start1.State)
+	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-1", start1.State, ""); err == nil || !strings.Contains(err.Error(), "已失效或已被用过") {
+		t.Fatalf("old state exchange: got err %v, want the state-used message", err)
+	}
+
+	// Mock token endpoint: only the code issued for THIS flow
+	// ("code-for-flow-2") is accepted; anything else is an
+	// invalid_grant (wrong verifier / redirect in real life).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		w.Header().Set("Content-Type", "application/json")
+		if r.Form.Get("code") != "code-for-flow-2" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant", "error_description": "code has expired or was already used"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "dbx-access-2", "refresh_token": "dbx-refresh-2",
+			"expires_in": 3600, "token_type": "Bearer",
+		})
+	}))
+	defer srv.Close()
+
+	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-1", start2.State, srv.URL)
+	if err == nil {
+		t.Fatal("old code against the new flow must fail")
+	}
+	if strings.Contains(err.Error(), "auth: token exchange failed") || strings.Contains(err.Error(), "invalid_grant") {
+		t.Fatalf("invalid_grant must be translated to plain language, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "重新点") {
+		t.Fatalf("invalid_grant must tell the user to regenerate the link, got: %v", err)
+	}
+	// The state survived the failed exchange: the right code works.
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-2", start2.State, srv.URL)
+	if err != nil {
+		t.Fatalf("retry with the flow's own code must succeed: %v", err)
+	}
+	if tokens.AccessToken != "dbx-access-2" {
+		t.Fatalf("tokens: %+v", tokens)
+	}
 }
