@@ -881,7 +881,7 @@ export default function AddMountDialog({
             )}
             {builtinClientId === '' && (
               <div className="notice-box">
-                一键授权还没配置：ZyDrive 官方应用还没在三家控制台注册好，下面先用自己的应用走授权；注册好后这里会出现一键授权按钮。
+                一键授权还没配置：这个网盘的 ZyDrive 官方应用还没注册好，下面先用自己的应用走授权；注册好后这里会出现一键授权按钮。
               </div>
             )}
 

@@ -10,9 +10,9 @@ import (
 )
 
 // builtin_oauth.go — the built-in shared ZyDrive OAuth apps (B,
-// one-click authorization). Two of the three registrations are
-// DONE (2026-11-25, user registered them and pasted the Client
-// IDs in chat — Client IDs are public identifiers, not secrets,
+// one-click authorization). All three registrations are DONE
+// (2026-11-25, user registered them and pasted the Client IDs
+// in chat — Client IDs are public identifiers, not secrets,
 // so they ship in this repo as defaults):
 //
 //  1. Dropbox — DONE. App Console (dropbox.com/developers/apps),
@@ -32,21 +32,21 @@ import (
 //     NOT used (PKCE replaces it). Scope requested:
 //     https://www.googleapis.com/auth/drive.
 //
-//  3. OneDrive — NOT registered yet (user will do it next).
-//     Azure portal (portal.azure.com → Microsoft Entra ID →
-//     应用注册 → 新注册): name e.g. "ZyDrive"; "受支持的帐户
-//     类型" → "任何组织目录中的帐户和个人 Microsoft 帐户" →
-//     "身份验证" → 添加平台 → "移动和桌面应用程序" → 重定向 URI
-//     `http://localhost` → "API 权限" → 添加权限 → Microsoft
-//     Graph → 委派的权限 → Files.ReadWrite.All + offline_access.
-//     The "应用程序（客户端）ID" on the 概述 page is the builtin
-//     value. No secret is created (public client + PKCE).
+//  3. OneDrive — DONE. Azure portal (portal.azure.com →
+//     Microsoft Entra ID → 应用注册 → 新注册): name
+//     "ZyDrive-app"; "受支持的帐户类型" → "任何组织目录中的
+//     帐户和个人 Microsoft 帐户" → "身份验证" → 添加平台 →
+//     "移动和桌面应用程序" → 重定向 URI `http://localhost` →
+//     "API 权限" → 添加权限 → Microsoft Graph → 委派的权限 →
+//     Files.ReadWrite.All + offline_access. The "应用程序（客户
+//     端）ID" on the 概述 page is the builtin value. No secret
+//     is created (public client + PKCE).
 //
-// Until OneDrive is registered, its BuiltinOAuthClientID is ""
-// and the wizard falls back to the self-built app flow (advanced
-// fold) for OneDrive — never an error, never a blank page. The
-// same fallback applies to any provider whose builtin ID is
-// cleared or overridden away.
+// The fallback still applies to any provider whose builtin ID
+// is cleared or overridden away: its BuiltinOAuthClientID is
+// "" and the wizard falls back to the self-built app flow
+// (advanced fold) for that provider — never an error, never a
+// blank page.
 //
 // ── How a Client ID takes effect ───────────────────────────────
 // The constants below are the defaults (a developer edit, then
@@ -75,17 +75,16 @@ import (
 // app should use their own app.
 
 // builtinClientIDs are the ZyDrive official app Client IDs
-// shipped as defaults. Dropbox and Drive are registered
-// (2026-11-25, app "ZyDrive-app" in both consoles); OneDrive is
-// still "" — fill it in when the Azure registration is done and
-// one-click authorization lights up for OneDrive too. Leave a
-// provider "" and the wizard falls back to the self-built flow.
-// oauth-clients.json can override any of these per provider
-// (non-empty values only); it never has to repeat them.
+// shipped as defaults. All three providers are registered
+// (2026-11-25, app "ZyDrive-app" in all three consoles).
+// Leave a provider "" and the wizard falls back to the
+// self-built flow. oauth-clients.json can override any of these
+// per provider (non-empty values only); it never has to repeat
+// them.
 var builtinClientIDs = map[domain.ProviderKind]string{
 	domain.ProviderDropbox:  "ocx73kxhcpga24m", // Dropbox App key, app "ZyDrive-app", Full Dropbox
 	domain.ProviderDrive:    "504630572830-9nkremocc6fsmbrg0lpk5n185ii4b447.apps.googleusercontent.com", // Google OAuth 客户端 ID, 应用类型“桌面应用”, app "ZyDrive-app"
-	domain.ProviderOneDrive: "",                // TODO: Azure 应用程序（客户端）ID — register the app, then fill in
+	domain.ProviderOneDrive: "367e206e-fdfb-4372-8380-7f795ee42533", // Azure 应用程序（客户端）ID, app "ZyDrive-app", 移动和桌面应用程序, http://localhost
 }
 
 var (
@@ -136,10 +135,9 @@ func LoadBuiltinOAuthClients(path string) error {
 
 // BuiltinOAuthClientID returns the configured shared ZyDrive
 // OAuth Client ID for a provider, or "" when the official app is
-// not registered yet (OneDrive, until its Azure registration is
-// done). The wizard treats "" as "offer the self-built flow
-// only". Client IDs are public, so returning one to the frontend
-// is safe; there is never a secret here.
+// not registered yet. The wizard treats "" as "offer the
+// self-built flow only". Client IDs are public, so returning one
+// to the frontend is safe; there is never a secret here.
 func (a *App) BuiltinOAuthClientID(provider domain.ProviderKind) string {
 	builtinMu.RLock()
 	defer builtinMu.RUnlock()

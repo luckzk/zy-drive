@@ -8,13 +8,11 @@ import (
 	"github.com/luckzk/zy-drive/internal/domain"
 )
 
-// TestBuiltinOAuthClientID: the shipped defaults are the two
-// registrations the user completed 2026-11-25 (Dropbox and Drive,
-// app "ZyDrive-app" in both consoles); OneDrive is still "" until
-// its Azure registration is done, so the wizard must fall back to
-// the self-built flow for OneDrive only. A loaded
-// oauth-clients.json overrides exactly the providers it names
-// (non-empty values), and unknown keys are ignored.
+// TestBuiltinOAuthClientID: the shipped defaults are the three
+// registrations the user completed 2026-11-25 (Dropbox, Drive
+// and OneDrive, app "ZyDrive-app" in all three consoles). A
+// loaded oauth-clients.json overrides exactly the providers it
+// names (non-empty values), and unknown keys are ignored.
 func TestBuiltinOAuthClientID(t *testing.T) {
 	a := newTestApp(t)
 	if got := a.BuiltinOAuthClientID(domain.ProviderDropbox); got != "ocx73kxhcpga24m" {
@@ -23,8 +21,8 @@ func TestBuiltinOAuthClientID(t *testing.T) {
 	if got := a.BuiltinOAuthClientID(domain.ProviderDrive); got != "504630572830-9nkremocc6fsmbrg0lpk5n185ii4b447.apps.googleusercontent.com" {
 		t.Fatalf("BuiltinOAuthClientID(drive) = %q, want the ZyDrive-app Google Client ID", got)
 	}
-	if got := a.BuiltinOAuthClientID(domain.ProviderOneDrive); got != "" {
-		t.Fatalf("BuiltinOAuthClientID(onedrive) = %q before its Azure registration, want empty", got)
+	if got := a.BuiltinOAuthClientID(domain.ProviderOneDrive); got != "367e206e-fdfb-4372-8380-7f795ee42533" {
+		t.Fatalf("BuiltinOAuthClientID(onedrive) = %q, want the ZyDrive-app Azure Client ID", got)
 	}
 
 	// Save/restore: builtinClients is process-wide; a test that
