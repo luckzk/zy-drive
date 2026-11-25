@@ -206,6 +206,8 @@ func (m *mockDrime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.writeJSON(w, http.StatusOK, map[string]any{"status": "success"})
 	case p == "/s3/entries" && r.Method == http.MethodPost:
 		m.handleRegister(w, r)
+	case p == "/user/space-usage" && r.Method == http.MethodGet:
+		m.writeJSON(w, http.StatusOK, map[string]any{"used": 312345678901, "available": 237165364723})
 	default:
 		m.writeErr(w, http.StatusNotFound, "mock: no such route "+p)
 	}
@@ -821,5 +823,24 @@ func TestCaps(t *testing.T) {
 	}
 	if caps.MinPartSize != singleUploadLimit {
 		t.Fatalf("MinPartSize: got %d want %d", caps.MinPartSize, singleUploadLimit)
+	}
+}
+
+func TestDrimeQuota(t *testing.T) {
+	mock := newMockDrime()
+	p, srv := newTestProvider(t, mock)
+	defer srv.Close()
+	qs, ok := any(p).(storage.QuotaSource)
+	if !ok {
+		t.Fatal("drime provider must implement storage.QuotaSource")
+	}
+	used, total, err := qs.Quota(t.Context())
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	// Mock returns used=312345678901, available=237165364723:
+	// total is their sum (the API reports no separate total).
+	if used != 312345678901 || total != 549511043624 {
+		t.Fatalf("Quota: got used=%d total=%d, want 312345678901 / 549511043624", used, total)
 	}
 }

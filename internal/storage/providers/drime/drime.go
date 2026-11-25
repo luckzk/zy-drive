@@ -672,7 +672,7 @@ func (p *Provider) Upload(ctx context.Context, ref string, r io.Reader, size int
 // spool writes the already-buffered head plus the rest of r to a
 // temp file and returns its path.
 func (p *Provider) spool(r io.Reader, head []byte) (string, error) {
-	f, err := os.CreateTemp("", "zydrive-drime-upload-*")
+	f, err := os.CreateTemp("", "zy-drive-drime-upload-*")
 	if err != nil {
 		return "", err
 	}
@@ -1127,6 +1127,23 @@ func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
 	return e.ThumbnailURL, nil
 }
 
+// Quota implements storage.QuotaSource via GET /user/space-usage
+// (Drime API docs, "Get Space Usage"): {"used": <bytes>,
+// "available": <bytes>} for this mount's workspace. The total is
+// used + available — the API reports no separate total field, so
+// this sum is the documented total, not an invention.
+func (p *Provider) Quota(ctx context.Context) (used, total int64, err error) {
+	var resp struct {
+		Used      int64 `json:"used"`
+		Available int64 `json:"available"`
+	}
+	u := fmt.Sprintf("%s/user/space-usage?workspaceId=%d", p.apiBase, p.workspaceID)
+	if err := p.doJSON(ctx, "Quota", http.MethodGet, u, nil, &resp); err != nil {
+		return 0, 0, err
+	}
+	return resp.Used, resp.Used + resp.Available, nil
+}
+
 func mimeOf(name string) string {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".jpg", ".jpeg":
@@ -1153,8 +1170,9 @@ func mimeOf(name string) string {
 }
 
 var (
-	_ storage.Provider = (*Provider)(nil)
-	_ storage.Searcher = (*Provider)(nil)
-	_ storage.Sharer   = (*Provider)(nil)
-	_ storage.Thumber  = (*Provider)(nil)
+	_ storage.Provider    = (*Provider)(nil)
+	_ storage.Searcher    = (*Provider)(nil)
+	_ storage.Sharer      = (*Provider)(nil)
+	_ storage.Thumber     = (*Provider)(nil)
+	_ storage.QuotaSource = (*Provider)(nil)
 )

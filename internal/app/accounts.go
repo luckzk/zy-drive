@@ -55,6 +55,12 @@ type AddMountInput struct {
 	RootID       string              `json:"rootId,omitempty"`       // Drive root folder id, default "root"
 	WorkspaceID  string              `json:"workspaceId,omitempty"`  // Drime workspace id, default "" = personal workspace (0)
 	LocalPath    string              `json:"localPath,omitempty"`    // local mount: absolute folder path
+	// SkipProbe (C, one-page form): save without a connection
+	// probe. The mount is then stored Verified=false ("未验证")
+	// and the user re-tests it later from Settings. When false
+	// (the default, and the only path the OAuth wizard uses) the
+	// probe still gates the save exactly as before.
+	SkipProbe bool `json:"skipProbe,omitempty"`
 }
 
 // mountCredentials is the encrypted-at-rest credential blob for one
@@ -106,6 +112,12 @@ func (a *App) AddMount(ctx context.Context, m *domain.Mount, cfg storage.Config)
 // mount (metadata + non-secret config in mounts, encrypted
 // credentials in secrets). A failed probe saves nothing and returns
 // a plain-language error; the caller shows it and offers a retry.
+//
+// SkipProbe (C, one-page form) changes only the last step: the
+// mount is saved WITHOUT a probe, marked Verified=false, and the
+// user re-tests it later from Settings. The OAuth wizard never
+// sets it — a token that was just exchanged should always probe
+// before it is saved.
 func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*domain.Mount, error) {
 	if strings.TrimSpace(in.DisplayName) == "" {
 		return nil, fmt.Errorf("app: 请给网盘起个名字")
@@ -124,18 +136,26 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 	if err != nil {
 		return nil, err
 	}
-	// Probe first: one cheap List of the root. S3 lists the bucket
+	// Probe first (unless the caller explicitly asked to save
+	// unverified): one cheap List of the root. S3 lists the bucket
 	// root, Dropbox/Drive list their root folder, local lists the
 	// chosen directory. Any auth/network/path failure aborts here,
 	// before anything is persisted.
-	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+	verified := false
 	p, err := a.Registry.New(in.Provider, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("app: 创建驱动失败：%w", err)
 	}
-	if _, err := p.List(probeCtx, ""); err != nil {
-		return nil, humanProbeError(in.Provider, err)
+	if in.SkipProbe {
+		// Saved unverified on purpose: the provider is built
+		// (bad config still fails here) but never probed.
+	} else {
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := probeRoot(probeCtx, p); err != nil {
+			return nil, humanProbeError(in.Provider, err)
+		}
+		verified = true
 	}
 	now := time.Now().UTC()
 	var idBytes [8]byte
@@ -154,6 +174,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		Group:        strings.TrimSpace(in.Group),
 		Caps:         p.Caps(),
 		Status:       domain.MountOK,
+		Verified:     verified,
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -635,6 +656,101 @@ func (a *App) UpdateMountGroup(id, group string) error {
 		return a.DB.UpdateMountGroup(id, group)
 	}
 	return nil
+}
+
+// probeRoot is the one cheap connection probe every save/test
+// path shares: a single List of the provider root. It never
+// persists anything.
+func probeRoot(ctx context.Context, p storage.Provider) error {
+	_, err := p.List(ctx, "")
+	return err
+}
+
+// TestMountConfig probes a not-yet-saved mount's config (C,
+// one-page form "测试连接"): it validates, builds the provider
+// and lists the root, but persists nothing. The caller shows the
+// plain-language error and still offers "保存" — saving is the
+// user's choice, the test is only information.
+func (a *App) TestMountConfig(ctx context.Context, in AddMountInput) error {
+	if strings.TrimSpace(in.DisplayName) == "" {
+		return fmt.Errorf("app: 请给网盘起个名字")
+	}
+	switch in.Provider {
+	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderLocal:
+	default:
+		return fmt.Errorf("app: %s 还在 V0.2 接入，现在加不了", in.Provider)
+	}
+	cfg, _, err := a.mountConfig(in)
+	if err != nil {
+		return err
+	}
+	p, err := a.Registry.New(in.Provider, cfg)
+	if err != nil {
+		return fmt.Errorf("app: 创建驱动失败：%w", err)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := probeRoot(probeCtx, p); err != nil {
+		return humanProbeError(in.Provider, err)
+	}
+	return nil
+}
+
+// TestMount re-probes a saved mount (C, Settings → "重新测试"):
+// it rebuilds the provider from the stored config + credentials
+// and lists the root. On success the mount is marked
+// Verified=true and persisted; on failure nothing changes — the
+// mount stays "未验证" and the caller gets the plain-language
+// error. It never deletes the mount or its credentials.
+func (a *App) TestMount(ctx context.Context, id string) (*domain.Mount, error) {
+	h, ok := a.mounts[id]
+	if !ok {
+		return nil, fmt.Errorf("app: unknown mount %q", id)
+	}
+	if a.DB == nil {
+		return nil, fmt.Errorf("app: 本地数据库还没初始化，测不了这个网盘")
+	}
+	cfgMap, err := a.persistedConfig(id)
+	if err != nil {
+		return nil, err
+	}
+	cfg := storage.Config{
+		Endpoint: cfgMap["endpoint"],
+		Region:   cfgMap["region"],
+		Extra:    cfgMap,
+	}
+	if a.secrets != nil {
+		creds, found, err := a.decryptMountCreds(h.Mount.AccountID)
+		if err != nil {
+			return nil, fmt.Errorf("app: 读保存的凭证失败：%w", err)
+		}
+		if found {
+			cfg.AccessKey = creds.AccessKey
+			cfg.SecretKey = creds.SecretKey
+			cfg.Token = creds.AccessToken
+			cfg.Extra["refresh_token"] = creds.RefreshToken
+			cfg.Extra["client_secret"] = creds.ClientSecret
+		}
+	}
+	p, err := a.Registry.New(h.Mount.Provider, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("app: 创建驱动失败：%w", err)
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := probeRoot(probeCtx, p); err != nil {
+		return nil, humanProbeError(h.Mount.Provider, err)
+	}
+	h.Provider = p
+	h.Mount.Caps = p.Caps()
+	h.Mount.Status = domain.MountOK
+	h.Mount.Verified = true
+	h.Mount.UpdatedAt = time.Now().UTC()
+	a.mounts[id] = h
+	if err := a.DB.SaveMount(h.Mount, cfgMap); err != nil {
+		return nil, err
+	}
+	return h.Mount, nil
 }
 
 // humanProbeError turns a probe failure into plain language for the

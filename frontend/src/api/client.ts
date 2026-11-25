@@ -7,9 +7,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
 
-export type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -51,6 +51,7 @@ export interface SideSel {
 export const api = {
   health: () => get<{ ok: boolean; version: string }>('/api/health'),
   listMounts: async () => nonNull(await DesktopService.listMounts()),
+  mountQuotas: async () => nonNull(await DesktopService.mountQuotas()),
   browse: async (mountID: string, ref: string) => nonNull(await DesktopService.browse(mountID, ref)),
   search: (mountID: string, query: string) => DesktopService.search(mountID, query),
   previewSync: (job: SyncJob) => DesktopService.previewSync(job),
@@ -76,7 +77,12 @@ export const api = {
   mkdir: (mountID: string, ref: string) => DesktopService.mkdir(mountID, ref),
   addMount: (input: AddMountInput) => DesktopService.addMount(input),
   removeMount: (id: string) => DesktopService.removeMount(id),
+  testMountConfig: (input: AddMountInput) => DesktopService.testMountConfig(input),
+  testMount: (id: string) => DesktopService.testMount(id),
   beginOAuth: (provider: ProviderKind, clientID: string) => DesktopService.beginOAuth(provider, clientID),
+  pollOAuthCallback: (state: string) => DesktopService.pollOAuthCallback(state),
+  cancelOAuth: (state: string) => DesktopService.cancelOAuth(state),
+  builtinOAuthClientID: (provider: ProviderKind) => DesktopService.builtinOAuthClientID(provider),
   exchangeOAuthCode: (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) =>
     DesktopService.exchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL),
   getSettings: () => DesktopService.getSettings(),

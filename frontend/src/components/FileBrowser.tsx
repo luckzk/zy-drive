@@ -14,19 +14,20 @@
 // transfers() every 5s.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isMyGo, onFileDrop } from 'mygo-runtime'
-import type { Mount, Node, Transfer } from '../mygo'
+import type { Mount, MountQuota, Node, Transfer } from '../mygo'
 import { api, friendlyError, type UploadSkipped } from '../api/client'
 import { Skeleton } from './motion'
 import FileTable from './FileTable'
 import Inspector from './Inspector'
 import UploadTargetDialog from './UploadTargetDialog'
+import QuotaBar from './QuotaBar'
 
 interface Crumb {
   name: string
   ref: string
 }
 
-export default function FileBrowser({ mount }: { mount: Mount }) {
+export default function FileBrowser({ mount, quota, onRefreshQuota }: { mount: Mount; quota?: MountQuota; onRefreshQuota?: () => void }) {
   const [crumbs, setCrumbs] = useState<Crumb[]>([])
   const [nodes, setNodes] = useState<Node[]>([])
   const [loading, setLoading] = useState(true)
@@ -275,6 +276,19 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
           </button>
         </div>
 
+        {/* Same quota as the sidebar card (one App-level batch fetch,
+            not a second call): the number here and there never disagree. */}
+        <div className="browse-quota" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <QuotaBar quota={quota} />
+          </div>
+          {quota && !quota.unlimited && !quota.error && (
+            <button className="btn btn-sm" onClick={() => onRefreshQuota?.()}>
+              刷新容量
+            </button>
+          )}
+        </div>
+
         {uploadInfo && <div className="notice-box">{uploadInfo}</div>}
         {skipped.length > 0 && (
           <div className="error-box">
@@ -351,7 +365,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
           </p>
         )}
       </div>
-      {selected && <Inspector node={selected} mount={mount} closing={inspectorClosing} onClose={closeInspector} />}
+      {selected && <Inspector node={selected} mount={mount} quota={quota} closing={inspectorClosing} onClose={closeInspector} />}
       {pendingPaths && (
         <UploadTargetDialog
           mount={mount}

@@ -1,4 +1,4 @@
-// Command mcm-desktop is entry one: the mygo desktop app.
+// Command zy-drive-desktop is entry one: the mygo desktop app.
 // It only assembles dependencies and starts: configuration loading,
 // provider registration, app construction, worker start, then the
 // mygo window (cmd/desktop/mygo.go) with a dev-shell fallback when
@@ -20,8 +20,8 @@ import (
 	"github.com/luckzk/zy-drive/internal/cache"
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
-	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drime"
+	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
 	"github.com/luckzk/zy-drive/internal/storage/providers/dropbox"
 	"github.com/luckzk/zy-drive/internal/storage/providers/local"
 	"github.com/luckzk/zy-drive/internal/storage/providers/onedrive"
@@ -84,6 +84,17 @@ func main() {
 	queue := transfer.NewQueue(db)
 	application := app.New(db, registry, queue)
 	application.SetSecrets(secrets)
+
+	// Builtin shared OAuth apps (B, one-click authorization): an
+	// optional <configDir>/oauth-clients.json maps provider kinds
+	// to the ZyDrive official Client IDs (see
+	// internal/app/builtin_oauth.go for the registration
+	// checklist). Missing file = not configured = the wizard falls
+	// back to the self-built app flow; a bad file is logged, never
+	// fatal — it must not stop the app from starting.
+	if err := app.LoadBuiltinOAuthClients(filepath.Join(dir, "oauth-clients.json")); err != nil {
+		log.Printf("desktop: oauth-clients.json: %v (one-click authorization stays off)", err)
+	}
 
 	// Restore persisted mounts (and their groups) from SQLite;
 	// mounts whose credentials cannot be decrypted/rebuilt stay

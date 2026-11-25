@@ -278,6 +278,14 @@ func (m *mockGraph) serveSession(w http.ResponseWriter, r *http.Request) {
 func (m *mockGraph) serveGraph(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 
+	// Drive itself: /me/drive (quota only via $select=quota)
+	if p == "/me/drive" {
+		m.writeJSON(w, http.StatusOK, map[string]any{
+			"quota": map[string]any{"used": 236000000000, "total": 1099511627776, "remaining": 863511627776},
+		})
+		return
+	}
+
 	// Delta: /me/drive/root/delta
 	if p == "/me/drive/root/delta" {
 		token := r.URL.Query().Get("token")
@@ -863,5 +871,20 @@ func TestRootStat(t *testing.T) {
 	}
 	if !st.IsDir || st.Ref != "" {
 		t.Fatalf("Stat root: %+v", st)
+	}
+}
+
+func TestOneDriveQuota(t *testing.T) {
+	p, _ := newTestProvider(t, func(m *mockGraph) {})
+	qs, ok := any(p).(storage.QuotaSource)
+	if !ok {
+		t.Fatal("onedrive provider must implement storage.QuotaSource")
+	}
+	used, total, err := qs.Quota(t.Context())
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if used != 236000000000 || total != 1099511627776 {
+		t.Fatalf("Quota: got used=%d total=%d, want 236000000000 / 1099511627776", used, total)
 	}
 }

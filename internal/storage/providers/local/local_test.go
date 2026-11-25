@@ -36,3 +36,25 @@ func TestLocalSchemePrefix(t *testing.T) {
 		t.Fatalf("path escaping the root must fail")
 	}
 }
+
+func TestLocalQuotaIsDiskSpace(t *testing.T) {
+	dir := t.TempDir()
+	p, err := New(storage.Config{Extra: map[string]string{"root": dir}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	qs, ok := any(p).(storage.QuotaSource)
+	if !ok {
+		t.Fatal("local provider must implement storage.QuotaSource")
+	}
+	used, total, err := qs.Quota(t.Context())
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if total <= 0 {
+		t.Fatalf("Quota: total must be the disk size, got %d", total)
+	}
+	if used < 0 || used > total {
+		t.Fatalf("Quota: used=%d outside [0, total=%d]", used, total)
+	}
+}

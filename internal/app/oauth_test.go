@@ -94,16 +94,176 @@ func TestDrimeOAuthPKCE(t *testing.T) {
 	}
 }
 
-// TestDrimeOAuthNoSecretInBegin: BeginOAuth for Drime needs only a
-// client id; Dropbox/Drive still build their URLs unchanged.
-func TestDrimeOAuthBeginOthersUnchanged(t *testing.T) {
+// TestOAuthPKCEOnForAllProviders: PKCE (S256) is on for every
+// provider now, not just Drime/OneDrive — a public client (the
+// builtin ZyDrive app) has no secret to send, and PKCE is the
+// proof of possession instead. Sending a code_verifier alongside
+// a client secret is accepted by all four token endpoints, so
+// self-built apps keep working unchanged.
+func TestOAuthPKCEOnForAllProviders(t *testing.T) {
+	a := newTestApp(t)
+	for _, p := range []domain.ProviderKind{domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive} {
+		start, err := a.BeginOAuth(p, "client-id")
+		if err != nil {
+			t.Fatalf("BeginOAuth(%s): %v", p, err)
+		}
+		u, _ := url.Parse(start.AuthURL)
+		q := u.Query()
+		if q.Get("code_challenge") == "" {
+			t.Fatalf("%s authorize URL must carry a PKCE code_challenge", p)
+		}
+		if q.Get("code_challenge_method") != "S256" {
+			t.Fatalf("%s code_challenge_method: %q, want S256", p, q.Get("code_challenge_method"))
+		}
+		// The redirect URI is a per-flow loopback address:
+		// http://localhost:<random port>, never a fixed port.
+		ru := q.Get("redirect_uri")
+		if !strings.HasPrefix(ru, "http://localhost:") {
+			t.Fatalf("%s redirect_uri: %q, want http://localhost:<random-port>", p, ru)
+		}
+		if ru == "http://localhost" {
+			t.Fatalf("%s redirect_uri has no port: the listener did not start", p)
+		}
+		a.CancelOAuth(start.State)
+	}
+}
+
+// TestOAuthCallbackAutoFlow: the loopback listener catches the
+// code, PollOAuthCallback reports it, and the exchange sends the
+// SAME redirect_uri the authorize URL carried (the provider checks
+// the match) plus the PKCE verifier. This is the whole A flow,
+// end to end, against a mock token endpoint.
+func TestOAuthCallbackAutoFlow(t *testing.T) {
+	a := newTestApp(t)
+	start, err := a.BeginOAuth(domain.ProviderDrive, "drive-client-id")
+	if err != nil {
+		t.Fatalf("BeginOAuth(drive): %v", err)
+	}
+	u, err := url.Parse(start.AuthURL)
+	if err != nil {
+		t.Fatalf("parse auth URL: %v", err)
+	}
+	redirectURI := u.Query().Get("redirect_uri")
+	if redirectURI == "" {
+		t.Fatalf("no redirect_uri in authorize URL")
+	}
+
+	// Before the jump-back, the poll must say "waiting".
+	if res, err := a.PollOAuthCallback(start.State); err != nil || res.Status != "waiting" {
+		t.Fatalf("poll before callback: %+v, err %v", res, err)
+	}
+
+	// The browser jumps back to the loopback address.
+	callbackURL := redirectURI + "/?code=auth-code-9&state=" + url.QueryEscape(start.State)
+	resp, err := http.Get(callbackURL)
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("callback status: %d", resp.StatusCode)
+	}
+
+	// The poll now reports the caught code.
+	res, err := a.PollOAuthCallback(start.State)
+	if err != nil {
+		t.Fatalf("poll after callback: %v", err)
+	}
+	if res.Status != "done" || res.Code != "auth-code-9" {
+		t.Fatalf("poll after callback: %+v", res)
+	}
+
+	// The exchange sends the per-flow redirect_uri + verifier.
+	var gotRedirect, gotVerifier, gotSecret string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotRedirect = r.Form.Get("redirect_uri")
+		gotVerifier = r.Form.Get("code_verifier")
+		gotSecret = r.Form.Get("client_secret")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "drive-access", "refresh_token": "drive-refresh",
+			"expires_in": 3600, "token_type": "Bearer",
+		})
+	}))
+	defer srv.Close()
+
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDrive, "drive-client-id", "drive-secret", res.Code, start.State, srv.URL)
+	if err != nil {
+		t.Fatalf("ExchangeOAuthCode(drive): %v", err)
+	}
+	if tokens.AccessToken != "drive-access" || tokens.RefreshToken != "drive-refresh" {
+		t.Fatalf("tokens: %+v", tokens)
+	}
+	if gotRedirect != redirectURI {
+		t.Fatalf("exchange redirect_uri: %q, want the per-flow URI %q", gotRedirect, redirectURI)
+	}
+	if gotVerifier == "" {
+		t.Fatalf("exchange sent no code_verifier")
+	}
+	if got := challengeOf(gotVerifier); got != u.Query().Get("code_challenge") {
+		t.Fatalf("code_verifier does not match code_challenge")
+	}
+	if gotSecret != "drive-secret" {
+		t.Fatalf("self-built secret must still be sent when filled in, got %q", gotSecret)
+	}
+	// Single-use: the state is consumed, the poll now says expired.
+	if res, _ := a.PollOAuthCallback(start.State); res.Status != "expired" {
+		t.Fatalf("poll after exchange: %+v, want expired", res)
+	}
+}
+
+// TestOAuthCallbackWrongState: a redirect carrying an unknown
+// state stores nothing — a stray hit or a forged redirect cannot
+// inject a code into a live flow.
+func TestOAuthCallbackWrongState(t *testing.T) {
 	a := newTestApp(t)
 	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
 	if err != nil {
 		t.Fatalf("BeginOAuth(dropbox): %v", err)
 	}
 	u, _ := url.Parse(start.AuthURL)
-	if u.Query().Get("code_challenge") != "" {
-		t.Fatalf("dropbox authorize URL must not carry a PKCE challenge")
+	redirectURI := u.Query().Get("redirect_uri")
+	resp, err := http.Get(redirectURI + "/?code=forged-code&state=not-a-real-state")
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
 	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("forged callback status: %d, want 400", resp.StatusCode)
+	}
+	if res, _ := a.PollOAuthCallback(start.State); res.Status != "waiting" {
+		t.Fatalf("poll after forged callback: %+v, want waiting", res)
+	}
+	a.CancelOAuth(start.State)
+	if res, _ := a.PollOAuthCallback(start.State); res.Status != "expired" {
+		t.Fatalf("poll after cancel: %+v, want expired", res)
+	}
+}
+
+// TestOAuthCallbackDenied: the provider refusing (access_denied)
+// is reported as an error poll result, not a silent hang.
+func TestOAuthCallbackDenied(t *testing.T) {
+	a := newTestApp(t)
+	start, err := a.BeginOAuth(domain.ProviderOneDrive, "od-id")
+	if err != nil {
+		t.Fatalf("BeginOAuth(onedrive): %v", err)
+	}
+	u, _ := url.Parse(start.AuthURL)
+	resp, err := http.Get(u.Query().Get("redirect_uri") + "/?error=access_denied&error_description=user+denied&state=" + url.QueryEscape(start.State))
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("denied callback status: %d", resp.StatusCode)
+	}
+	res, err := a.PollOAuthCallback(start.State)
+	if err != nil {
+		t.Fatalf("poll after denied: %v", err)
+	}
+	if res.Status != "error" || !strings.Contains(res.Message, "access_denied") {
+		t.Fatalf("poll after denied: %+v", res)
+	}
+	a.CancelOAuth(start.State)
 }

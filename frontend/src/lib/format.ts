@@ -19,6 +19,18 @@ export function formatSpeed(bps: number): string {
   return `${formatSize(bps)}/s`
 }
 
+// formatQuotaSize renders a quota number in GB/TB with exactly one
+// decimal ("291.0 GB", "1.0 TB"). Smaller values fall back to
+// formatSize; negative means unknown.
+export function formatQuotaSize(bytes: number): string {
+  if (bytes < 0) return '—'
+  const GB = 1024 ** 3
+  const TB = 1024 ** 4
+  if (bytes >= TB) return `${(bytes / TB).toFixed(1)} TB`
+  if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`
+  return formatSize(bytes)
+}
+
 export function formatTime(iso?: string | null): string {
   if (!iso) return '—'
   const d = new Date(iso)

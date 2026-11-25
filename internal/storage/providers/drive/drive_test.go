@@ -123,6 +123,8 @@ func (m *mockDrive) handler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case p == "/drive/v3/changes/startPageToken":
 		writeJSON(w, map[string]any{"startPageToken": "tok-1"})
+	case p == "/drive/v3/about":
+		writeJSON(w, map[string]any{"storageQuota": map[string]any{"limit": "1099511627776", "usage": "123456789"}})
 	case p == "/drive/v3/changes":
 		writeJSON(w, map[string]any{"newStartPageToken": "tok-2", "changes": []any{}})
 	case p == "/drive/v3/files" && r.Method == http.MethodGet:
@@ -364,5 +366,21 @@ func TestDriveGoogleDocExport(t *testing.T) {
 	_ = rc.Close()
 	if string(got) != "exported:企划书" {
 		t.Fatalf("export content: %q", string(got))
+	}
+}
+
+func TestDriveQuota(t *testing.T) {
+	p, srv := newTestProvider(t)
+	defer srv.Close()
+	qs, ok := any(p).(storage.QuotaSource)
+	if !ok {
+		t.Fatal("drive provider must implement storage.QuotaSource")
+	}
+	used, total, err := qs.Quota(t.Context())
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if used != 123456789 || total != 1099511627776 {
+		t.Fatalf("Quota: got used=%d total=%d, want 123456789 / 1099511627776", used, total)
 	}
 }

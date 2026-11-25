@@ -11,12 +11,13 @@
 // record (mount row, cached listings, encrypted credential blob);
 // cloud files are never touched.
 import { useEffect, useRef, useState } from 'react'
-import type { AgentStatus, Mount } from '../mygo'
+import type { AgentStatus, Mount, MountQuota } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { t, type Lang } from '../lib/i18n'
 import { Skeleton, staggerStyle } from '../components/motion'
 import { BrandLogo, IconPencil, IconTrash, NavIcon } from './icons'
 import { mountStatusLabel } from '../lib/format'
+import QuotaBar from './QuotaBar'
 
 export type Page = 'browse' | 'sync' | 'settings'
 
@@ -28,6 +29,7 @@ export default function Sidebar({
   loading,
   onNavigate,
   mounts,
+  quotas,
   activeMountId,
   onSelectMount,
   agentStatus,
@@ -40,6 +42,7 @@ export default function Sidebar({
   loading?: boolean
   onNavigate: (p: Page) => void
   mounts: Mount[]
+  quotas?: Record<string, MountQuota>
   activeMountId: string | null
   onSelectMount: (m: Mount) => void
   agentStatus: AgentStatus | null
@@ -315,12 +318,20 @@ export default function Sidebar({
                     onClick={() => onSelectMount(m)}
                   >
                     <BrandLogo provider={m.provider} endpointHost={m.endpointHost} />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div className="mount-name">{m.displayName}</div>
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: 28 }}>
+                      <div className="mount-name" title={m.displayName}>
+                        {m.displayName}
+                      </div>
                       <div className="mount-meta">
                         {m.provider}
                         {st ? ` · ${st}` : ''}
+                        {!m.verified && (
+                          <span className="badge badge-amber" style={{ marginLeft: 6 }}>
+                            未验证
+                          </span>
+                        )}
                       </div>
+                      <QuotaBar quota={quotas?.[m.id]} compact />
                     </div>
                     <button
                       className="icon-btn mount-remove"

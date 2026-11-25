@@ -239,8 +239,15 @@ function SyncJobEditor({
         <DualPane key={`src-${initial?.id ?? 'new'}`} label="源" value={src} onChange={setSrc} mounts={mounts} />
         <DualPane key={`dst-${initial?.id ?? 'new'}`} label="目标" value={dst} onChange={setDst} mounts={mounts} />
       </div>
-      <p className="muted" style={{ fontSize: 12, margin: '8px 0 0' }}>
-        当前停留的文件夹就是同步根目录；点进子文件夹会同步那个子文件夹。
+      {/* 选中回显：创建/保存任务用的就是这两条路径，与双栏里选
+          中的完全一致。没选中的行时，默认就是当前文件夹（双栏里
+          标“当前文件夹”），所以这里永远有值，不存在“以为选了其
+          实没选”的空态，按钮也不需要为此禁用。 */}
+      <p className="sync-sel-echo" style={{ fontSize: 13, margin: '8px 0 0', wordBreak: 'break-all' }}>
+        源：{src.label || '（未选）'} → 目标：{dst.label || '（未选）'}
+      </p>
+      <p className="muted" style={{ fontSize: 12, margin: '4px 0 0' }}>
+        单击一行选中它作为同步根目录（文件或文件夹都可以）；双击文件夹进入，点面包屑回到当前文件夹。两边各自独立选。
       </p>
 
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 16 }}>

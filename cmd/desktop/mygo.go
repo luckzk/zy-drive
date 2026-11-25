@@ -1,4 +1,4 @@
-// Command mcm-desktop: mygo window shell.
+// Command zy-drive-desktop: mygo window shell.
 //
 // Wiring (verified against mygo v0.10.0 docs, docs/bindings.md,
 // docs/frontend.md, docs/configuration.md and `go doc`):

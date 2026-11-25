@@ -315,4 +315,10 @@ func mimeOf(key string) string {
 }
 
 // Ensure Provider implements storage.Provider at compile time.
+// S3 has no quota API: there is no bucket-level "used/total" to
+// query (HeadBucket/ListObjects would have to walk the whole
+// bucket, and the account has no total to report). This driver
+// deliberately does NOT implement storage.QuotaSource, so the
+// App layer reports the mount as unlimited and the UI shows
+// "不限量" instead of a made-up number.
 var _ storage.Provider = (*Provider)(nil)

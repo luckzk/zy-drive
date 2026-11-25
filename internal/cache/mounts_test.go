@@ -17,7 +17,7 @@ func TestMountsRoundTrip(t *testing.T) {
 	m := &domain.Mount{
 		ID: "mnt-1", DisplayName: "工作 Drive", Provider: domain.ProviderDrive,
 		AccountID: "mount:mnt-1", RootRef: "", RootLabel: "", Group: "工作",
-		Status: domain.MountOK,
+		Status: domain.MountOK, Verified: true,
 	}
 	cfg := map[string]string{"client_id": "cid-1", "rootId": "root"}
 	if err := db.SaveMount(m, cfg); err != nil {
@@ -28,7 +28,8 @@ func TestMountsRoundTrip(t *testing.T) {
 		t.Fatalf("ListMounts: %v", err)
 	}
 	if len(got) != 1 || got[0].Mount.DisplayName != "工作 Drive" ||
-		got[0].Mount.Group != "工作" || got[0].Config["client_id"] != "cid-1" {
+		got[0].Mount.Group != "工作" || got[0].Config["client_id"] != "cid-1" ||
+		!got[0].Mount.Verified {
 		t.Fatalf("unexpected mounts after save: %+v", got)
 	}
 	// Group change persists through the dedicated update.

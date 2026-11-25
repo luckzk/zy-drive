@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -316,6 +317,69 @@ func TestAddMountProbeFailureNotSaved(t *testing.T) {
 	}
 	if persisted, err := a.DB.ListMounts(); err != nil || len(persisted) != 0 {
 		t.Fatalf("DB must hold no mounts after failed probes: %v %+v", err, persisted)
+	}
+}
+
+// TestAddMountSkipProbeSavesUnverified (C, one-page form): saving
+// without a probe stores the mount with Verified=false, and a
+// later TestMount flips it to true. The probe-gated path still
+// refuses a bad config — SkipProbe only skips the probe, never
+// the validation.
+func TestAddMountSkipProbeSavesUnverified(t *testing.T) {
+	dir := t.TempDir()
+	a := newTestApp(t)
+	ctx := context.Background()
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "先存后测", Provider: domain.ProviderLocal,
+		LocalPath: dir, SkipProbe: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(skipProbe): %v", err)
+	}
+	if m.Verified {
+		t.Fatalf("skip-probe mount must be Verified=false, got %+v", m)
+	}
+	// Persisted as unverified too (a restart must not "heal" it).
+	persisted, err := a.DB.ListMounts()
+	if err != nil || len(persisted) != 1 || persisted[0].Mount.Verified {
+		t.Fatalf("DB must hold one unverified mount: %v %+v", err, persisted)
+	}
+	// Re-test from Settings: the path exists, so it passes and the
+	// mount becomes verified.
+	updated, err := a.TestMount(ctx, m.ID)
+	if err != nil {
+		t.Fatalf("TestMount: %v", err)
+	}
+	if !updated.Verified {
+		t.Fatalf("TestMount must mark the mount verified, got %+v", updated)
+	}
+	// A failed re-test changes nothing: the mount stays verified
+	// from the pass above (TestMount never un-verifies on failure;
+	// it only reports the error).
+	if _, err := a.TestMount(ctx, "mnt-does-not-exist"); err == nil {
+		t.Fatalf("TestMount on an unknown mount must fail")
+	}
+}
+
+// TestTestMountConfigProbesWithoutSaving (C): the one-page form's
+// "测试连接" validates + probes and persists nothing, good or bad.
+func TestTestMountConfigProbesWithoutSaving(t *testing.T) {
+	dir := t.TempDir()
+	a := newTestApp(t)
+	ctx := context.Background()
+	if err := a.TestMountConfig(ctx, AddMountInput{
+		DisplayName: "本地", Provider: domain.ProviderLocal, LocalPath: dir,
+	}); err != nil {
+		t.Fatalf("TestMountConfig(existing dir): %v", err)
+	}
+	if err := a.TestMountConfig(ctx, AddMountInput{
+		DisplayName: "不存在", Provider: domain.ProviderLocal,
+		LocalPath: filepath.Join(t.TempDir(), "no-such-dir"),
+	}); err == nil {
+		t.Fatalf("TestMountConfig(missing dir) must fail")
+	}
+	if got := a.ListMounts(); len(got) != 0 {
+		t.Fatalf("TestMountConfig must not save anything, got %+v", got)
 	}
 }
 
@@ -670,10 +734,14 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		t.Fatalf("onedrive auth URL must not carry a client secret: %q", start.AuthURL)
 	}
 	// Mock token endpoint: the exchange is a plain form POST and
-	// must present the PKCE verifier, not a secret.
+	// must present the PKCE verifier, not a secret — and the
+	// redirect_uri must be the per-flow loopback URI the authorize
+	// URL carried, not the old fixed "http://localhost".
+	authURL, _ := url.Parse(start.AuthURL)
+	wantRedirect := authURL.Query().Get("redirect_uri")
 	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
-		if r.Form.Get("code") != "code-od" || r.Form.Get("redirect_uri") != "http://localhost" {
+		if r.Form.Get("code") != "code-od" || r.Form.Get("redirect_uri") != wantRedirect {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
@@ -719,10 +787,14 @@ func TestBeginExchangeOAuth(t *testing.T) {
 	if start.State == "" {
 		t.Fatalf("empty state")
 	}
-	// Mock token endpoint: the exchange is a plain form POST.
+	// Mock token endpoint: the exchange is a plain form POST. The
+	// redirect_uri must be the per-flow loopback URI the authorize
+	// URL carried.
+	authURL, _ = url.Parse(start.AuthURL)
+	wantRedirect = authURL.Query().Get("redirect_uri")
 	tokenSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
-		if r.Form.Get("code") != "code-1" || r.Form.Get("redirect_uri") != "http://localhost" {
+		if r.Form.Get("code") != "code-1" || r.Form.Get("redirect_uri") != wantRedirect {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}

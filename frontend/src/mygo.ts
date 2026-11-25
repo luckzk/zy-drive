@@ -47,12 +47,20 @@ export interface AddMountInput {
   workspaceId?: string;
   /** local mount: absolute folder path */
   localPath?: string;
+  /**
+   * SkipProbe (C, one-page form): save without a connection
+   * probe. The mount is then stored Verified=false ("未验证")
+   * and the user re-tests it later from Settings. When false
+   * (the default, and the only path the OAuth wizard uses) the
+   * probe still gates the save exactly as before.
+   */
+  skipProbe?: boolean;
 }
 
 /**
  * Agent is one server-side execution node (2026-11-24 decision:
  * settings hold a *list* of Agents, not a single one). The desktop is
- * the control plane; each Agent is a headless mcm-agent process on
+ * the control plane; each Agent is a headless zy-drive-agent process on
  * some machine, reachable over HTTPS with an API token. A sync job
  * names one Agent by ID (SyncJob.AgentID) or runs locally.
  *
@@ -168,9 +176,10 @@ export interface Mount {
   rootLabel?: string;
   /**
    * EndpointHost is the host of the S3-compatible endpoint
-   * (e.g. "<account>.r2.cloudflarestorage.com"), display only:
-   * the sidebar picks the R2 (Cloudflare) or AWS S3 brand mark
-   * from it. Public endpoint URL, never a credential.
+   * (e.g. "<account>.r2.cloudflarestorage.com"), derived from the
+   * stored non-secret config. Display only: the sidebar uses it
+   * to pick the R2 (Cloudflare) or AWS S3 brand mark. It is the
+   * public endpoint URL, never a credential.
    */
   endpointHost?: string;
   /**
@@ -181,8 +190,39 @@ export interface Mount {
   group?: string;
   caps: Caps;
   status: MountStatus;
+  /**
+   * Verified is whether the mount passed a connection probe at
+   * least once (C, one-page form): mounts saved from the wizard
+   * after a passed test are verified; mounts saved without a
+   * passed test (user chose "先保存、后测试") are unverified and
+   * the sidebar + Settings mark them "未验证" until TestMount
+   * passes. Mounts saved before this field existed were all
+   * probe-verified at save time, so the DB default is 1.
+   */
+  verified: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * MountQuota is one mount's storage usage as returned by the batch
+ * GetMountQuotas Bind (one call, per-mount isolation: a failure on
+ * one mount never blocks the others). Used/Total are bytes.
+ * Unlimited is set when the provider has no quota API at all
+ * (S3/R2): the UI shows "不限量", never a made-up number.
+ * IsLocalDisk is set for local-folder mounts: the numbers are the
+ * disk the folder sits on (total disk size, used disk space), not
+ * a cloud quota, and the UI says so. Error is non-empty when the
+ * quota fetch failed for this mount: the UI shows "容量暂不可用"
+ * for that mount only.
+ */
+export interface MountQuota {
+  mountId: string;
+  used: number;
+  total: number;
+  unlimited: boolean;
+  isLocalDisk: boolean;
+  error?: string;
 }
 
 /** MountStatus is the health of one mount as shown in the sidebar. */
@@ -227,8 +267,21 @@ export interface Node {
 }
 
 /**
+ * OAuthCallbackResult is what PollOAuthCallback returns. Status is
+ * one of "waiting" (browser has not jumped back yet), "done"
+ * (code caught, ready to exchange), "error" (the provider refused,
+ * e.g. access_denied — Message carries it in plain language) or
+ * "expired" (unknown / used / timed-out state).
+ */
+export interface OAuthCallbackResult {
+  status: string;
+  code?: string;
+  message?: string;
+}
+
+/**
  * OAuthStart is what BeginOAuth returns: the URL to open + the state
- * the exchange must present back.
+ * the exchange (or the poll) must present back.
  */
 export interface OAuthStart {
   authUrl: string;
@@ -471,15 +524,33 @@ export interface VersionInfo {
 export const DesktopService = {
   /**
    * AddMount registers a mount with credentials: it probes the root
-   * listing first and only persists when the probe succeeds.
+   * listing first and only persists when the probe succeeds — unless
+   * the input sets SkipProbe (C, one-page form), in which case the
+   * mount is saved unverified and re-tested later from Settings.
    */
   addMount: bind<[AddMountInput], Mount | null>("DesktopService.AddMount", (in_: AddMountInput) => [in_]),
   /** AgentStatus summarises the Agent list for the sidebar card. */
   agentStatus: bind<[], AgentStatus>("DesktopService.AgentStatus", () => []),
-  /** BeginOAuth builds the authorize URL for Dropbox / Drive / Drime. */
+  /**
+   * BeginOAuth builds the authorize URL for Dropbox / Drive / Drime /
+   * OneDrive and starts the one-shot loopback listener that catches
+   * the code (A). The frontend polls PollOAuthCallback for it.
+   */
   beginOAuth: bind<[ProviderKind, string], OAuthStart | null>("DesktopService.BeginOAuth", (provider: ProviderKind, clientID: string) => [provider, clientID]),
   /** Browse lists a directory (cache-first, background refresh). */
   browse: bind<[string, string], Node[]>("DesktopService.Browse", (mountID: string, ref: string) => [mountID, ref]),
+  /**
+   * BuiltinOAuthClientID returns the configured shared ZyDrive OAuth
+   * Client ID for a provider (B, one-click authorization), or ""
+   * when the official app is not registered yet — the wizard then
+   * offers only the self-built app flow.
+   */
+  builtinOAuthClientID: bind<[ProviderKind], string>("DesktopService.BuiltinOAuthClientID", (provider: ProviderKind) => [provider]),
+  /**
+   * CancelOAuth drops a pending authorization and frees its loopback
+   * port at once (dialog closed, user gave up).
+   */
+  cancelOAuth: bind<[string], void>("DesktopService.CancelOAuth", (state: string) => [state]),
   /**
    * CheckDownloadDir checks a path exists and is a directory, for
    * instant feedback in the Settings page before saving.
@@ -514,6 +585,18 @@ export const DesktopService = {
   listSyncJobs: bind<[], (SyncJob | null)[]>("DesktopService.ListSyncJobs", () => []),
   /** Mkdir creates one folder on a mount (upload target picker). */
   mkdir: bind<[string, string], void>("DesktopService.Mkdir", (mountID: string, ref: string) => [mountID, ref]),
+  /**
+   * MountQuotas returns every mount's storage usage in one call
+   * (per-mount isolation: one mount's failure never blocks the
+   * others — see internal/app/quotas.go).
+   */
+  mountQuotas: bind<[], (MountQuota | null)[]>("DesktopService.MountQuotas", () => []),
+  /**
+   * PollOAuthCallback reports whether the browser has jumped back
+   * with a code for this state yet ("waiting" / "done" / "error" /
+   * "expired"). It never blocks; the frontend polls it.
+   */
+  pollOAuthCallback: bind<[string], OAuthCallbackResult | null>("DesktopService.PollOAuthCallback", (state: string) => [state]),
   /** PreviewSync builds a sync plan for confirmation. */
   previewSync: bind<[SyncJob | null], Plan | null>("DesktopService.PreviewSync", (job: SyncJob | null) => [job]),
   /** RemoveAgent unregisters an Agent. */
@@ -543,6 +626,17 @@ export const DesktopService = {
    * credential: health needs no token.
    */
   testAgent: bind<[string], AgentTestResult | null>("DesktopService.TestAgent", (id: string) => [id]),
+  /**
+   * TestMount re-probes a saved mount (C, Settings → "重新测试").
+   * On success the mount is marked verified; on failure it stays
+   * unverified and the error is returned.
+   */
+  testMount: bind<[string], Mount | null>("DesktopService.TestMount", (id: string) => [id]),
+  /**
+   * TestMountConfig probes a not-yet-saved mount's config (C,
+   * one-page form "测试连接") without persisting anything.
+   */
+  testMountConfig: bind<[AddMountInput], void>("DesktopService.TestMountConfig", (in_: AddMountInput) => [in_]),
   /** Transfers lists transfers for the bottom queue panel. */
   transfers: bind<[], (Transfer | null)[]>("DesktopService.Transfers", () => []),
   /** UpdateMountGroup changes a mount's sidebar group. */

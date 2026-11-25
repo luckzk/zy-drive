@@ -1,4 +1,4 @@
-// Command mcm-agent is entry two: the headless Agent.
+// Command zy-drive-agent is entry two: the headless Agent.
 // It runs the Agent API (five core endpoints + SSE) and the in-process
 // scheduler. It has no UI. It must sit behind HTTPS (reverse proxy
 // terminates TLS) with an API token — the port is never exposed bare.

@@ -100,3 +100,13 @@ type Versioner interface {
 type Thumber interface {
 	Thumbnail(ctx context.Context, ref string) (url string, err error)
 }
+
+// QuotaSource is the optional storage-quota interface. Quota
+// returns (used, total) in bytes. total <= 0 means the provider
+// reports no total (unlimited plan, or the API only reports used):
+// callers must not invent a total from it. Drivers that have no
+// quota API at all (S3/R2) simply do not implement this interface,
+// and the UI says "不限量" instead of showing a made-up number.
+type QuotaSource interface {
+	Quota(ctx context.Context) (used, total int64, err error)
+}

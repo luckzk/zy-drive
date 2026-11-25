@@ -44,17 +44,17 @@ make test
 make build
 
 # 桌面（mygo 窗口壳，失败时回落到本地 HTTP dev 壳）
-./build/mcm-desktop --config-dir ~/.config/zy-drive
+./build/zy-drive-desktop --config-dir ~/.config/zy-drive
 
 # Agent（无界面）
-./build/mcm-agent --addr 127.0.0.1:8080 --config-dir ~/.config/zy-drive-agent
+./build/zy-drive-agent --addr 127.0.0.1:8080 --config-dir ~/.config/zy-drive-agent
 
 # CLI
-./build/mcm ls s3://my-bucket/photos/
-./build/mcm sync ./photos s3://my-bucket/photos/ --dry-run
+./build/zy-drive ls s3://my-bucket/photos/
+./build/zy-drive sync ./photos s3://my-bucket/photos/ --dry-run
 ```
 
-> 二进制名暂沿用 `mcm-*`（`mcm-desktop` / `mcm-agent` / `mcm`），改名工作量大故未随产品名一起改；配置目录已随产品名改为 `~/.config/zy-drive`（Agent 为 `~/.config/zy-drive-agent`）。
+> 二进制名随产品名：`zy-drive-desktop` / `zy-drive-agent` / `zy-drive`（2026-11-25 从 `mcm-*` 改名；旧的 `./build/mcm-desktop` 已失效，重新 `make build` 即可）。配置目录 `~/.config/zy-drive`（Agent 为 `~/.config/zy-drive-agent`）。
 
 ## 目录
 
@@ -108,9 +108,11 @@ false，如无 WebKitGTK 的 Linux VM）、前端未构建或 `App.Run` 失败�
 ```sh
 npm install --prefix frontend   # 含 mygo-runtime
 npm run build --prefix frontend # 产出 frontend/dist，mygo 窗口用它
-./build/mcm-desktop --dev-shell # 不开窗口，只起 dev 壳
+./build/zy-drive-desktop --dev-shell # 不开窗口，只起 dev 壳
 ```
 
 ## 命名
 
 项目已定名 ZyDrive，仓库 github.com/luckzk/zy-drive。
+
+对外显示名 ZyDrive；机器标识统一成 `zy-drive`（mygo slug/identifier、配置目录 `~/.config/zy-drive`）；二进制 `zy-drive-desktop` / `zy-drive-agent` / `zy-drive`（2026-11-25 从 `mcm-*` 改名）。

@@ -15,7 +15,7 @@
 // (base curve) via .page-enter, keyed by page; loading states are
 // skeleton blocks shaped like the real content, never "加载中…" text.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Agent, AgentStatus, Mount, Settings, Transfer } from './mygo'
+import type { Agent, AgentStatus, Mount, MountQuota, Settings, Transfer } from './mygo'
 import { api, friendlyError } from './api/client'
 import { t, type Lang } from './lib/i18n'
 import { Skeleton } from './components/motion'
@@ -34,6 +34,12 @@ function applyTheme(theme: string) {
 export default function App() {
   const [page, setPage] = useState<Page>('browse')
   const [mounts, setMounts] = useState<Mount[]>([])
+  // Quotas: one batch call for all mounts, on open + every 5 min
+  // (+ manual refresh from the browse header). Never per listing:
+  // Drime must not be polled per List. A failed mount stays in the
+  // map with quota.error set — the sidebar shows "容量暂不可用"
+  // for that mount only, the rest still render.
+  const [quotas, setQuotas] = useState<Record<string, MountQuota>>({})
   const [agents, setAgents] = useState<Agent[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
   const [transfers, setTransfers] = useState<Transfer[]>([])
@@ -87,6 +93,18 @@ export default function App() {
     }
   }, [])
 
+  const loadQuotas = useCallback(async () => {
+    try {
+      const qs = await api.mountQuotas()
+      const next: Record<string, MountQuota> = {}
+      for (const q of qs) next[q.mountId] = q
+      setQuotas(next)
+    } catch {
+      // Quota failure never breaks the app: the sidebar simply
+      // shows no quota line until the next refresh.
+    }
+  }, [])
+
   const loadSettings = useCallback(async () => {
     try {
       const s = await api.getSettings()
@@ -101,14 +119,21 @@ export default function App() {
 
   useEffect(() => {
     setLoading(true)
-    void Promise.all([loadMounts(), loadAgents(), loadTransfers(), loadSettings()]).finally(() => setLoading(false))
-  }, [loadMounts, loadAgents, loadTransfers, loadSettings])
+    void Promise.all([loadMounts(), loadAgents(), loadTransfers(), loadSettings(), loadQuotas()]).finally(() => setLoading(false))
+  }, [loadMounts, loadAgents, loadTransfers, loadSettings, loadQuotas])
 
   // Poll the transfer queue while the app is open.
   useEffect(() => {
     const t = setInterval(() => void loadTransfers(), 5000)
     return () => clearInterval(t)
   }, [loadTransfers])
+
+  // Refresh quotas every 5 minutes (and on manual refresh from the
+  // browse header); never per file listing.
+  useEffect(() => {
+    const t = setInterval(() => void loadQuotas(), 5 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [loadQuotas])
 
   // Ctrl+K opens the command palette.
   useEffect(() => {
@@ -156,6 +181,7 @@ export default function App() {
   return (
     <div className="app-shell">
       <header className="app-header">
+        <img className="app-logo" src="/logo.svg" alt="ZyDrive" />
         <h1 style={{ margin: 0 }}>ZyDrive</h1>
         <input
           className="input"
@@ -176,6 +202,7 @@ export default function App() {
           loading={loading}
           onNavigate={setPage}
           mounts={mounts}
+          quotas={quotas}
           activeMountId={activeMountId}
           onSelectMount={selectMount}
           agentStatus={agentStatus}
@@ -215,7 +242,12 @@ export default function App() {
                     </div>
                   </div>
                 ) : activeMount ? (
-                  <FileBrowser key={activeMount.id} mount={activeMount} />
+                  <FileBrowser
+                    key={activeMount.id}
+                    mount={activeMount}
+                    quota={quotas[activeMount.id]}
+                    onRefreshQuota={() => void loadQuotas()}
+                  />
                 ) : null}
               </>
             )}

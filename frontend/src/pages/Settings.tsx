@@ -20,6 +20,37 @@ import { formatTime, mountStatusLabel, newId } from '../lib/format'
 import { t, type Lang } from '../lib/i18n'
 import { FRONTEND_VERSION } from '../version'
 import { Reveal, Skeleton, staggerStyle, useClosing } from '../components/motion'
+import { SectionIcon } from '../components/icons'
+
+type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about'
+
+// SectionHead — one Settings section's title row: flat-color-icons
+// glyph + 18px title (weight stays 400) + one-line description,
+// with a divider under it (tokens.css). The title row is the
+// hierarchy: icon + size, never bold.
+function SectionHead({
+  section,
+  title,
+  desc,
+  action,
+}: {
+  section: SettingsSection
+  title: string
+  desc: string
+  action?: React.ReactNode
+}) {
+  return (
+    <div className="settings-card-head">
+      <div className="settings-card-title">
+        <SectionIcon section={section} />
+        <h2>{title}</h2>
+        {action && <span style={{ flex: 1 }} />}
+        {action}
+      </div>
+      <p className="settings-card-desc">{desc}</p>
+    </div>
+  )
+}
 
 export default function SettingsPage({
   lang,
@@ -58,6 +89,24 @@ export default function SettingsPage({
   const [rootBusy, setRootBusy] = useState(false)
   const [rootError, setRootError] = useState<string | null>(null)
   const [rootDialogClosing, requestRootDialogClose, resetRootDialog] = useClosing(() => setEditingRoot(null))
+  // ---- 未验证网盘重新测试（C：一页表单先保存、后测试） ----
+  const [testingMountId, setTestingMountId] = useState<string | null>(null)
+  const [testMountMsg, setTestMountMsg] = useState<Record<string, string>>({})
+
+  const retestMount = async (m: Mount) => {
+    setTestingMountId(m.id)
+    try {
+      const updated = await api.testMount(m.id)
+      if (!updated) throw new Error('重新测试失败：后端没有返回网盘信息。')
+      setTestMountMsg((prev) => ({ ...prev, [m.id]: '测试通过，已标记为已验证。' }))
+      await loadMounts()
+      onMountsChanged()
+    } catch (e) {
+      setTestMountMsg((prev) => ({ ...prev, [m.id]: friendlyError(e) }))
+    } finally {
+      setTestingMountId(null)
+    }
+  }
 
   const saveRoot = async () => {
     if (!editingRoot) return
@@ -336,10 +385,7 @@ export default function SettingsPage({
       {/* ---- 通用 ---- */}
       <Reveal>
         <section className="settings-card">
-        <div className="settings-card-head">
-          <h2>{t(lang, 'general')}</h2>
-          <p className="settings-card-desc">外观、语言、下载文件夹与开机启动。</p>
-        </div>
+        <SectionHead section="general" title={t(lang, 'general')} desc="外观、语言、下载文件夹与开机启动。" />
         {settingsLoading || !draft ? (
           <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载设置">
             <Skeleton height={36} width="60%" />
@@ -385,21 +431,24 @@ export default function SettingsPage({
               <div className="hint">保存时会校验：路径必须存在且是一个文件夹，否则保存失败。</div>
               {dirMsg && <div className="hint">{dirMsg}</div>}
             </div>
-            <div className="field">
-              <label>开机启动</label>
-              {openAtLogin === null ? (
-                <p className="muted" style={{ margin: '4px 0' }}>
-                  桌面版暂不支持：{loginNote ?? '当前运行方式下无法管理开机启动，需要打包后的桌面应用（macOS 上是系统设置 → 通用 → 登录项）。'}
-                </p>
-              ) : (
-                <label className="radio-row">
-                  <input type="checkbox" checked={openAtLogin} onChange={() => void toggleLogin()} />
-                  <span>登录 Mac 时自动启动 ZyDrive{openAtLogin ? '（已开启）' : '（未开启）'}</span>
-                </label>
-              )}
-              {loginNote && openAtLogin !== null && <div className="hint">{loginNote}</div>}
-            </div>
-            <div style={{ marginBottom: 0 }}>
+            <details className="settings-advanced">
+              <summary>高级：开机启动</summary>
+              <div className="field" style={{ marginTop: 12 }}>
+                <label>开机启动</label>
+                {openAtLogin === null ? (
+                  <p className="muted" style={{ margin: '4px 0' }}>
+                    桌面版暂不支持：{loginNote ?? '当前运行方式下无法管理开机启动，需要打包后的桌面应用（macOS 上是系统设置 → 通用 → 登录项）。'}
+                  </p>
+                ) : (
+                  <label className="radio-row">
+                    <input type="checkbox" checked={openAtLogin} onChange={() => void toggleLogin()} />
+                    <span>登录 Mac 时自动启动 ZyDrive{openAtLogin ? '（已开启）' : '（未开启）'}</span>
+                  </label>
+                )}
+                {loginNote && openAtLogin !== null && <div className="hint">{loginNote}</div>}
+              </div>
+            </details>
+            <div style={{ marginBottom: 0, marginTop: 16 }}>
               <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
                 {t(lang, 'save')}
               </button>
@@ -412,10 +461,7 @@ export default function SettingsPage({
       {/* ---- 网盘 ---- */}
       <Reveal>
         <section className="settings-card">
-        <div className="settings-card-head">
-          <h2>{t(lang, 'drives')}</h2>
-          <p className="settings-card-desc">已添加的网盘：查看状态、重新授权或移除。</p>
-        </div>
+        <SectionHead section="drives" title={t(lang, 'drives')} desc="已添加的网盘：查看状态、重新授权、重新测试未验证的，或移除。" />
         {mountsLoading ? (
           <div style={{ display: 'grid', gap: 8 }} aria-label="正在加载网盘">
             {[0, 1].map((i) => (
@@ -463,6 +509,11 @@ export default function SettingsPage({
                       异常
                     </span>
                   )}
+                  {!m.verified && (
+                    <span className="badge badge-amber" style={{ marginLeft: 8 }}>
+                      未验证
+                    </span>
+                  )}
                 </div>
                 <div className="agent-meta">
                   {m.provider}
@@ -470,12 +521,22 @@ export default function SettingsPage({
                   {mountStatusLabel(m.status) ? ` · ${mountStatusLabel(m.status)}` : ''}
                   {m.rootLabel || m.rootRef ? ` · ${m.rootLabel || m.rootRef}` : ''}
                 </div>
+                {testMountMsg[m.id] && (
+                  <div style={{ fontSize: 13, marginTop: 4 }}>
+                    {testMountMsg[m.id]}
+                  </div>
+                )}
                 {reauthTarget?.id === m.id && (
                   <div style={{ fontSize: 13, marginTop: 4 }}>
                     已打开添加向导：按新凭证走完后，这个旧网盘还留在这里——确认新网盘能用后，再点“删除”移除旧的。
                   </div>
                 )}
               </div>
+              {!m.verified && (
+                <button className="btn btn-sm" disabled={testingMountId === m.id} onClick={() => void retestMount(m)}>
+                  {testingMountId === m.id ? '测试中…' : '重新测试'}
+                </button>
+              )}
               <button
                 className="btn btn-sm"
                 onClick={() => {
@@ -531,10 +592,7 @@ export default function SettingsPage({
       {/* ---- 同步默认 ---- */}
       <Reveal>
         <section className="settings-card">
-        <div className="settings-card-head">
-          <h2>{t(lang, 'syncDefaults')}</h2>
-          <p className="settings-card-desc">新建同步任务时用这些默认值；已经建好的任务不受影响，各自保留原来的设置。</p>
-        </div>
+        <SectionHead section="sync" title={t(lang, 'syncDefaults')} desc="新建同步任务时用这些默认值；已经建好的任务不受影响，各自保留原来的设置。" />
         {settingsLoading || !draft ? (
           <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载同步默认设置">
             <Skeleton height={36} width="60%" />
@@ -556,29 +614,6 @@ export default function SettingsPage({
               </select>
             </div>
             <div className="field">
-              <label>默认并发数（1–16）</label>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={16}
-                value={draft.syncConcurrency}
-                onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
-              />
-              <div className="hint">已保存，但当前同步引擎固定 2 路并发、尚未读取这个设置；引擎支持后才生效，不假装现在就能调。</div>
-            </div>
-            <div className="field">
-              <label>限速（KB/s，0 = 不限速）</label>
-              <input
-                className="input"
-                type="number"
-                min={0}
-                value={draft.syncSpeedLimitKBps}
-                onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
-              />
-              <div className="hint">已保存，但当前同步引擎没有限速器；引擎支持后才生效。</div>
-            </div>
-            <div className="field">
               <label>冲突处理默认策略</label>
               <select
                 className="select"
@@ -595,6 +630,32 @@ export default function SettingsPage({
               </select>
               <div className="hint">V0.1 引擎的冲突规则是固定的（新版占原名、另一份保留为冲突副本），其他策略后续版本再提供。</div>
             </div>
+            <details className="settings-advanced">
+              <summary>高级：并发与限速（引擎暂未读取）</summary>
+              <div className="field" style={{ marginTop: 12 }}>
+                <label>默认并发数（1–16）</label>
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={16}
+                  value={draft.syncConcurrency}
+                  onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
+                />
+                <div className="hint">已保存，但当前同步引擎固定 2 路并发、尚未读取这个设置；引擎支持后才生效，不假装现在就能调。</div>
+              </div>
+              <div className="field">
+                <label>限速（KB/s，0 = 不限速）</label>
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  value={draft.syncSpeedLimitKBps}
+                  onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
+                />
+                <div className="hint">已保存，但当前同步引擎没有限速器；引擎支持后才生效。</div>
+              </div>
+            </details>
             <div style={{ marginBottom: 0 }}>
               <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
                 {t(lang, 'save')}
@@ -608,18 +669,16 @@ export default function SettingsPage({
       {/* ---- Agent（V0.1 原样保留） ---- */}
       <Reveal>
         <section className="settings-card">
-        <div className="settings-card-head">
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <h2 style={{ margin: 0 }}>{t(lang, 'agent')}</h2>
-            <span style={{ flex: 1 }} />
+        <SectionHead
+          section="agent"
+          title={t(lang, 'agent')}
+          desc="Agent 是跑在服务器上的执行端：桌面配好同步任务后，Agent 在服务器上跑，文件不经过这台电脑。本地文件夹的任务只能在本机跑。"
+          action={
             <button className="btn-primary" onClick={startAdd}>
               添加 Agent
             </button>
-          </div>
-          <p className="settings-card-desc" style={{ marginTop: 4 }}>
-            Agent 是跑在服务器上的执行端：桌面配好同步任务后，Agent 在服务器上跑，文件不经过这台电脑。本地文件夹的任务只能在本机跑。
-          </p>
-        </div>
+          }
+        />
 
         {agentsLoading ? (
           <div style={{ display: 'grid', gap: 8 }} aria-label="正在加载 Agent">
@@ -638,7 +697,7 @@ export default function SettingsPage({
         ) : agents.length === 0 ? (
           <div className="empty">
             <h2>还没有配置 Agent</h2>
-            <p>没有 Agent 也能用：同步任务在本机跑。想让任务在服务器上跑，先在服务器上起一个 mcm-agent，再点“添加 Agent”。</p>
+            <p>没有 Agent 也能用：同步任务在本机跑。想让任务在服务器上跑，先在服务器上起一个 zy-drive-agent，再点“添加 Agent”。</p>
           </div>
         ) : (
           agents.map((a, i) => (
@@ -701,10 +760,7 @@ export default function SettingsPage({
       {/* ---- 关于 ---- */}
       <Reveal>
         <section className="settings-card">
-        <div className="settings-card-head">
-          <h2>{t(lang, 'about')}</h2>
-          <p className="settings-card-desc">版本信息。</p>
-        </div>
+        <SectionHead section="about" title={t(lang, 'about')} desc="版本信息。" />
         <p style={{ margin: '4px 0' }}>
           后端版本：<strong>{versions?.backend ?? '—'}</strong>
         </p>

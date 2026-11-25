@@ -850,6 +850,35 @@ func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
 	return f.ThumbnailLink, nil
 }
 
+// Quota implements storage.QuotaSource via about.get
+// (GET /drive/v3/about?fields=storageQuota): storageQuota.limit
+// and .usage are decimal strings in bytes. An empty limit means
+// the account reports no cap (unlimited Workspace storage): it
+// is returned as -1, never guessed.
+func (p *Provider) Quota(ctx context.Context) (used, total int64, err error) {
+	var resp struct {
+		StorageQuota struct {
+			Limit string `json:"limit"`
+			Usage string `json:"usage"`
+		} `json:"storageQuota"`
+	}
+	if err := p.getJSON(ctx, "Quota", p.apiBase+"/drive/v3/about?fields=storageQuota", &resp); err != nil {
+		return 0, 0, err
+	}
+	used, err = strconv.ParseInt(resp.StorageQuota.Usage, 10, 64)
+	if err != nil {
+		return 0, 0, p.wrap("Quota", fmt.Errorf("drive: bad storageQuota.usage %q", resp.StorageQuota.Usage))
+	}
+	if resp.StorageQuota.Limit == "" {
+		return used, -1, nil
+	}
+	total, err = strconv.ParseInt(resp.StorageQuota.Limit, 10, 64)
+	if err != nil {
+		return 0, 0, p.wrap("Quota", fmt.Errorf("drive: bad storageQuota.limit %q", resp.StorageQuota.Limit))
+	}
+	return used, total, nil
+}
+
 func mimeOf(name string) string {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".jpg", ".jpeg":
@@ -881,4 +910,5 @@ var (
 	_ storage.Searcher    = (*Provider)(nil)
 	_ storage.Sharer      = (*Provider)(nil)
 	_ storage.Thumber     = (*Provider)(nil)
+	_ storage.QuotaSource = (*Provider)(nil)
 )

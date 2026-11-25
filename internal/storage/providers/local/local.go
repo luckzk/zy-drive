@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
@@ -217,6 +218,27 @@ func (p *Provider) wrapErr(op string, err error) error {
 	return p.wrap(op, err)
 }
 
+// Quota implements storage.QuotaSource from the disk the root
+// folder sits on (standard-library syscall.Statfs, no new
+// dependency). This is local disk space, not a cloud quota: the
+// App layer marks it IsLocalDisk so the UI says "本机磁盘".
+// used = total blocks minus free blocks, in bytes.
+func (p *Provider) Quota(ctx context.Context) (used, total int64, err error) {
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(p.root, &fs); err != nil {
+		return 0, 0, p.wrap("Quota", err)
+	}
+	total = int64(fs.Blocks) * int64(fs.Bsize)
+	free := int64(fs.Bfree) * int64(fs.Bsize)
+	if total <= 0 {
+		return 0, -1, nil
+	}
+	if free > total {
+		free = total
+	}
+	return total - free, total, nil
+}
+
 func mimeOf(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".jpg", ".jpeg":
@@ -242,4 +264,7 @@ func mimeOf(name string) string {
 	}
 }
 
-var _ storage.Provider = (*Provider)(nil)
+var (
+	_ storage.Provider    = (*Provider)(nil)
+	_ storage.QuotaSource = (*Provider)(nil)
+)

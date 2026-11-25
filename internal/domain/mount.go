@@ -64,9 +64,36 @@ type Mount struct {
 	// Group is the sidebar group this mount belongs to (2026-11-24
 	// decision). "" means "未分组". Groups are display-only: they
 	// never affect tokens, caches or sync.
-	Group     string      `json:"group,omitempty"`
-	Caps      Caps        `json:"caps"`
-	Status    MountStatus `json:"status"`
-	CreatedAt time.Time   `json:"createdAt"`
-	UpdatedAt time.Time   `json:"updatedAt"`
+	Group  string      `json:"group,omitempty"`
+	Caps   Caps        `json:"caps"`
+	Status MountStatus `json:"status"`
+	// Verified is whether the mount passed a connection probe at
+	// least once (C, one-page form): mounts saved from the wizard
+	// after a passed test are verified; mounts saved without a
+	// passed test (user chose "先保存、后测试") are unverified and
+	// the sidebar + Settings mark them "未验证" until TestMount
+	// passes. Mounts saved before this field existed were all
+	// probe-verified at save time, so the DB default is 1.
+	Verified  bool      `json:"verified"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// MountQuota is one mount's storage usage as returned by the batch
+// GetMountQuotas Bind (one call, per-mount isolation: a failure on
+// one mount never blocks the others). Used/Total are bytes.
+// Unlimited is set when the provider has no quota API at all
+// (S3/R2): the UI shows "不限量", never a made-up number.
+// IsLocalDisk is set for local-folder mounts: the numbers are the
+// disk the folder sits on (total disk size, used disk space), not
+// a cloud quota, and the UI says so. Error is non-empty when the
+// quota fetch failed for this mount: the UI shows "容量暂不可用"
+// for that mount only.
+type MountQuota struct {
+	MountID     string `json:"mountId"`
+	Used        int64  `json:"used"`
+	Total       int64  `json:"total"`
+	Unlimited   bool   `json:"unlimited"`
+	IsLocalDisk bool   `json:"isLocalDisk"`
+	Error       string `json:"error,omitempty"`
 }

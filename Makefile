@@ -20,19 +20,19 @@ build-frontend:
 	cd frontend && npm install && npm run build
 
 build-desktop: build-frontend
-	$(GO) build $(GOFLAGS) -o build/mcm-desktop ./cmd/desktop
+	$(GO) build $(GOFLAGS) -o build/zy-drive-desktop ./cmd/desktop
 
 build-agent:
-	$(GO) build $(GOFLAGS) -o build/mcm-agent ./cmd/agent
+	$(GO) build $(GOFLAGS) -o build/zy-drive-agent ./cmd/agent
 
 build-cli:
-	$(GO) build $(GOFLAGS) -o build/mcm ./cmd/cli
+	$(GO) build $(GOFLAGS) -o build/zy-drive ./cmd/cli
 
 run-desktop: build-desktop
-	./build/mcm-desktop --config-dir $(HOME)/.config/zy-drive
+	./build/zy-drive-desktop --config-dir $(HOME)/.config/zy-drive
 
 run-agent: build-agent
-	./build/mcm-agent --addr 127.0.0.1:8080 --config-dir $(HOME)/.config/zy-drive-agent
+	./build/zy-drive-agent --addr 127.0.0.1:8080 --config-dir $(HOME)/.config/zy-drive-agent
 
 clean:
 	rm -rf build

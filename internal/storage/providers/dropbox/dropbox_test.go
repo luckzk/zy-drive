@@ -172,6 +172,8 @@ func (m *mockFS) handler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"url": "https://dl.dropboxusercontent.com/s/x"})
 	case "/2/files/get_temporary_link":
 		writeJSON(w, map[string]any{"link": "https://dl.dropboxusercontent.com/s/tmp"})
+	case "/2/users/get_space_usage":
+		writeJSON(w, map[string]any{"used": 123456789, "allocation": map[string]any{"allocated": 2147483648, ".tag": "individual"}})
 	case "/oauth2/token":
 		writeJSON(w, map[string]any{"access_token": "new-access-token", "token_type": "bearer", "expires_in": 14400})
 	default:
@@ -239,8 +241,7 @@ func TestDropboxTokenRefresh(t *testing.T) {
 	}
 }
 
-func TestDropboxUploadSessionLarge(t *testing.T) {
-	p, srv := newTestProvider(t)
+func TestDropboxUploadSessionLarge(t *testing.T) {	p, srv := newTestProvider(t)
 	defer srv.Close()
 	// size -1 forces the session path even for a small body.
 	data := bytes.Repeat([]byte("x"), 100)
@@ -250,5 +251,21 @@ func TestDropboxUploadSessionLarge(t *testing.T) {
 	}
 	if node.Size != int64(len(data)) {
 		t.Fatalf("session upload size: got %d want %d", node.Size, len(data))
+	}
+}
+
+func TestDropboxQuota(t *testing.T) {
+	p, srv := newTestProvider(t)
+	defer srv.Close()
+	qs, ok := any(p).(storage.QuotaSource)
+	if !ok {
+		t.Fatal("dropbox provider must implement storage.QuotaSource")
+	}
+	used, total, err := qs.Quota(t.Context())
+	if err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if used != 123456789 || total != 2147483648 {
+		t.Fatalf("Quota: got used=%d total=%d, want 123456789 / 2147483648", used, total)
 	}
 }

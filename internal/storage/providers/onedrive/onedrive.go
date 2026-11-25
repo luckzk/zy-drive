@@ -707,7 +707,7 @@ func (p *Provider) Upload(ctx context.Context, ref string, r io.Reader, size int
 // spool writes the already-buffered head plus the rest of r to a
 // temp file and returns its path.
 func (p *Provider) spool(r io.Reader, head []byte) (string, error) {
-	f, err := os.CreateTemp("", "zydrive-onedrive-upload-*")
+	f, err := os.CreateTemp("", "zy-drive-onedrive-upload-*")
 	if err != nil {
 		return "", err
 	}
@@ -1193,6 +1193,27 @@ func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
 	}
 }
 
+// Quota implements storage.QuotaSource via GET /me/drive
+// ($select=quota only): {"quota": {"used": <bytes>, "total":
+// <bytes>, "remaining": <bytes>}}. A zero total is returned as
+// -1: no total is invented.
+func (p *Provider) Quota(ctx context.Context) (used, total int64, err error) {
+	var resp struct {
+		Quota struct {
+			Used  int64 `json:"used"`
+			Total int64 `json:"total"`
+		} `json:"quota"`
+	}
+	if err := p.doJSON(ctx, "Quota", http.MethodGet, p.apiBase+"/me/drive?$select=quota", nil, &resp); err != nil {
+		return 0, 0, err
+	}
+	total = resp.Quota.Total
+	if total <= 0 {
+		total = -1
+	}
+	return resp.Quota.Used, total, nil
+}
+
 func mimeOf(name string) string {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".jpg", ".jpeg":
@@ -1225,4 +1246,5 @@ var (
 	_ storage.Sharer      = (*Provider)(nil)
 	_ storage.Versioner   = (*Provider)(nil)
 	_ storage.Thumber     = (*Provider)(nil)
+	_ storage.QuotaSource = (*Provider)(nil)
 )

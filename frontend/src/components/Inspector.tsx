@@ -8,10 +8,11 @@
 // (generate a share link, list versions) are not wired in V0.1, and
 // the panel says so instead of showing a dead button.
 import { useState } from 'react'
-import type { Caps, Mount, Node } from '../mygo'
+import type { Caps, Mount, MountQuota, Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
 import { Accordion } from './motion'
 import { IconChevronDown, IconClose } from './icons'
+import QuotaBar from './QuotaBar'
 
 function capsList(caps: Caps): string[] {
   const out: string[] = []
@@ -27,7 +28,7 @@ function capsList(caps: Caps): string[] {
   return out
 }
 
-export default function Inspector({ node, mount, closing, onClose }: { node: Node; mount: Mount | null; closing?: boolean; onClose: () => void }) {
+export default function Inspector({ node, mount, quota, closing, onClose }: { node: Node; mount: Mount | null; quota?: MountQuota; closing?: boolean; onClose: () => void }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const supported = mount ? capsList(mount.caps) : []
 
@@ -52,6 +53,12 @@ export default function Inspector({ node, mount, closing, onClose }: { node: Nod
         路径：{node.path}
       </p>
       {mount && <p className="muted">来源：{mount.displayName}</p>}
+      {quota && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ margin: '0 0 4px', fontSize: 13 }}>网盘容量</p>
+          <QuotaBar quota={quota} />
+        </div>
+      )}
       {node.hash && (
         <p className="muted">
           校验值（{node.hashKind ?? 'hash'}）：{node.hash}

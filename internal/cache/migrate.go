@@ -161,6 +161,12 @@ var migrations = []string{
 	// RootRef itself is fixed to "" for S3 by the LoadMounts
 	// self-heal; the label keeps the bucket visible in Settings.
 	`ALTER TABLE mounts ADD COLUMN root_label TEXT NOT NULL DEFAULT ''`,
+	// v20 (2026-11-25, one-page form): whether the mount passed a
+	// connection probe at least once. Default 1: every mount saved
+	// before this column existed was probe-verified at save time
+	// (the old wizard refused to save an unprobed mount), so
+	// treating old rows as verified is honest, not a guess.
+	`ALTER TABLE mounts ADD COLUMN verified INTEGER NOT NULL DEFAULT 1`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.

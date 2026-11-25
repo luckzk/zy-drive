@@ -32,6 +32,13 @@ func (a *App) BindService() *DesktopService { return &DesktopService{app: a} }
 // ListMounts returns mounts for the sidebar.
 func (s *DesktopService) ListMounts() []*domain.Mount { return s.app.ListMounts() }
 
+// MountQuotas returns every mount's storage usage in one call
+// (per-mount isolation: one mount's failure never blocks the
+// others — see internal/app/quotas.go).
+func (s *DesktopService) MountQuotas(ctx context.Context) []*domain.MountQuota {
+	return s.app.MountQuotas(ctx)
+}
+
 // Browse lists a directory (cache-first, background refresh).
 func (s *DesktopService) Browse(ctx context.Context, mountID, ref string) ([]domain.Node, error) {
 	return s.app.Browse(ctx, mountID, ref)
@@ -111,14 +118,52 @@ func (s *DesktopService) TestAgent(ctx context.Context, id string) (*AgentTestRe
 func (s *DesktopService) RemoveMount(id string) error { return s.app.RemoveMount(id) }
 
 // AddMount registers a mount with credentials: it probes the root
-// listing first and only persists when the probe succeeds.
+// listing first and only persists when the probe succeeds — unless
+// the input sets SkipProbe (C, one-page form), in which case the
+// mount is saved unverified and re-tested later from Settings.
 func (s *DesktopService) AddMount(ctx context.Context, in AddMountInput) (*domain.Mount, error) {
 	return s.app.AddMountWithCredentials(ctx, in)
 }
 
-// BeginOAuth builds the authorize URL for Dropbox / Drive / Drime.
+// TestMountConfig probes a not-yet-saved mount's config (C,
+// one-page form "测试连接") without persisting anything.
+func (s *DesktopService) TestMountConfig(ctx context.Context, in AddMountInput) error {
+	return s.app.TestMountConfig(ctx, in)
+}
+
+// TestMount re-probes a saved mount (C, Settings → "重新测试").
+// On success the mount is marked verified; on failure it stays
+// unverified and the error is returned.
+func (s *DesktopService) TestMount(ctx context.Context, id string) (*domain.Mount, error) {
+	return s.app.TestMount(ctx, id)
+}
+
+// BeginOAuth builds the authorize URL for Dropbox / Drive / Drime /
+// OneDrive and starts the one-shot loopback listener that catches
+// the code (A). The frontend polls PollOAuthCallback for it.
 func (s *DesktopService) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthStart, error) {
 	return s.app.BeginOAuth(provider, clientID)
+}
+
+// PollOAuthCallback reports whether the browser has jumped back
+// with a code for this state yet ("waiting" / "done" / "error" /
+// "expired"). It never blocks; the frontend polls it.
+func (s *DesktopService) PollOAuthCallback(state string) (*OAuthCallbackResult, error) {
+	return s.app.PollOAuthCallback(state)
+}
+
+// CancelOAuth drops a pending authorization and frees its loopback
+// port at once (dialog closed, user gave up).
+func (s *DesktopService) CancelOAuth(state string) {
+	s.app.CancelOAuth(state)
+}
+
+// BuiltinOAuthClientID returns the configured shared ZyDrive OAuth
+// Client ID for a provider (B, one-click authorization), or ""
+// when the official app is not registered yet — the wizard then
+// offers only the self-built app flow.
+func (s *DesktopService) BuiltinOAuthClientID(provider domain.ProviderKind) string {
+	return s.app.BuiltinOAuthClientID(provider)
 }
 
 // ExchangeOAuthCode swaps a pasted authorization code for tokens.

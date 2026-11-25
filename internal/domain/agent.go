@@ -4,7 +4,7 @@ import "time"
 
 // Agent is one server-side execution node (2026-11-24 decision:
 // settings hold a *list* of Agents, not a single one). The desktop is
-// the control plane; each Agent is a headless mcm-agent process on
+// the control plane; each Agent is a headless zy-drive-agent process on
 // some machine, reachable over HTTPS with an API token. A sync job
 // names one Agent by ID (SyncJob.AgentID) or runs locally.
 //

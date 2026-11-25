@@ -41,7 +41,10 @@ import synchronizeIcon from '@iconify-icons/flat-color-icons/synchronize'
 import settingsIcon from '@iconify-icons/flat-color-icons/settings'
 import cancelIcon from '@iconify-icons/flat-color-icons/cancel'
 import fullTrashIcon from '@iconify-icons/flat-color-icons/full-trash'
+import checkmarkIcon from '@iconify-icons/flat-color-icons/checkmark'
 import refreshIcon from '@iconify-icons/flat-color-icons/refresh'
+import servicesIcon from '@iconify-icons/flat-color-icons/services'
+import infoIcon from '@iconify-icons/flat-color-icons/info'
 import type { ProviderKind } from '../mygo'
 
 // ---------------------------------------------------------------- UI icons
@@ -57,6 +60,28 @@ export function IconTrash({ size = 16 }: { size?: number }) {
 
 export function IconRefresh({ size = 16 }: { size?: number }) {
   return <Icon icon={refreshIcon} width={size} height={size} aria-hidden="true" />
+}
+
+export function IconCheck({ size = 16 }: { size?: number }) {
+  return <Icon icon={checkmarkIcon} width={size} height={size} aria-hidden="true" />
+}
+
+// SectionIcon — one flat-color-icons glyph per Settings section
+// (same icon family as the file manager, kept consistent):
+// general → settings, drives → folder, sync defaults →
+// synchronize, Agent → services, about → info.
+export function SectionIcon({ section, size = 20 }: { section: 'general' | 'drives' | 'sync' | 'agent' | 'about'; size?: number }) {
+  const data =
+    section === 'general'
+      ? settingsIcon
+      : section === 'drives'
+        ? folderIcon
+        : section === 'sync'
+          ? synchronizeIcon
+          : section === 'agent'
+            ? servicesIcon
+            : infoIcon
+  return <Icon icon={data} width={size} height={size} aria-hidden="true" style={{ flexShrink: 0 }} />
 }
 
 // Neutral line SVGs (no match in flat-color-icons): a pencil for

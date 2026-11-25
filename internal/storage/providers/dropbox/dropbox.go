@@ -539,6 +539,28 @@ func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
 	return resp.Link, nil
 }
 
+// Quota implements storage.QuotaSource via POST
+// /2/users/get_space_usage: {"used": <bytes>, "allocation":
+// {"allocated": <bytes>, ".tag": "individual"}}. A missing or
+// zero allocated total (team plans report it differently) is
+// returned as -1: no total is invented.
+func (p *Provider) Quota(ctx context.Context) (used, total int64, err error) {
+	var resp struct {
+		Used       int64 `json:"used"`
+		Allocation struct {
+			Allocated int64 `json:"allocated"`
+		} `json:"allocation"`
+	}
+	if err := p.rpc(ctx, "Quota", "/2/users/get_space_usage", nil, &resp); err != nil {
+		return 0, 0, err
+	}
+	total = resp.Allocation.Allocated
+	if total <= 0 {
+		total = -1
+	}
+	return resp.Used, total, nil
+}
+
 func mimeOf(name string) string {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".jpg", ".jpeg":
@@ -570,4 +592,5 @@ var (
 	_ storage.Searcher    = (*Provider)(nil)
 	_ storage.Sharer      = (*Provider)(nil)
 	_ storage.Thumber     = (*Provider)(nil)
+	_ storage.QuotaSource = (*Provider)(nil)
 )

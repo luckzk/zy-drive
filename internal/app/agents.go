@@ -13,7 +13,7 @@ import (
 )
 
 // agents.go holds the multi-Agent registry (2026-11-24 decision).
-// The desktop keeps the list; each entry is one headless mcm-agent.
+// The desktop keeps the list; each entry is one headless zy-drive-agent.
 // Agents are stored in the cache (agents table) and mirrored in
 // memory, exactly like mounts. Secrets are referenced by TokenRef
 // only; the API token itself is never held here in plaintext.

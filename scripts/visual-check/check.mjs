@@ -41,13 +41,31 @@ const MOCK_MOUNTS = [
   // 旧数据 rootRef "test-bucket" 会让浏览列出桶内同名文件夹。
   // endpointHost 决定侧栏品牌 logo：R2 域名 → Cloudflare 标，
   // 其他 → AWS S3 标（display-only，后端从非敏感配置派生）。
-  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', endpointHost: 'abc123.r2.cloudflarestorage.com', group: '工作', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
-  { id: 'm-s3aws', displayName: 'AWS 备份', provider: 's3', accountId: 'a4', rootRef: '', rootLabel: 'backup-bucket', endpointHost: 's3.ap-northeast-1.amazonaws.com', group: '存储 / 备份', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
-  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
-  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', createdAt: '', updatedAt: '' },
-  { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', caps: { ...CAPS, idBased: true }, status: 'ok', createdAt: '', updatedAt: '' },
-  { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
-  { id: 'm-local', displayName: '本地照片', provider: 'local', accountId: 'a7', rootRef: '/Users/zy/照片', rootLabel: '/Users/zy/照片', group: '存储 / 备份', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', endpointHost: 'abc123.r2.cloudflarestorage.com', group: '工作', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-s3aws', displayName: 'AWS 备份', provider: 's3', accountId: 'a4', rootRef: '', rootLabel: 'backup-bucket', endpointHost: 's3.ap-northeast-1.amazonaws.com', group: '存储 / 备份', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', caps: { ...CAPS, idBased: true }, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-local', displayName: '本地照片', provider: 'local', accountId: 'a7', rootRef: '/Users/zy/照片', rootLabel: '/Users/zy/照片', group: '存储 / 备份', caps: CAPS, status: 'ok', verified: false, createdAt: '', updatedAt: '' },
+  // 超长网盘名（30 个汉字）：悬停删除按钮时名字必须仍是单行
+  // 省略、不换行；它的容量查询失败，侧栏应显示“容量暂不可用”。
+  { id: 'm-long', displayName: '这是一个特别特别长的网盘名字用来测试省略号是否正常工作啊啊啊', provider: 'dropbox', accountId: 'a8', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+]
+const GB = 1024 ** 3
+const TB = 1024 ** 4
+// 每网盘的容量桩（仅检查脚本里有，不进前端代码）：Drime
+// 291.0 GB / 512.0 GB、OneDrive 236.0 GB / 1.0 TB、S3/R2 不限量
+// （没有配额接口）、本地是本机磁盘、超长网盘名那块查询失败。
+const STUB_QUOTAS = [
+  { mountId: 'm-s3', used: 0, total: 0, unlimited: true, isLocalDisk: false },
+  { mountId: 'm-s3aws', used: 0, total: 0, unlimited: true, isLocalDisk: false },
+  { mountId: 'm-db', used: 820 * GB, total: 2 * TB, unlimited: false, isLocalDisk: false },
+  { mountId: 'm-dr', used: 615 * GB, total: 2 * TB, unlimited: false, isLocalDisk: false },
+  { mountId: 'm-od', used: 236 * GB, total: 1 * TB, unlimited: false, isLocalDisk: false },
+  { mountId: 'm-drime', used: 291 * GB, total: 512 * GB, unlimited: false, isLocalDisk: false },
+  { mountId: 'm-local', used: 400 * GB, total: 1 * TB, unlimited: false, isLocalDisk: true },
+  { mountId: 'm-long', used: 0, total: 0, unlimited: false, isLocalDisk: false, error: 'mock quota failure' },
 ]
 // 多类型文件列表（仅检查脚本里有，不进前端代码）：文件夹、文档、
 // 表格、演示、图片、视频、音频、压缩包、代码、未知类型各至少一个，
@@ -67,15 +85,47 @@ const STUB_NODES = [
   { ref: '合同.docx', path: '/合同.docx', name: '合同.docx', isDir: false, size: 67890, modTime: '2026-11-20T10:00:00Z' },
 ]
 const STUB_MOUNTS = process.env.VISUAL_MOUNTS ? JSON.stringify(MOCK_MOUNTS) : '[]'
+const STUB_QUOTAS_JSON = process.env.VISUAL_MOUNTS ? JSON.stringify(STUB_QUOTAS) : '[]'
 const STUB = `(() => {
-  const empty = { 'DesktopService.ListMounts': ${STUB_MOUNTS}, 'DesktopService.ListAgents': [], 'DesktopService.Transfers': [], 'DesktopService.ListSyncJobs': [] }
+  const empty = { 'DesktopService.ListAgents': [], 'DesktopService.Transfers': [], 'DesktopService.ListSyncJobs': [] }
+  // 可变的桩网盘：ListMounts 返回这份 live 列表，AddMount 往里加、
+  // TestMount 把 verified 翻成 true，后面的步骤（设置页重新测试）
+  // 才能看到状态变化——静态列表做不到。
+  let __mockMounts = ${STUB_MOUNTS}
   const listeners = {}
   window.mygo = {
     locale: 'zh-CN', dir: 'ltr',
     on: (name, fn) => { (listeners[name] ??= []).push(fn); return () => { listeners[name] = (listeners[name] ?? []).filter((f) => f !== fn) } },
     once: (name, fn) => { const wrap = (p) => { fn(p); listeners[name] = (listeners[name] ?? []).filter((f) => f !== wrap) }; (listeners[name] ??= []).push(wrap); return () => {} },
     call: async (method, ...args) => {
+      if (method === 'DesktopService.ListMounts') return __mockMounts
       if (method === 'DesktopService.AgentStatus') return { total: 0, online: 0 }
+      // A/B/C 桩：内置一键授权只给 Dropbox 配了 Client ID（Drive /
+      // OneDrive 走自建应用）；BeginOAuth 返回一个环回地址，
+      // PollOAuthCallback 立刻返回 done，模拟浏览器自动跳回。
+      if (method === 'DesktopService.BuiltinOAuthClientID') return args[0] === 'dropbox' ? 'zydrive-builtin-id' : ''
+      if (method === 'DesktopService.BeginOAuth') return { authUrl: 'https://www.dropbox.com/oauth2/authorize?client_id=x&response_type=code&redirect_uri=http://localhost:54321&state=stub-state', state: 'stub-state' }
+      if (method === 'DesktopService.PollOAuthCallback') return { status: 'done', code: 'stub-code-1' }
+      if (method === 'DesktopService.ExchangeOAuthCode') return { accessToken: 'stub-access', refreshToken: 'stub-refresh' }
+      if (method === 'DesktopService.CancelOAuth') return null
+      if (method === 'DesktopService.TestMountConfig') return null
+      if (method === 'DesktopService.TestMount') {
+        const m = __mockMounts.find((x) => x.id === args[0])
+        if (!m) throw new Error('stub: unknown mount')
+        m.verified = true
+        return { ...m }
+      }
+      if (method === 'DesktopService.AddMount') {
+        const input = args[0]
+        const m = { id: 'm-new', displayName: input.displayName || '新网盘', provider: input.provider, accountId: 'a-new', rootRef: '', rootLabel: input.bucket || '', group: input.group || '', caps: ${JSON.stringify(CAPS)}, status: 'ok', verified: !input.skipProbe, createdAt: '', updatedAt: '' }
+        __mockMounts.push(m)
+        return m
+      }
+      if (method === 'DesktopService.RemoveMount') {
+        __mockMounts = __mockMounts.filter((x) => x.id !== args[0])
+        return null
+      }
+      if (method === 'DesktopService.MountQuotas') return ${STUB_QUOTAS_JSON}
       if (method === 'DesktopService.ValidateJob') return null
       if (method === 'DesktopService.Browse') return ${JSON.stringify(STUB_NODES)}
       if (method === 'DesktopService.PreviewSync') return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
@@ -138,17 +188,69 @@ try {
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' })
   await page.waitForTimeout(800)
 
+  // 0. 顶栏品牌 logo：logo.svg 放在 ZyDrive 文字旁、26px 高且加载成功；
+  // favicon 也是它（link[rel=icon] 指向 /logo.svg）。
+  const logo = await page.evaluate(() => {
+    const img = document.querySelector('img.app-logo')
+    if (!img) return { found: false }
+    const box = img.getBoundingClientRect()
+    const icon = document.querySelector('link[rel="icon"]')
+    return {
+      found: true,
+      src: img.getAttribute('src'),
+      loaded: img.complete && img.naturalWidth > 0,
+      height: Math.round(box.height),
+      width: Math.round(box.width),
+      favicon: icon ? icon.getAttribute('href') : null,
+    }
+  })
+  if (!logo.found || !logo.loaded || logo.height !== 26 || logo.src !== '/logo.svg' || logo.favicon !== '/logo.svg') {
+    failures.push(`header logo: ${JSON.stringify(logo)}`)
+  }
+
   // 1. 文件浏览页：零网盘空态
   await page.screenshot({ path: path.join(SHOTS, '01-browse-empty.png') })
 
-  // 1b. S3 向导回显（问题 1，零网盘模式）：选 S3、填桶 test-bucket +
-  // 前缀 photos，第 3 步必须回显“将挂载：桶 test-bucket，范围：仅前
-  // 缀 photos”，让用户确认后再测试保存。有网盘时没有空态添加按钮，
-  // 这一步跳过（向导本身与模式无关）。
+  // 1b. S3 一页表单（C，零网盘模式）：选 S3、填桶 test-bucket +
+  // 前缀 photos，同一页上有“测试连接”和“保存”，没有第 3 步；
+  // 点测试连接通过后点保存，向导关闭、侧栏出现新网盘。有网盘
+  // 时没有空态添加按钮，这一步跳过（向导本身与模式无关）。
   if (!process.env.VISUAL_MOUNTS) {
     await page.getByRole('button', { name: '添加网盘', exact: true }).click()
     await page.waitForTimeout(400)
+    // 1a. 添加网盘第 1 步（原型 Demo v8 .pickgrid）：两列大图标
+    // 卡片网格，不是小列表行；每张卡一张大品牌 logo + 名字 +
+    // 一行小字，点整张卡选中（绿边框 + 淡绿底）。
+    const providerGrid = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.provider-card')]
+      const grid = document.querySelector('.provider-grid')
+      const cs = grid ? getComputedStyle(grid) : null
+      return {
+        count: cards.length,
+        columns: cs ? cs.gridTemplateColumns.split(' ').length : null,
+        allHaveLogo: cards.every((c) => !!c.querySelector('svg')),
+        names: cards.map((c) => c.querySelector('.provider-name')?.textContent?.trim()),
+      }
+    })
+    console.log('provider grid:', JSON.stringify(providerGrid))
+    if (providerGrid.count !== 6) failures.push(`添加网盘第 1 步应有 6 张网盘卡片，实测 ${providerGrid.count} 张`)
+    if (providerGrid.columns !== 2) failures.push(`添加网盘第 1 步应是两列网格，实测 ${providerGrid.columns} 列`)
+    if (!providerGrid.allHaveLogo) failures.push('添加网盘卡片里有卡片没有品牌 logo（SVG）')
+    await page.screenshot({ path: path.join(SHOTS, '01a-wizard-providers.png') })
     await page.getByText('S3 / R2 / 兼容 S3').click()
+    await page.waitForTimeout(300)
+    const providerSelected = await page.evaluate(() => {
+      const card = [...document.querySelectorAll('.provider-card')].find((c) => c.textContent?.includes('S3 / R2'))
+      if (!card) return { found: false }
+      const cs = getComputedStyle(card)
+      return { found: true, selected: card.classList.contains('selected'), borderColor: cs.borderColor }
+    })
+    console.log('provider selected:', JSON.stringify(providerSelected))
+    if (!providerSelected.found) failures.push('找不到 S3 网盘卡片（.provider-card）')
+    if (providerSelected.found && !providerSelected.selected) failures.push('点 S3 卡片后没有选中态（.selected）')
+    if (providerSelected.found && providerSelected.borderColor !== 'rgb(86, 225, 108)') {
+      failures.push(`选中卡片边框应为品牌绿 rgb(86, 225, 108)，实测 ${providerSelected.borderColor}`)
+    }
     await page.getByRole('button', { name: '下一步', exact: true }).click()
     await page.waitForTimeout(300)
     const dialogInputs = page.locator('.dialog input')
@@ -161,16 +263,43 @@ try {
     const prefixHint = await page.locator('.dialog .field', { hasText: '桶内前缀' }).textContent()
     console.log('s3 prefix hint:', JSON.stringify(prefixHint))
     if (!prefixHint?.includes('不要把桶名再填一遍')) failures.push('S3 前缀字段没有“不要把桶名再填一遍”的提示')
-    await page.getByRole('button', { name: '下一步：测试' }).click()
-    await page.waitForTimeout(400)
-    const recap = await page.locator('.dialog').textContent()
-    console.log('s3 recap:', JSON.stringify(recap?.slice(0, 200)))
-    if (!recap?.includes('将挂载：桶 test-bucket，范围：仅前缀 photos')) {
-      failures.push('S3 向导第 3 步没有回显“将挂载：桶 test-bucket，范围：仅前缀 photos”')
+    // 一页表单：同一页上有测试连接 + 保存，没有第 3 步、没有
+    // “下一步：测试”。操作栏是 sticky 底部栏：表单再长，保存
+    // 按钮也必须在视口内可见，不用滚到底才找得到。
+    const s3Form = await page.locator('.dialog').textContent()
+    if (!s3Form?.includes('测试连接')) failures.push('S3 一页表单里没有“测试连接”按钮')
+    if (!s3Form?.includes('保存')) failures.push('S3 一页表单里没有“保存”按钮')
+    if (s3Form?.includes('下一步：测试')) failures.push('S3 不应再有“下一步：测试”（一页表单，没有第 3 步）')
+    if (s3Form?.includes('第 3 步')) failures.push('S3 一页表单里不应出现“第 3 步”')
+    const saveBox = await page.getByRole('button', { name: '保存', exact: true }).boundingBox()
+    console.log('s3 save button box:', JSON.stringify(saveBox))
+    if (!saveBox || saveBox.y + saveBox.height > 800) {
+      failures.push('S3 一页表单的“保存”按钮不在视口内（sticky 底部操作栏应让它一直可见）')
     }
-    await page.screenshot({ path: path.join(SHOTS, '01b-wizard-s3-recap.png') })
-    await page.locator('.dialog-actions >> text=取消').click()
-    await page.waitForTimeout(400)
+    await page.getByRole('button', { name: '测试连接', exact: true }).click()
+    await page.waitForTimeout(500)
+    const testResult = await page.locator('.dialog').textContent()
+    console.log('s3 test result:', JSON.stringify(testResult?.slice(0, 200)))
+    if (!testResult?.includes('连接测试通过')) failures.push('点“测试连接”后没有显示“连接测试通过”')
+    await page.screenshot({ path: path.join(SHOTS, '01b-wizard-s3-form.png') })
+    await page.getByRole('button', { name: '保存', exact: true }).click()
+    await page.waitForTimeout(500)
+    const dialogGone = (await page.locator('.dialog').count()) === 0
+    const sidebarAfterAdd = await page.locator('.sidebar').textContent()
+    console.log('s3 saved:', JSON.stringify({ dialogGone, hasNewMount: sidebarAfterAdd?.includes('R2 测试') }))
+    if (!dialogGone) failures.push('点“保存”后添加向导没有关闭')
+    if (!sidebarAfterAdd?.includes('R2 测试')) failures.push('保存后侧栏没有出现新加的“R2 测试”网盘')
+    // 恢复零网盘空态：删掉刚加的测试网盘，后面的 1c/1d/1e/1g
+    // 仍从空态的“添加网盘”按钮进向导。
+    const newCard = page.locator('.mount-card', { hasText: 'R2 测试' })
+    await newCard.hover()
+    await page.waitForTimeout(300)
+    await newCard.locator('.mount-remove').click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '确认移除', exact: true }).click()
+    await page.waitForTimeout(500)
+    const emptyAgain = await page.locator('.sidebar').textContent()
+    if (!emptyAgain?.includes('还没有网盘')) failures.push('删掉测试网盘后侧栏没有回到零网盘空态')
 
     // 1c. Drime 向导（V0.6.0 起 PAT-only）：Drime 必须可选（不再
     // 标 V0.2），第 2 步只有两样——个人访问令牌（提示“令牌只
@@ -178,7 +307,7 @@ try {
     // 生成授权链接、授权码、Refresh Token）必须一个都不出现。
     await page.getByRole('button', { name: '添加网盘', exact: true }).click()
     await page.waitForTimeout(400)
-    const drimeCard = page.locator('.agent-row', { hasText: 'Drime' }).first()
+    const drimeCard = page.locator('.provider-card', { hasText: 'Drime' }).first()
     const drimeCardText = await drimeCard.textContent()
     console.log('drime card:', JSON.stringify(drimeCardText))
     if (drimeCardText?.includes('V0.2')) failures.push('向导里 Drime 还标着 V0.2（应已可选）')
@@ -195,6 +324,10 @@ try {
     if (drimeStep2?.includes('授权码')) failures.push('Drime 向导第 2 步出现了授权码（PAT-only，应隐藏）')
     if (drimeStep2?.includes('Refresh Token')) failures.push('Drime 向导第 2 步出现了 Refresh Token（PAT-only，应隐藏）')
     if (!drimeStep2?.includes('工作区 ID')) failures.push('Drime 向导第 2 步没有“工作区 ID”字段')
+    // (C) Drime 也是一页表单：同一页上有测试连接 + 保存，没有第 3 步。
+    if (!drimeStep2?.includes('测试连接')) failures.push('Drime 一页表单里没有“测试连接”按钮')
+    if (drimeStep2?.includes('下一步：测试')) failures.push('Drime 不应再有“下一步：测试”（一页表单，没有第 3 步）')
+    if (drimeStep2?.includes('第 3 步')) failures.push('Drime 一页表单里不应出现“第 3 步”')
     await page.screenshot({ path: path.join(SHOTS, '01c-wizard-drime.png') })
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
@@ -204,7 +337,7 @@ try {
     // “生成授权链接”、Azure 门户的建应用指引和 Refresh Token。
     await page.getByRole('button', { name: '添加网盘', exact: true }).click()
     await page.waitForTimeout(400)
-    const odCard = page.locator('.agent-row', { hasText: 'OneDrive' }).first()
+    const odCard = page.locator('.provider-card', { hasText: 'OneDrive' }).first()
     const odCardText = await odCard.textContent()
     console.log('onedrive card:', JSON.stringify(odCardText))
     if (odCardText?.includes('V0.2')) failures.push('向导里 OneDrive 还标着 V0.2（应已可选）')
@@ -219,6 +352,80 @@ try {
     if (!odStep2?.includes('Azure')) failures.push('OneDrive 向导第 2 步没有 Azure 门户建应用的指引')
     if (!odStep2?.includes('Refresh Token')) failures.push('OneDrive 向导第 2 步没有 Refresh Token 字段')
     await page.screenshot({ path: path.join(SHOTS, '01d-wizard-onedrive.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+
+    // 1e. Dropbox vs Drive 第 2 步：字段和文案必须按网盘区分，
+    // 不能是同一套通用表单。Dropbox 是 App key / App secret +
+    // Dropbox App Console 指引 + Dropbox 权限；Drive 是 OAuth
+    // 客户端 ID / 客户端密钥 + Google Cloud Console 指引 + Drive
+    // 权限。两边互相不许出现对方的字段名和控制台名。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    await page.locator('.provider-card', { hasText: 'Dropbox' }).first().click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const dbxStep2 = await page.locator('.dialog').textContent()
+    console.log('dropbox step2:', JSON.stringify(dbxStep2?.slice(0, 400)))
+    if (!dbxStep2?.includes('App key')) failures.push('Dropbox 第 2 步没有自己的字段名“App key”')
+    if (!dbxStep2?.includes('Dropbox App Console')) failures.push('Dropbox 第 2 步没有自己的建应用指引（Dropbox App Console）')
+    if (!dbxStep2?.includes('files.metadata.read')) failures.push('Dropbox 第 2 步没有自己的权限说明（files.metadata.read）')
+    if (dbxStep2?.includes('OAuth 客户端 ID')) failures.push('Dropbox 第 2 步串了 Drive 的字段名“OAuth 客户端 ID”')
+    if (dbxStep2?.includes('Google Cloud Console')) failures.push('Dropbox 第 2 步串了 Drive 的指引（Google Cloud Console）')
+    await page.screenshot({ path: path.join(SHOTS, '01e-wizard-dropbox.png') })
+    await page.locator('.dialog-actions >> text=上一步').click()
+    await page.waitForTimeout(300)
+    await page.locator('.provider-card', { hasText: 'Google Drive' }).first().click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const driveStep2 = await page.locator('.dialog').textContent()
+    console.log('drive step2:', JSON.stringify(driveStep2?.slice(0, 400)))
+    if (!driveStep2?.includes('OAuth 客户端 ID')) failures.push('Drive 第 2 步没有自己的字段名“OAuth 客户端 ID”')
+    if (!driveStep2?.includes('Google Cloud Console')) failures.push('Drive 第 2 步没有自己的建应用指引（Google Cloud Console）')
+    if (!driveStep2?.includes('https://www.googleapis.com/auth/drive')) failures.push('Drive 第 2 步没有自己的权限说明（Drive scope）')
+    if (driveStep2?.includes('App key')) failures.push('Drive 第 2 步串了 Dropbox 的字段名“App key”')
+    if (driveStep2?.includes('Dropbox App Console')) failures.push('Drive 第 2 步串了 Dropbox 的指引（Dropbox App Console）')
+    await page.screenshot({ path: path.join(SHOTS, '01f-wizard-drive.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+
+    // 1g. 一键授权自动回调（A+B）：Dropbox 配了内置 Client ID
+    // （桩），第 2 步有一键授权卡片，自建应用收进“高级”折叠；
+    // 点“打开浏览器授权”后，桩的 PollOAuthCallback 立刻返回
+    // done，Token 应自动换好填进表单（不用手动粘贴 code），
+    // 手动粘贴框仍在（浏览器没跳回时的兜底）。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    await page.locator('.provider-card', { hasText: 'Dropbox' }).first().click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(500)
+    const oneclick = await page.locator('.dialog').textContent()
+    if (!oneclick?.includes('一键授权')) failures.push('Dropbox 第 2 步没有一键授权卡片（桩配了内置 Client ID）')
+    if (!oneclick?.includes('高级：用自己的应用')) failures.push('一键授权时自建应用入口没有收进“高级”折叠')
+    await page.getByRole('button', { name: '打开浏览器授权', exact: true }).click()
+    await page.waitForTimeout(3000)
+    const autoTokens = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      if (!d) return { found: false, hasAccess: false, hasRefresh: false, text: '', hasPasteBox: false }
+      const inputs = [...d.querySelectorAll('input')]
+      return {
+        found: true,
+        text: d.textContent ?? '',
+        hasAccess: inputs.some((i) => i.value === 'stub-access'),
+        hasRefresh: inputs.some((i) => i.value === 'stub-refresh'),
+        hasPasteBox: inputs.some((i) => (i.getAttribute('placeholder') ?? '').includes('code=')),
+      }
+    })
+    console.log('oneclick auto:', JSON.stringify({ hasAccess: autoTokens.hasAccess, hasRefresh: autoTokens.hasRefresh, hasPasteBox: autoTokens.hasPasteBox }))
+    if (!autoTokens.found) failures.push('一键授权后对话框不见了')
+    if (!autoTokens.hasAccess) failures.push('自动回调后 Access Token 没有自动填进表单（应由 PollOAuthCallback → 换取 Token 自动完成）')
+    if (!autoTokens.hasRefresh) failures.push('自动回调后 Refresh Token 没有自动填进表单')
+    if (!autoTokens.text.includes('Token 已换取成功')) failures.push('自动回调后没有显示“Token 已换取成功”')
+    if (!autoTokens.hasPasteBox) failures.push('手动粘贴 code 的兜底框不见了（浏览器没跳回时要用）')
+    await page.screenshot({ path: path.join(SHOTS, '01g-wizard-oneclick.png') })
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
   }
@@ -334,6 +541,88 @@ try {
     if (sidebar3) await sidebar3.screenshot({ path: path.join(SHOTS, '02e-sidebar-mount-hover.png') })
   }
 
+  // 2f. 容量条（VISUAL_MOUNTS）：每个网盘卡片下方有容量信息，
+  // 与原型 Demo v8 一致的 used/total + 百分比条；S3/R2 显示
+  // “不限量”（没有配额接口，不编数字）；查询失败的那块显示
+  // “容量暂不可用”，其他网盘照常显示。
+  if (process.env.VISUAL_MOUNTS) {
+    const quotaCheck = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.mount-card')]
+      const textOf = (name) => {
+        const card = cards.find((c) => c.querySelector('.mount-name')?.textContent?.includes(name))
+        return card?.textContent ?? ''
+      }
+      const drime = textOf('Drime')
+      const s3 = textOf('我的 R2')
+      const local = textOf('本地照片')
+      const longName = cards.find((c) => (c.querySelector('.mount-name')?.textContent ?? '').length >= 30)
+      return {
+        cardCount: cards.length,
+        drimeHasUsage: drime.includes('已用 291.0 GB / 512.0 GB'),
+        drimeHasBar: !!cards.find((c) => c.querySelector('.mount-name')?.textContent?.includes('Drime'))?.querySelector('.quota-fill'),
+        s3Unlimited: s3.includes('不限量'),
+        localDisk: local.includes('本机磁盘'),
+        localUnverified: local.includes('未验证'),
+        longNameError: (longName?.textContent ?? '').includes('容量暂不可用'),
+      }
+    })
+    console.log('sidebar quotas:', JSON.stringify(quotaCheck))
+    if (!quotaCheck.drimeHasUsage) failures.push('侧栏 Drime 卡片没有显示“已用 291.0 GB / 512.0 GB”（compact 版不带“共”字）')
+    if (!quotaCheck.drimeHasBar) failures.push('侧栏 Drime 卡片没有容量进度条（.quota-fill）')
+    if (!quotaCheck.s3Unlimited) failures.push('侧栏 S3 卡片没有显示“不限量”（R2 没有配额接口）')
+    if (!quotaCheck.localDisk) failures.push('侧栏本地文件夹卡片没有注明“本机磁盘”')
+    if (!quotaCheck.localUnverified) failures.push('侧栏未验证的网盘（本地照片桩）没有显示“未验证”徽章')
+    if (!quotaCheck.longNameError) failures.push('容量查询失败的网盘没有显示“容量暂不可用”')
+    const sidebar4 = await page.$('.sidebar')
+    if (sidebar4) await sidebar4.screenshot({ path: path.join(SHOTS, '02f-sidebar-quota.png') })
+  }
+
+  // 2g. 超长网盘名（VISUAL_MOUNTS，30 个汉字）：悬停删除按钮时
+  // 名字仍是单行省略、不换行；删除按钮是绝对定位（不占布局），
+  // 出现/消失不改变名字宽度。
+  if (process.env.VISUAL_MOUNTS) {
+    const longCard = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.mount-card')]
+      return cards.findIndex((c) => (c.querySelector('.mount-name')?.textContent ?? '').length >= 30)
+    })
+    if (longCard === -1) {
+      failures.push('找不到超长网盘名的卡片（30 个汉字桩）')
+    } else {
+      await page.locator('.mount-card').nth(longCard).hover()
+      await page.waitForTimeout(300)
+      const longCheck = await page.evaluate((idx) => {
+        const card = [...document.querySelectorAll('.mount-card')][idx]
+        if (!card) return { found: false }
+        const name = card.querySelector('.mount-name')
+        const btn = card.querySelector('.mount-remove')
+        if (!name || !btn) return { found: false }
+        const nr = name.getBoundingClientRect()
+        const cs = getComputedStyle(name)
+        const bcs = getComputedStyle(btn)
+        return {
+          found: true,
+          singleLine: nr.height <= 22,
+          ellipsis: cs.textOverflow === 'ellipsis' && cs.whiteSpace === 'nowrap' && cs.overflow === 'hidden',
+          clipped: name.scrollWidth > name.clientWidth,
+          removeVisible: bcs.display !== 'none',
+          removeAbsolute: bcs.position === 'absolute',
+          title: name.getAttribute('title'),
+          nameLen: name.textContent?.length ?? 0,
+        }
+      }, longCard)
+      console.log('long mount name:', JSON.stringify(longCheck))
+      if (!longCheck.found) failures.push('找不到超长网盘名的名字/删除按钮元素')
+      if (longCheck.found && !longCheck.singleLine) failures.push('超长网盘名悬停删除按钮时换行了（应单行省略）')
+      if (longCheck.found && !longCheck.ellipsis) failures.push('超长网盘名没有省略号样式（nowrap + hidden + ellipsis）')
+      if (longCheck.found && !longCheck.clipped) failures.push('超长网盘名没有被截断（应超出卡片宽度并省略）')
+      if (longCheck.found && !longCheck.removeVisible) failures.push('悬停超长网盘名卡片后删除按钮没有出现')
+      if (longCheck.found && !longCheck.removeAbsolute) failures.push('网盘删除按钮应为绝对定位（不占布局），实测不是 absolute')
+      if (longCheck.found && !longCheck.title) failures.push('超长网盘名没有 title 属性（悬停应显示全名）')
+      const sidebar5 = await page.$('.sidebar')
+      if (sidebar5) await sidebar5.screenshot({ path: path.join(SHOTS, '02g-sidebar-long-name.png') })
+    }
+  }
+
   // 2d. 上传目标文件夹选择（问题 2，VISUAL_MOUNTS）：模拟一次拖放，
   // 必须先弹目标选择框（默认当前文件夹、显示完整路径），而不是
   // 立即上传；框里有新建文件夹入口。
@@ -371,6 +660,49 @@ try {
   await page.getByRole('button', { name: '创建同步任务' }).click()
   await page.waitForTimeout(1200)
   await page.screenshot({ path: path.join(SHOTS, '03b-sync-create.png') })
+
+  // 3c. 双栏点选（VISUAL_MOUNTS 才有网盘可点）：单击一行即选中，
+  // 选中行有明显选中态（绿底 + 左绿边 + 勾选标记），两栏各自
+  // 独立；双栏上方回显的源/目标路径就是选中的路径；双击文件
+  // 夹进入后，根目录变为进入的文件夹。
+  if (process.env.VISUAL_MOUNTS) {
+    const srcPane = page.locator('.dual-panes .pane').first()
+    await srcPane.locator('.pane-row', { hasText: '行程.pdf' }).click()
+    await page.waitForTimeout(600)
+    const selCheck = await page.evaluate(() => {
+      const panes = [...document.querySelectorAll('.dual-panes .pane')]
+      const src = panes[0]
+      const dst = panes[1]
+      const sel = src?.querySelector('.pane-row.selected')
+      const echo = document.querySelector('.sync-sel-echo')?.textContent ?? ''
+      return {
+        srcSelectedName: sel?.textContent ?? '',
+        srcHasCheck: !!sel?.querySelector('.pane-check svg'),
+        dstHasSelection: !!dst?.querySelector('.pane-row.selected'),
+        echo,
+      }
+    })
+    console.log('dual-pane selection:', JSON.stringify(selCheck))
+    if (!selCheck.srcSelectedName.includes('行程.pdf')) failures.push('双栏单击“行程.pdf”后该行没有选中态（.pane-row.selected）')
+    if (!selCheck.srcHasCheck) failures.push('双栏选中行没有勾选标记（.pane-check svg）')
+    if (selCheck.dstHasSelection) failures.push('点源栏一行后目标栏也被选中了（两栏选中态必须各自独立）')
+    if (!selCheck.echo.includes('行程.pdf')) failures.push(`双栏上方回显的源路径没有选中的“行程.pdf”，实测 ${JSON.stringify(selCheck.echo)}`)
+    await page.screenshot({ path: path.join(SHOTS, '03c-sync-select.png') })
+    // 双击文件夹进入：根目录变为该文件夹，回显随之变化。
+    await srcPane.locator('.pane-row', { hasText: '照片' }).dblclick()
+    await page.waitForTimeout(600)
+    const enterCheck = await page.evaluate(() => {
+      const echo = document.querySelector('.sync-sel-echo')?.textContent ?? ''
+      const src = [...document.querySelectorAll('.dual-panes .pane')][0]
+      return { echo, stillSelected: !!src?.querySelector('.pane-row.selected') }
+    })
+    console.log('dual-pane enter folder:', JSON.stringify(enterCheck))
+    if (!enterCheck.echo.includes('照片')) failures.push(`双击“照片”进入后回显的源路径没有“照片”，实测 ${JSON.stringify(enterCheck.echo)}`)
+    if (enterCheck.stillSelected) failures.push('双击进入文件夹后旧的选中行还留在选中态（进入后应以进入的文件夹为根）')
+    await page.screenshot({ path: path.join(SHOTS, '03d-sync-enter-folder.png') })
+    await page.locator('.dual-box >> text=取消').click().catch(() => {})
+    await page.waitForTimeout(400)
+  }
 
   // 4. 设置页：Agent 列表（零 Agent 空态）
   // 4a. 动效中间态：点过去 150ms 时页面过渡应还在跑（500ms 基础
@@ -421,19 +753,31 @@ try {
   await page.screenshot({ path: path.join(SHOTS, '04-settings.png') })
 
   // 4b2. 设置页分组卡片 + 选择框断言：每节一张卡（背景 --card、
-  // 圆角 16px、节间距 16px），选择框统一样式（自定义箭头、
-  // 固定高度 40px、圆角 8px）。
+  // 圆角 16px、节间距 24px、顶部 3px 品牌绿条），选择框统一样式
+  // （自定义箭头、固定高度 40px、圆角 8px）；节标题 18px +
+  // flat-color-icons 小图标，标题下有分割线；次要控件收进
+  // “高级”折叠（通用：开机启动；同步默认：并发与限速）。
   const settingsCards = await page.evaluate(() => {
     const cards = [...document.querySelectorAll('.settings-card')]
     const selects = [...document.querySelectorAll('.settings-card select')]
     const cardInfo = cards.map((c) => {
       const cs = getComputedStyle(c)
       const r = c.getBoundingClientRect()
+      const head = c.querySelector('.settings-card-head')
+      const h2 = head?.querySelector('h2')
+      const hcs = h2 ? getComputedStyle(h2) : null
+      const headCs = head ? getComputedStyle(head) : null
       return {
         bg: cs.backgroundColor,
         radius: cs.borderTopLeftRadius,
         marginBottom: cs.marginBottom,
+        borderTopWidth: cs.borderTopWidth,
+        borderTopColor: cs.borderTopColor,
         w: Math.round(r.width),
+        h2Size: hcs?.fontSize ?? null,
+        h2Weight: hcs?.fontWeight ?? null,
+        hasIcon: !!head?.querySelector('svg'),
+        hasDivider: headCs ? headCs.borderBottomWidth !== '0px' : false,
       }
     })
     const selectInfo = selects.map((s) => {
@@ -447,15 +791,29 @@ try {
         disabled: s.disabled,
       }
     })
-    return { cardCount: cards.length, cardInfo, selectCount: selects.length, selectInfo }
+    return {
+      cardCount: cards.length,
+      cardInfo,
+      selectCount: selects.length,
+      selectInfo,
+      advancedCount: document.querySelectorAll('.settings-card .settings-advanced').length,
+    }
   })
   console.log('settings cards:', JSON.stringify(settingsCards))
   if (settingsCards.cardCount < 5) failures.push(`设置页分组卡片应至少 5 张（通用/网盘/同步默认/Agent/关于），实测 ${settingsCards.cardCount} 张`)
   for (const c of settingsCards.cardInfo) {
     if (c.bg !== 'rgb(245, 245, 245)') failures.push(`设置卡片背景应为 --card #F5F5F5，实测 ${c.bg}`)
     if (c.radius !== '16px') failures.push(`设置卡片圆角应为 16px，实测 ${c.radius}`)
-    if (c.marginBottom !== '16px') failures.push(`设置卡片节间距应为 16px，实测 ${c.marginBottom}`)
+    if (c.marginBottom !== '24px') failures.push(`设置卡片节间距应为 24px，实测 ${c.marginBottom}`)
+    if (c.borderTopWidth !== '3px' || c.borderTopColor !== 'rgb(86, 225, 108)') {
+      failures.push(`设置卡片顶部应有 3px 品牌绿标识，实测 ${c.borderTopWidth} ${c.borderTopColor}`)
+    }
+    if (c.h2Size !== '18px') failures.push(`设置节标题字号应为 18px，实测 ${c.h2Size}`)
+    if (c.h2Weight !== '400') failures.push(`设置节标题字重应保持 400，实测 ${c.h2Weight}`)
+    if (!c.hasIcon) failures.push('设置节标题旁没有 flat-color-icons 小图标')
+    if (!c.hasDivider) failures.push('设置节标题下没有分割线')
   }
+  if (settingsCards.advancedCount < 2) failures.push(`设置页“高级”折叠应至少 2 处（通用开机启动、同步默认并发与限速），实测 ${settingsCards.advancedCount} 处`)
   if (settingsCards.selectCount === 0) failures.push('设置页里找不到选择框（.settings-card select）')
   for (const s of settingsCards.selectInfo) {
     if (s.h < 38 || s.h > 42) failures.push(`选择框高度应为 40px 左右，实测 ${s.h}px`)
@@ -499,6 +857,43 @@ try {
         await page.locator('.dialog-actions >> text=取消').click()
         await page.waitForTimeout(400)
       }
+    }
+  }
+
+  // 4e. 设置页“重新测试”（C，VISUAL_MOUNTS）：未验证的网盘
+  // （本地照片桩）行里有“未验证”徽章和“重新测试”按钮；点它
+  // 后测试通过、徽章消失（桩的 TestMount 把 verified 翻 true，
+  // ListMounts 返回 live 列表）。
+  if (process.env.VISUAL_MOUNTS) {
+    const retestBefore = await page.evaluate(() => {
+      const section = [...document.querySelectorAll('.settings-card')].find((c) => c.textContent?.includes('已添加的网盘'))
+      if (!section) return { found: false }
+      const row = [...section.querySelectorAll('.agent-row')].find((r) => r.textContent?.includes('本地照片'))
+      if (!row) return { found: false }
+      return {
+        found: true,
+        hasBadge: row.textContent?.includes('未验证') ?? false,
+        hasButton: [...row.querySelectorAll('button')].some((b) => b.textContent.trim() === '重新测试'),
+      }
+    })
+    console.log('settings retest before:', JSON.stringify(retestBefore))
+    if (!retestBefore.found) failures.push('设置页找不到“本地照片”网盘行（应为未验证桩）')
+    if (retestBefore.found && !retestBefore.hasBadge) failures.push('设置页未验证的网盘行没有“未验证”徽章')
+    if (retestBefore.found && !retestBefore.hasButton) failures.push('设置页未验证的网盘行没有“重新测试”按钮')
+    if (retestBefore.hasButton) {
+      const row = page.locator('.settings-card', { hasText: '已添加的网盘' }).locator('.agent-row', { hasText: '本地照片' })
+      await row.getByRole('button', { name: '重新测试', exact: true }).click()
+      await page.waitForTimeout(800)
+      const retestAfter = await page.evaluate(() => {
+        const section = [...document.querySelectorAll('.settings-card')].find((c) => c.textContent?.includes('已添加的网盘'))
+        const row = [...(section?.querySelectorAll('.agent-row') ?? [])].find((r) => r.textContent?.includes('本地照片'))
+        if (!row) return { found: false }
+        return { found: true, hasBadge: row.textContent?.includes('未验证') ?? false, msg: row.textContent ?? '' }
+      })
+      console.log('settings retest after:', JSON.stringify(retestAfter))
+      if (!retestAfter.msg.includes('测试通过')) failures.push('点“重新测试”后没有显示“测试通过”')
+      if (retestAfter.hasBadge) failures.push('重新测试通过后“未验证”徽章没有消失')
+      await page.screenshot({ path: path.join(SHOTS, '04e-settings-retest.png') })
     }
   }
 
