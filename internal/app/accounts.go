@@ -147,6 +147,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		Provider:    in.Provider,
 		AccountID:   secretIDFor(id),
 		RootRef:     rootRefFor(in),
+		RootLabel:   rootLabelFor(in),
 		Group:       strings.TrimSpace(in.Group),
 		Caps:        p.Caps(),
 		Status:      domain.MountOK,
@@ -190,8 +191,10 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 	cfg := storage.Config{Extra: map[string]string{}}
 	switch in.Provider {
 	case domain.ProviderS3:
-		if strings.TrimSpace(in.Bucket) == "" {
-			return cfg, creds, fmt.Errorf("app: S3 需要填桶名（Bucket）")
+		bucket := strings.TrimSpace(in.Bucket)
+		prefix := strings.Trim(strings.TrimSpace(in.Prefix), "/")
+		if err := validateS3BucketPrefix(bucket, prefix); err != nil {
+			return cfg, creds, err
 		}
 		if strings.TrimSpace(in.AccessKey) == "" || strings.TrimSpace(in.SecretKey) == "" {
 			return cfg, creds, fmt.Errorf("app: S3 需要填 AccessKey 和 SecretKey")
@@ -202,8 +205,8 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 		cfg.SecretKey = in.SecretKey
 		creds.AccessKey = in.AccessKey
 		creds.SecretKey = in.SecretKey
-		cfg.Extra["bucket"] = strings.TrimSpace(in.Bucket)
-		cfg.Extra["prefix"] = strings.Trim(strings.TrimSpace(in.Prefix), "/")
+		cfg.Extra["bucket"] = bucket
+		cfg.Extra["prefix"] = prefix
 		if in.PathStyle {
 			cfg.Extra["pathStyle"] = "true"
 		}
@@ -276,9 +279,49 @@ func nonSecretConfig(in AddMountInput) map[string]string {
 	return cfg
 }
 
-// rootRefFor is the display root stored on the Mount: bucket for S3,
-// "" (provider root) for Dropbox/Drive, the absolute path for local.
+// validateS3BucketPrefix rejects the two bucket/prefix mistakes
+// that both produce the same symptom (an empty-looking bucket root):
+// a bucket name containing "/" and a prefix that repeats the bucket
+// name ("mybucket" or "mybucket/..."). Both the wizard (frontend)
+// and mountConfig / UpdateMountRoot (backend) call this, so a bad
+// value cannot slip in from either side.
+func validateS3BucketPrefix(bucket, prefix string) error {
+	if bucket == "" {
+		return fmt.Errorf("app: S3 需要填桶名（Bucket）")
+	}
+	if strings.Contains(bucket, "/") {
+		return fmt.Errorf("app: 桶名里不能有 /：桶名就是 %q 这样一个名字，桶里面的子文件夹请填到“桶内前缀”里", bucket)
+	}
+	if prefix == bucket {
+		return fmt.Errorf("app: 桶内前缀不能就是桶名本身：前缀是桶里面的子文件夹，例如 photos/2024；想挂整个桶就把前缀留空")
+	}
+	if strings.HasPrefix(prefix, bucket+"/") {
+		return fmt.Errorf("app: 桶内前缀不要把桶名再填一遍：前缀是桶里面的子文件夹，例如 photos/2024；想挂整个桶就把前缀留空")
+	}
+	return nil
+}
+
+// rootRefFor is the driver ref of the mount root. S3, Dropbox and
+// Drive all use "" (provider root); local uses the absolute path.
+// S3 used to return the bucket (or bucket/prefix) here, which the
+// browse/sync/upload code then passed to p.List as a key prefix —
+// the bucket root showed an empty "bucket" folder instead of its
+// real files, and uploads landed under bucket/bucket/ (2026-11-25).
 func rootRefFor(in AddMountInput) string {
+	switch in.Provider {
+	case domain.ProviderLocal:
+		abs, _ := filepath.Abs(strings.TrimSpace(in.LocalPath))
+		return abs
+	default:
+		return ""
+	}
+}
+
+// rootLabelFor is the display root shown in Settings: S3 shows the
+// bucket (or bucket/prefix), local shows the absolute path,
+// Dropbox/Drive show nothing. Display only — never pass it to a
+// driver as a ref.
+func rootLabelFor(in AddMountInput) string {
 	switch in.Provider {
 	case domain.ProviderS3:
 		bucket := strings.TrimSpace(in.Bucket)
@@ -291,6 +334,34 @@ func rootRefFor(in AddMountInput) string {
 		return abs
 	default:
 		return ""
+	}
+}
+
+// healedRoot recomputes the (RootRef, RootLabel) a persisted mount
+// should have from its stored non-secret config. ok is false when
+// the config does not carry enough to recompute (e.g. an S3 row
+// without a bucket): the caller then leaves the row untouched.
+func healedRoot(provider domain.ProviderKind, cfg map[string]string) (rootRef, rootLabel string, ok bool) {
+	switch provider {
+	case domain.ProviderS3:
+		bucket := strings.TrimSpace(cfg["bucket"])
+		if bucket == "" {
+			return "", "", false
+		}
+		prefix := strings.Trim(strings.TrimSpace(cfg["prefix"]), "/")
+		label := bucket
+		if prefix != "" {
+			label = bucket + "/" + prefix
+		}
+		return "", label, true
+	case domain.ProviderLocal:
+		root := strings.TrimSpace(cfg["root"])
+		if root == "" {
+			return "", "", false
+		}
+		return root, root, true
+	default:
+		return "", "", true
 	}
 }
 
@@ -312,6 +383,25 @@ func (a *App) LoadMounts() error {
 	}
 	for _, pm := range persisted {
 		m := pm.Mount
+		// Self-heal (2026-11-25, S3 root fix): mounts saved before
+		// the fix carry RootRef "bucket" or "bucket/prefix", which
+		// the browse/sync/upload code treats as a key prefix — the
+		// bucket root then looks empty and uploads land under
+		// bucket/bucket/. Recompute from the stored config
+		// (bucket/prefix are untouched by the bug) and write the
+		// corrected row back, so the user's existing R2 mount just
+		// works on the next start with no delete-and-re-add. A row
+		// whose own prefix repeats the bucket name cannot be healed
+		// this way — that needs the Settings "修改桶 / 前缀" entry.
+		if wantRef, wantLabel, ok := healedRoot(m.Provider, pm.Config); ok && (m.RootRef != wantRef || m.RootLabel != wantLabel) {
+			m.RootRef = wantRef
+			m.RootLabel = wantLabel
+			m.UpdatedAt = time.Now().UTC()
+			// Best effort: a failed write-back only means the heal
+			// retries on the next start; the in-memory mount is
+			// already corrected.
+			_ = a.DB.SaveMount(m, pm.Config)
+		}
 		cfg := storage.Config{
 			Endpoint: pm.Config["endpoint"],
 			Region:   pm.Config["region"],
@@ -393,6 +483,117 @@ func (a *App) RemoveMount(id string) error {
 		_ = a.DB.DeleteSecret(secretIDFor(id))
 	}
 	return nil
+}
+
+// UpdateMountRoot changes only an S3 mount's bucket/prefix — never
+// its credentials. It rebuilds the driver from the stored endpoint /
+// region / credentials plus the new bucket/prefix, probes List("")
+// against the new root, and only then swaps the live provider and
+// persists. A failed probe (or validation) changes nothing: the old
+// bucket/prefix and the old provider stay in place, and the caller
+// gets a plain-language error.
+func (a *App) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*domain.Mount, error) {
+	h, ok := a.mounts[id]
+	if !ok {
+		return nil, fmt.Errorf("app: unknown mount %q", id)
+	}
+	if h.Mount.Provider != domain.ProviderS3 {
+		return nil, fmt.Errorf("app: 只有 S3 网盘能改桶 / 前缀")
+	}
+	bucket = strings.TrimSpace(bucket)
+	prefix = strings.Trim(strings.TrimSpace(prefix), "/")
+	if err := validateS3BucketPrefix(bucket, prefix); err != nil {
+		return nil, err
+	}
+	if a.DB == nil {
+		return nil, fmt.Errorf("app: 本地数据库还没初始化，改不了桶 / 前缀")
+	}
+	cfgMap, err := a.persistedConfig(id)
+	if err != nil {
+		return nil, err
+	}
+	newCfg := map[string]string{}
+	for k, v := range cfgMap {
+		newCfg[k] = v
+	}
+	newCfg["bucket"] = bucket
+	newCfg["prefix"] = prefix
+	cfg := storage.Config{
+		Endpoint: newCfg["endpoint"],
+		Region:   newCfg["region"],
+		Extra:    newCfg,
+	}
+	if a.secrets != nil {
+		creds, found, err := a.decryptMountCreds(h.Mount.AccountID)
+		if err != nil {
+			return nil, fmt.Errorf("app: 读保存的凭证失败：%w", err)
+		}
+		if found {
+			cfg.AccessKey = creds.AccessKey
+			cfg.SecretKey = creds.SecretKey
+		}
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	p, err := a.Registry.New(domain.ProviderS3, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("app: 创建驱动失败：%w", err)
+	}
+	if _, err := p.List(probeCtx, ""); err != nil {
+		return nil, humanProbeError(domain.ProviderS3, err)
+	}
+	label := bucket
+	if prefix != "" {
+		label = bucket + "/" + prefix
+	}
+	h.Provider = p
+	h.Mount.RootRef = ""
+	h.Mount.RootLabel = label
+	h.Mount.UpdatedAt = time.Now().UTC()
+	a.mounts[id] = h
+	if err := a.DB.SaveMount(h.Mount, newCfg); err != nil {
+		return nil, err
+	}
+	return h.Mount, nil
+}
+
+// persistedConfig returns the stored non-secret config of one mount.
+func (a *App) persistedConfig(id string) (map[string]string, error) {
+	persisted, err := a.DB.ListMounts()
+	if err != nil {
+		return nil, err
+	}
+	for _, pm := range persisted {
+		if pm.Mount.ID == id {
+			cfg := pm.Config
+			if cfg == nil {
+				cfg = map[string]string{}
+			}
+			return cfg, nil
+		}
+	}
+	return nil, fmt.Errorf("app: unknown mount %q", id)
+}
+
+// decryptMountCreds decrypts one mount's stored credential blob.
+// found is false when the mount has no secret row (local mounts).
+func (a *App) decryptMountCreds(accountID string) (mountCredentials, bool, error) {
+	var creds mountCredentials
+	ct, err := a.DB.LoadSecret(accountID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return creds, false, nil
+		}
+		return creds, false, err
+	}
+	plain, err := a.secrets.Decrypt(ct)
+	if err != nil {
+		return creds, false, err
+	}
+	if err := json.Unmarshal(plain, &creds); err != nil {
+		return creds, false, err
+	}
+	return creds, true, nil
 }
 
 // UpdateMountGroup changes a mount's sidebar group, in memory and in

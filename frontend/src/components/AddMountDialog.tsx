@@ -135,6 +135,13 @@ export default function AddMountDialog({
     switch (provider) {
       case 's3':
         if (!bucket.trim()) return '请填桶名（Bucket）。'
+        if (bucket.trim().includes('/')) return '桶名里不能有 /：桶名就是一个名字，桶里面的子文件夹请填到“桶内前缀”里。'
+        {
+          const p = prefix.trim().replace(/^\/+|\/+$/g, '')
+          const b = bucket.trim()
+          if (p === b) return '桶内前缀不能就是桶名本身：前缀是桶里面的子文件夹，例如 photos/2024；想挂整个桶就把前缀留空。'
+          if (p.startsWith(`${b}/`)) return '桶内前缀不要把桶名再填一遍：前缀是桶里面的子文件夹，例如 photos/2024；想挂整个桶就把前缀留空。'
+        }
         if (!accessKey.trim() || !secretKey.trim()) return '请填 AccessKey 和 SecretKey。'
         return null
       case 'dropbox':
@@ -297,8 +304,9 @@ export default function AddMountDialog({
                   <input className="input" placeholder="例如：my-backup" value={bucket} onChange={(e) => setBucket(e.target.value)} />
                 </div>
                 <div className="field">
-                  <label>桶内前缀（可选，留空为整个桶）</label>
-                  <input className="input" placeholder="例如：photos/" value={prefix} onChange={(e) => setPrefix(e.target.value)} />
+                  <label>桶内前缀（可选）</label>
+                  <input className="input" placeholder="例如：photos/2024" value={prefix} onChange={(e) => setPrefix(e.target.value)} />
+                  <div className="hint">留空 = 整个桶。只填桶里面的子文件夹，例如 photos/2024，不要把桶名再填一遍。</div>
                 </div>
                 <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
                   <input type="checkbox" checked={pathStyle} onChange={(e) => setPathStyle(e.target.checked)} />
@@ -407,6 +415,12 @@ export default function AddMountDialog({
               准备添加 <strong>{displayName.trim() || chosen.name}</strong>（{chosen.name}
               {group.trim() ? ` · 分组“${group.trim()}”` : ''}）。
             </p>
+            {provider === 's3' && (
+              <p>
+                将挂载：桶 {bucket.trim()}，范围：
+                {prefix.trim() ? `仅前缀 ${prefix.trim().replace(/^\/+|\/+$/g, '')}` : '整个桶'}。
+              </p>
+            )}
             <p className="muted">点“测试并保存”后会先连一次网盘根目录，通了才保存；不通不会保存，也不会留下坏网盘。</p>
             {testing && (
               <div className="notice-box">

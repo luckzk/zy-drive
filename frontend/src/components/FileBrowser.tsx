@@ -19,6 +19,7 @@ import { api, friendlyError, type UploadSkipped } from '../api/client'
 import { Skeleton } from './motion'
 import FileTable from './FileTable'
 import Inspector from './Inspector'
+import UploadTargetDialog from './UploadTargetDialog'
 
 interface Crumb {
   name: string
@@ -92,6 +93,10 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [skipped, setSkipped] = useState<UploadSkipped[]>([])
   const [failedPaths, setFailedPaths] = useState<string[]>([])
+  // 拖拽进来后先不传：等用户在目标选择框里确认文件夹。lastTarget
+  // 记着上次传到的文件夹，重试失败文件时还传到那里。
+  const [pendingPaths, setPendingPaths] = useState<string[] | null>(null)
+  const [lastTargetRef, setLastTargetRef] = useState<string | null>(null)
 
   useEffect(
     () => () => {
@@ -100,13 +105,15 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
     [],
   )
 
-  // Uploads one batch of local paths into the current directory and
-  // polls transfers() until the batch is terminal, then refreshes
+  // Uploads one batch of local paths into the given directory ref
+  // and polls transfers() until the batch is terminal, then refreshes
   // the listing. Skipped paths (too big, unreadable) are shown
   // inline; failed ones can be retried on their own.
   const handleUpload = useCallback(
-    async (paths: string[]) => {
+    async (paths: string[], targetRef?: string) => {
       if (paths.length === 0) return
+      const dest = targetRef ?? ref
+      setLastTargetRef(dest)
       if (pollTimer.current) clearTimeout(pollTimer.current)
       setUploadError(null)
       setFailedPaths([])
@@ -114,7 +121,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
       setUploadInfo(`正在上传 ${paths.length} 个文件…进度见右下角传输胶囊。`)
       let res
       try {
-        res = await api.uploadFiles(mount.id, ref, paths)
+        res = await api.uploadFiles(mount.id, dest, paths)
       } catch (e) {
         setUploadInfo(null)
         setUploadError(friendlyError(e))
@@ -168,7 +175,8 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
   // mygo gives real local paths via onFileDrop; register only inside
   // the desktop window (guarded by isMyGo, registration failure
   // never breaks the page). The drop is accepted only when it lands
-  // inside this browser area.
+  // inside this browser area. A drop only opens the target picker —
+  // nothing uploads until the user confirms a folder there.
   useEffect(() => {
     if (!isMyGo()) return
     let unsubscribe: (() => void) | undefined
@@ -177,7 +185,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
         const zone = zoneRef.current
         const el = document.elementFromPoint(x, y)
         if (!zone || !el || !zone.contains(el)) return
-        void handleUpload(paths)
+        if (paths.length > 0) setPendingPaths(paths)
       })
     } catch {
       unsubscribe = undefined
@@ -185,7 +193,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
     return () => {
       unsubscribe?.()
     }
-  }, [handleUpload])
+  }, [])
 
   return (
     <div
@@ -241,7 +249,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
         }}
       >
         <span style={{ fontSize: 14, fontWeight: 400, lineHeight: '20px', color: 'var(--ink)' }}>
-          {isMyGo() ? '松开以上传到当前文件夹' : '拖拽上传仅在 ZyDrive 桌面窗口中可用'}
+          {isMyGo() ? '松开以选择上传文件夹' : '拖拽上传仅在 ZyDrive 桌面窗口中可用'}
         </span>
       </div>
       <div
@@ -283,7 +291,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
             {uploadError}
             {failedPaths.length > 0 && (
               <div style={{ marginTop: 8 }}>
-                <button className="btn btn-sm" onClick={() => void handleUpload(failedPaths)}>
+                <button className="btn btn-sm" onClick={() => void handleUpload(failedPaths, lastTargetRef ?? ref)}>
                   重试失败的 {failedPaths.length} 个文件
                 </button>
               </div>
@@ -344,6 +352,18 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
         )}
       </div>
       {selected && <Inspector node={selected} mount={mount} closing={inspectorClosing} onClose={closeInspector} />}
+      {pendingPaths && (
+        <UploadTargetDialog
+          mount={mount}
+          initialRef={ref}
+          fileCount={pendingPaths.length}
+          onConfirm={(targetRef) => {
+            setPendingPaths(null)
+            void handleUpload(pendingPaths, targetRef)
+          }}
+          onCancel={() => setPendingPaths(null)}
+        />
+      )}
     </div>
   )
 }

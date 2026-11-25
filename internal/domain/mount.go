@@ -43,7 +43,18 @@ type Mount struct {
 	DisplayName string       `json:"displayName"`
 	Provider    ProviderKind `json:"provider"`
 	AccountID   string       `json:"accountId"` // credential reference, never a secret
-	RootRef     string       `json:"rootRef"`   // root location: path, bucket+prefix or folder ID
+	// RootRef is the driver ref of the mount root, as the browse/sync/
+	// upload code consumes it: "" (provider root) for S3, Dropbox
+	// and Drive, the absolute path for local mounts. It is never a
+	// bucket name: S3's driver takes the bucket from its own config,
+	// so a bucket here would make the root list "bucket/" inside the
+	// bucket instead of the bucket itself (fixed 2026-11-25).
+	RootRef string `json:"rootRef"`
+	// RootLabel is the display root shown in Settings ("bucket" or
+	// "bucket/prefix" for S3, the absolute path for local, "" for
+	// Dropbox/Drive). Display only: no browse/sync/upload code may
+	// use it as a ref.
+	RootLabel string `json:"rootLabel,omitempty"`
 	// Group is the sidebar group this mount belongs to (2026-11-24
 	// decision). "" means "未分组". Groups are display-only: they
 	// never affect tokens, caches or sync.

@@ -156,6 +156,11 @@ var migrations = []string{
 	// Secrets stay in the secrets table, encrypted; this column never
 	// holds a token, key or client secret.
 	`ALTER TABLE mounts ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'`,
+	// v19 (2026-11-25, S3 root fix): display-only root label
+	// ("bucket" or "bucket/prefix" for S3, absolute path for local).
+	// RootRef itself is fixed to "" for S3 by the LoadMounts
+	// self-heal; the label keeps the bucket visible in Settings.
+	`ALTER TABLE mounts ADD COLUMN root_label TEXT NOT NULL DEFAULT ''`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.

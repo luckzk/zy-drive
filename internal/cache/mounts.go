@@ -41,16 +41,17 @@ func (db *DB) SaveMount(m *domain.Mount, config map[string]string) error {
 		updated = m.UpdatedAt.UTC().Format(time.RFC3339)
 	}
 	if _, err := db.SQL.Exec(`INSERT INTO mounts
-		(id, display_name, provider, account_id, root_ref, caps_json,
+		(id, display_name, provider, account_id, root_ref, root_label, caps_json,
 		 status, group_name, config_json, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			display_name=excluded.display_name, provider=excluded.provider,
 			account_id=excluded.account_id, root_ref=excluded.root_ref,
+			root_label=excluded.root_label,
 			caps_json=excluded.caps_json, status=excluded.status,
 			group_name=excluded.group_name, config_json=excluded.config_json,
 			updated_at=excluded.updated_at`,
-		m.ID, m.DisplayName, string(m.Provider), m.AccountID, m.RootRef,
+		m.ID, m.DisplayName, string(m.Provider), m.AccountID, m.RootRef, m.RootLabel,
 		string(capsJSON), string(m.Status), m.Group, string(configJSON),
 		created, updated); err != nil {
 		return fmt.Errorf("cache: save mount: %w", err)
@@ -68,7 +69,7 @@ func (db *DB) UpdateMountGroup(id, group string) error {
 // ListMounts returns all saved mounts in creation order.
 func (db *DB) ListMounts() ([]PersistedMount, error) {
 	rows, err := db.SQL.Query(`SELECT id, display_name, provider, account_id,
-		root_ref, caps_json, status, group_name, config_json, created_at, updated_at
+		root_ref, root_label, caps_json, status, group_name, config_json, created_at, updated_at
 		FROM mounts ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("cache: list mounts: %w", err)
@@ -80,7 +81,7 @@ func (db *DB) ListMounts() ([]PersistedMount, error) {
 		var provider, capsJSON, status, configJSON string
 		var created, updated string
 		if err := rows.Scan(&m.ID, &m.DisplayName, &provider, &m.AccountID,
-			&m.RootRef, &capsJSON, &status, &m.Group, &configJSON,
+			&m.RootRef, &m.RootLabel, &capsJSON, &status, &m.Group, &configJSON,
 			&created, &updated); err != nil {
 			return nil, fmt.Errorf("cache: list mounts: %w", err)
 		}

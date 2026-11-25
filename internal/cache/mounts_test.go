@@ -16,7 +16,7 @@ func TestMountsRoundTrip(t *testing.T) {
 
 	m := &domain.Mount{
 		ID: "mnt-1", DisplayName: "工作 Drive", Provider: domain.ProviderDrive,
-		AccountID: "mount:mnt-1", RootRef: "", Group: "工作",
+		AccountID: "mount:mnt-1", RootRef: "", RootLabel: "", Group: "工作",
 		Status: domain.MountOK,
 	}
 	cfg := map[string]string{"client_id": "cid-1", "rootId": "root"}

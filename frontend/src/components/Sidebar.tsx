@@ -10,7 +10,7 @@
 // they survive a restart. Removing a mount deletes only the local
 // record (mount row, cached listings, encrypted credential blob);
 // cloud files are never touched.
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { AgentStatus, Mount } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { t, type Lang } from '../lib/i18n'
@@ -49,6 +49,25 @@ export default function Sidebar({
   const [extraGroups, setExtraGroups] = useState<string[]>([])
   const [newGroupName, setNewGroupName] = useState('')
   const [addingGroup, setAddingGroup] = useState(false)
+  // 网盘标题旁的 + 菜单：新建网盘 / 新建分组。点其他地方、按 Esc、
+  // 或选完一项后收起。
+  const [menuOpen, setMenuOpen] = useState(false)
+  const drivesHeadRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onPointer = (e: MouseEvent) => {
+      if (drivesHeadRef.current && !drivesHeadRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
@@ -141,7 +160,42 @@ export default function Sidebar({
         ))}
       </nav>
 
-      <div className="nav-section">{t(lang, 'drives')}</div>
+      <div className="drives-head" ref={drivesHeadRef}>
+        <span className="nav-section" style={{ margin: 0, flex: 1 }}>
+          {t(lang, 'drives')}
+        </span>
+        <button
+          className="icon-btn"
+          title="添加网盘或分组"
+          aria-label="添加网盘或分组"
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((v) => !v)}
+        >
+          +
+        </button>
+        {menuOpen && (
+          <div className="sidebar-menu" role="menu">
+            <button
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false)
+                onAddMount()
+              }}
+            >
+              新建网盘
+            </button>
+            <button
+              role="menuitem"
+              onClick={() => {
+                setMenuOpen(false)
+                setAddingGroup(true)
+              }}
+            >
+              新建分组
+            </button>
+          </div>
+        )}
+      </div>
       {error && <div className="error-box">{error}</div>}
       {loading ? (
         <div style={{ display: 'grid', gap: 8, padding: '4px 0' }}>
@@ -152,11 +206,8 @@ export default function Sidebar({
       ) : mounts.length === 0 ? (
         <div style={{ padding: '4px 4px 8px' }}>
           <p className="muted" style={{ fontSize: 13, margin: '0 0 8px' }}>
-            还没有网盘，先添加一个才能浏览和同步。
+            还没有网盘，点上面网盘旁边的 + 添加一个才能浏览和同步。
           </p>
-          <button className="btn-primary" style={{ width: '100%' }} onClick={onAddMount}>
-            + 添加网盘
-          </button>
         </div>
       ) : null}
       {orderedGroups.map((g) => {
@@ -326,10 +377,11 @@ export default function Sidebar({
         )
       })}
 
-      {addingGroup ? (
-        /* 新建分组改成上下两行：输入框独占一行，按钮在下一行。
-           之前输入框和“确定”并排，输入框 width:100% 把按钮压到只剩
-           30px 宽，“确定”两个字被迫竖排。 */
+      {/* 新建分组输入框：只在从 + 菜单选了“新建分组”后出现，
+          仍是上下两行（输入框独占一行，按钮在下一行），绝不竖排。
+          分组本身是 session-only 的 extraGroups（V0.1 既有行为），
+          这里不改持久化。 */}
+      {addingGroup && (
         <div style={{ marginTop: 4 }}>
           <input
             className="input"
@@ -351,16 +403,12 @@ export default function Sidebar({
             </button>
           </div>
         </div>
-      ) : (
-        <button className="btn" style={{ marginTop: 4 }} onClick={() => setAddingGroup(true)}>
-          + 新建分组
-        </button>
       )}
 
       <div style={{ flex: 1 }} />
 
       <div className="card" style={{ padding: 12, cursor: 'pointer' }} onClick={() => onNavigate('settings')}>
-        <div style={{ fontSize: 13, fontWeight: 550 }}>Agent</div>
+        <div style={{ fontSize: 13, fontWeight: 400 }}>Agent</div>
         {agentStatus ? (
           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
             {agentStatus.online}/{agentStatus.total} 在线

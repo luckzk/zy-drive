@@ -131,6 +131,18 @@ func (s *DesktopService) UpdateMountGroup(id, group string) error {
 	return s.app.UpdateMountGroup(id, group)
 }
 
+// UpdateMountRoot changes an S3 mount's bucket/prefix (only the
+// non-secret config; credentials untouched). It probes the new root
+// first and saves only when the probe succeeds.
+func (s *DesktopService) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*domain.Mount, error) {
+	return s.app.UpdateMountRoot(ctx, id, bucket, prefix)
+}
+
+// Mkdir creates one folder on a mount (upload target picker).
+func (s *DesktopService) Mkdir(ctx context.Context, mountID, ref string) error {
+	return s.app.Mkdir(ctx, mountID, ref)
+}
+
 // ListSyncJobs returns saved sync jobs (creation order).
 func (s *DesktopService) ListSyncJobs() []*domain.SyncJob { return s.app.ListSyncJobs() }
 

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
@@ -46,6 +47,23 @@ func (a *App) Browse(ctx context.Context, mountID, ref string) ([]domain.Node, e
 		return nodes, nil
 	}
 	return cached, nil
+}
+
+// Mkdir creates one folder on a mount (upload target picker). S3
+// writes a zero-byte placeholder object; other drivers create a real
+// folder. An empty ref is rejected: the mount root always exists.
+func (a *App) Mkdir(ctx context.Context, mountID, ref string) error {
+	p, err := a.ProviderFor(mountID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(ref) == "" {
+		return fmt.Errorf("app: 请先选一个文件夹")
+	}
+	if err := p.Mkdir(ctx, ref); err != nil {
+		return fmt.Errorf("app: 新建文件夹失败：%w", err)
+	}
+	return nil
 }
 
 // Search prefers server-side search when the provider implements

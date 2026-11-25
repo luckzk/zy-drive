@@ -51,6 +51,44 @@ export default function SettingsPage({
   const [mountsError, setMountsError] = useState<string | null>(null)
   const [deletingMountId, setDeletingMountId] = useState<string | null>(null)
   const [reauthTarget, setReauthTarget] = useState<Mount | null>(null)
+  // ---- S3 改桶 / 前缀（只改非敏感配置，不碰凭证） ----
+  const [editingRoot, setEditingRoot] = useState<Mount | null>(null)
+  const [rootBucket, setRootBucket] = useState('')
+  const [rootPrefix, setRootPrefix] = useState('')
+  const [rootBusy, setRootBusy] = useState(false)
+  const [rootError, setRootError] = useState<string | null>(null)
+  const [rootDialogClosing, requestRootDialogClose, resetRootDialog] = useClosing(() => setEditingRoot(null))
+
+  const saveRoot = async () => {
+    if (!editingRoot) return
+    const bucket = rootBucket.trim()
+    const prefix = rootPrefix.trim().replace(/^\/+|\/+$/g, '')
+    if (!bucket) {
+      setRootError('请填桶名（Bucket）。')
+      return
+    }
+    if (bucket.includes('/')) {
+      setRootError('桶名里不能有 /：桶名就是一个名字，桶里面的子文件夹请填到“桶内前缀”里。')
+      return
+    }
+    if (prefix === bucket || prefix.startsWith(`${bucket}/`)) {
+      setRootError('桶内前缀不要把桶名再填一遍：前缀是桶里面的子文件夹，例如 photos/2024；想挂整个桶就把前缀留空。')
+      return
+    }
+    setRootBusy(true)
+    setRootError(null)
+    try {
+      const updated = await api.updateMountRoot(editingRoot.id, bucket, prefix)
+      if (!updated) throw new Error('保存失败：后端没有返回网盘信息。')
+      requestRootDialogClose()
+      await loadMounts()
+      onMountsChanged()
+    } catch (e) {
+      setRootError(friendlyError(e))
+    } finally {
+      setRootBusy(false)
+    }
+  }
 
   // ---- about ----
   const [versions, setVersions] = useState<VersionInfo | null>(null)
@@ -430,7 +468,7 @@ export default function SettingsPage({
                   {m.provider}
                   {m.group ? ` · 分组“${m.group}”` : ''}
                   {mountStatusLabel(m.status) ? ` · ${mountStatusLabel(m.status)}` : ''}
-                  {m.rootRef ? ` · ${m.rootRef}` : ''}
+                  {m.rootLabel || m.rootRef ? ` · ${m.rootLabel || m.rootRef}` : ''}
                 </div>
                 {reauthTarget?.id === m.id && (
                   <div style={{ fontSize: 13, marginTop: 4 }}>
@@ -447,6 +485,24 @@ export default function SettingsPage({
               >
                 重新授权
               </button>
+              {m.provider === 's3' && (
+                <button
+                  className="btn btn-sm"
+                  onClick={() => {
+                    // 当前桶/前缀从显示用的 rootLabel 里拆出来
+                    // （"bucket" 或 "bucket/prefix"）；凭证不动。
+                    const label = m.rootLabel || m.rootRef || ''
+                    const slash = label.indexOf('/')
+                    resetRootDialog()
+                    setEditingRoot(m)
+                    setRootBucket(slash === -1 ? label : label.slice(0, slash))
+                    setRootPrefix(slash === -1 ? '' : label.slice(slash + 1))
+                    setRootError(null)
+                  }}
+                >
+                  修改桶 / 前缀
+                </button>
+              )}
               {deletingMountId === m.id ? (
                 <>
                   <button className="btn-danger btn-sm" onClick={() => void removeMount(m)}>
@@ -662,6 +718,35 @@ export default function SettingsPage({
         <div className="notice-box" style={{ marginBottom: 0 }}>暂未接入检查更新：还没有配置更新源（mygo Updater 需要打包时配置更新 feed），所以这里不假装检查过。当前版本见上方。</div>
         </section>
       </Reveal>
+
+      {editingRoot && (
+        <div className={`dialog-backdrop${rootDialogClosing ? ' closing' : ''}`} onClick={requestRootDialogClose}>
+          <div className={`dialog${rootDialogClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <h1>修改桶 / 前缀</h1>
+            <p className="muted" style={{ margin: '0 0 12px' }}>
+              改“{editingRoot.displayName}”挂载的桶和范围。只改桶和前缀，不碰 AccessKey / SecretKey；保存前会先连一次新桶根目录，通了才保存，不通不改。
+            </p>
+            <div className="field">
+              <label>桶名（Bucket）</label>
+              <input className="input" value={rootBucket} onChange={(e) => setRootBucket(e.target.value)} placeholder="例如：my-backup" />
+            </div>
+            <div className="field">
+              <label>桶内前缀（可选）</label>
+              <input className="input" value={rootPrefix} onChange={(e) => setRootPrefix(e.target.value)} placeholder="例如：photos/2024" />
+              <div className="hint">留空 = 整个桶。只填桶里面的子文件夹，例如 photos/2024，不要把桶名再填一遍。</div>
+            </div>
+            {rootError && <div className="error-box">{rootError}</div>}
+            <div className="dialog-actions">
+              <button className="btn" disabled={rootBusy} onClick={requestRootDialogClose}>
+                {t(lang, 'cancel')}
+              </button>
+              <button className="btn-primary" disabled={rootBusy} onClick={() => void saveRoot()}>
+                {rootBusy ? '测试中…' : '测试并保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {editing && (
         <div className={`dialog-backdrop${agentDialogClosing ? ' closing' : ''}`} onClick={requestAgentDialogClose}>

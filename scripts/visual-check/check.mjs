@@ -37,21 +37,32 @@ const CAPS = {
   supportsPresignedUrl: false, idBased: false, maxFileSize: 0, minPartSize: 0, maxPathLen: 0, illegalChars: '',
 }
 const MOCK_MOUNTS = [
-  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: 'photos', group: '工作', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
-  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '/', group: '个人', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
-  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: 'root', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', createdAt: '', updatedAt: '' },
+  // S3 根是 ""（provider root），桶名只活在 rootLabel 里作显示；
+  // 旧数据 rootRef "test-bucket" 会让浏览列出桶内同名文件夹。
+  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', group: '工作', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', createdAt: '', updatedAt: '' },
 ]
 const STUB_MOUNTS = process.env.VISUAL_MOUNTS ? JSON.stringify(MOCK_MOUNTS) : '[]'
 const STUB = `(() => {
   const empty = { 'DesktopService.ListMounts': ${STUB_MOUNTS}, 'DesktopService.ListAgents': [], 'DesktopService.Transfers': [], 'DesktopService.ListSyncJobs': [] }
+  const listeners = {}
   window.mygo = {
     locale: 'zh-CN', dir: 'ltr',
+    on: (name, fn) => { (listeners[name] ??= []).push(fn); return () => { listeners[name] = (listeners[name] ?? []).filter((f) => f !== fn) } },
+    once: (name, fn) => { const wrap = (p) => { fn(p); listeners[name] = (listeners[name] ?? []).filter((f) => f !== wrap) }; (listeners[name] ??= []).push(wrap); return () => {} },
     call: async (method, ...args) => {
       if (method === 'DesktopService.AgentStatus') return { total: 0, online: 0 }
       if (method === 'DesktopService.ValidateJob') return null
       if (method === 'DesktopService.Browse') return []
       if (method === 'DesktopService.PreviewSync') return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
       if (method === 'DesktopService.SaveSyncJob') return args[0]
+      if (method === 'DesktopService.Mkdir') return null
+      if (method === 'DesktopService.UploadFiles') return { transfers: [], skipped: [] }
+      if (method === 'DesktopService.UpdateMountRoot') {
+        const mount = (${STUB_MOUNTS}).find((m) => m.id === args[0]) ?? (${STUB_MOUNTS})[0]
+        return { ...mount, rootRef: '', rootLabel: args[1] + (args[2] ? '/' + args[2] : '') }
+      }
       if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both' }
       if (method === 'DesktopService.SaveSettings') return null
       if (method === 'DesktopService.CheckDownloadDir') return null
@@ -67,6 +78,8 @@ const STUB = `(() => {
     },
     callWith: async (method, args) => window.mygo.call(method, ...(args ?? [])),
   }
+  // 测试用：模拟一次 mygo 文件拖放（FileBrowser 用 onFileDrop 接）。
+  window.__fireFileDrop = (paths, x = 700, y = 400) => { (listeners['mygo:file-drop'] ?? []).forEach((fn) => fn({ paths, x, y })) }
 })()`
 
 function serve() {
@@ -105,11 +118,75 @@ try {
   // 1. 文件浏览页：零网盘空态
   await page.screenshot({ path: path.join(SHOTS, '01-browse-empty.png') })
 
-  // 2. 点开“+ 新建分组”：重点检查“确定”按钮是否横排、不溢出侧栏
-  await page.getByText('+ 新建分组').click()
+  // 1b. S3 向导回显（问题 1，零网盘模式）：选 S3、填桶 test-bucket +
+  // 前缀 photos，第 3 步必须回显“将挂载：桶 test-bucket，范围：仅前
+  // 缀 photos”，让用户确认后再测试保存。有网盘时没有空态添加按钮，
+  // 这一步跳过（向导本身与模式无关）。
+  if (!process.env.VISUAL_MOUNTS) {
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    await page.getByText('S3 / R2 / 兼容 S3').click()
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const dialogInputs = page.locator('.dialog input')
+    await dialogInputs.nth(0).fill('R2 测试')
+    await dialogInputs.nth(4).fill('test-bucket')
+    await dialogInputs.nth(5).fill('photos')
+    await dialogInputs.nth(7).fill('ak-test')
+    await dialogInputs.nth(8).fill('sk-test')
+    // 前缀字段必须写清“不要把桶名再填一遍”。
+    const prefixHint = await page.locator('.dialog .field', { hasText: '桶内前缀' }).textContent()
+    console.log('s3 prefix hint:', JSON.stringify(prefixHint))
+    if (!prefixHint?.includes('不要把桶名再填一遍')) failures.push('S3 前缀字段没有“不要把桶名再填一遍”的提示')
+    await page.getByRole('button', { name: '下一步：测试' }).click()
+    await page.waitForTimeout(400)
+    const recap = await page.locator('.dialog').textContent()
+    console.log('s3 recap:', JSON.stringify(recap?.slice(0, 200)))
+    if (!recap?.includes('将挂载：桶 test-bucket，范围：仅前缀 photos')) {
+      failures.push('S3 向导第 3 步没有回显“将挂载：桶 test-bucket，范围：仅前缀 photos”')
+    }
+    await page.screenshot({ path: path.join(SHOTS, '01b-wizard-s3-recap.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+  }
+
+  // 2. 侧栏 + 菜单（问题 3+4）：网盘标题右边只有一个 + 小按钮；
+  // 点开是浮层菜单（新建网盘 / 新建分组），没有显眼的大按钮。
+  const sidebarButtons = await page.evaluate(() => {
+    const sb = document.querySelector('.sidebar')
+    return [...(sb?.querySelectorAll('button') ?? [])].map((b) => b.textContent.trim())
+  })
+  console.log('sidebar buttons:', JSON.stringify(sidebarButtons))
+  if (sidebarButtons.some((t) => t === '+ 新建分组')) failures.push('侧栏里还有显眼的“+ 新建分组”大按钮（应已删掉，入口在 + 菜单里）')
+  if (sidebarButtons.some((t) => t === '+ 添加网盘')) failures.push('侧栏里还有全宽“+ 添加网盘”按钮（应已删掉，入口在 + 菜单里）')
+  await page.getByRole('button', { name: '添加网盘或分组' }).click()
+  await page.waitForTimeout(400)
+  const menu = await page.evaluate(() => {
+    const m = document.querySelector('.sidebar-menu')
+    if (!m) return { found: false }
+    const cs = getComputedStyle(m)
+    return {
+      found: true,
+      items: [...m.querySelectorAll('button')].map((b) => b.textContent.trim()),
+      animDuration: cs.animationDuration,
+      animCurve: cs.animationTimingFunction,
+      opacity: parseFloat(cs.opacity),
+    }
+  })
+  console.log('sidebar menu:', JSON.stringify(menu))
+  if (!menu.found) failures.push('点侧栏 + 后没有弹出菜单（.sidebar-menu）')
+  if (menu.found && JSON.stringify(menu.items) !== JSON.stringify(['新建网盘', '新建分组'])) {
+    failures.push(`+ 菜单应只有“新建网盘 / 新建分组”，实测 ${JSON.stringify(menu.items)}`)
+  }
+  if (menu.found && menu.animDuration !== '0.3s') failures.push(`+ 菜单入场动画应为 300ms，实测 ${menu.animDuration}`)
+  if (menu.found && menu.animCurve !== 'cubic-bezier(0.22, 1, 0.36, 1)') failures.push(`+ 菜单入场曲线应为基础曲线，实测 ${menu.animCurve}`)
+  await page.screenshot({ path: path.join(SHOTS, '02-sidebar-menu.png') })
+
+  // 2b. 从菜单点“新建分组”：输入框独占一行，“确定”横排、不溢出。
+  await page.getByRole('menuitem', { name: '新建分组' }).click()
   await page.waitForTimeout(400)
   const groupCheck = await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('button')].filter((b) => ['确定', '取消'].includes(b.textContent.trim()))
+    const btns = [...document.querySelectorAll('.sidebar button')].filter((b) => ['确定', '取消'].includes(b.textContent.trim()))
     const sidebar = document.querySelector('.sidebar')?.getBoundingClientRect()
     return btns.map((b) => {
       const r = b.getBoundingClientRect()
@@ -146,6 +223,34 @@ try {
     if (groupHover.badgeAdjacent !== null && groupHover.badgeAdjacent > 12) failures.push(`分组数量徽章离组名太远：${groupHover.badgeAdjacent}px`)
     const sidebar2 = await page.$('.sidebar')
     if (sidebar2) await sidebar2.screenshot({ path: path.join(SHOTS, '02c-sidebar-group-hover.png') })
+  }
+
+  // 2d. 上传目标文件夹选择（问题 2，VISUAL_MOUNTS）：模拟一次拖放，
+  // 必须先弹目标选择框（默认当前文件夹、显示完整路径），而不是
+  // 立即上传；框里有新建文件夹入口。
+  if (process.env.VISUAL_MOUNTS) {
+    await page.evaluate(() => window.__fireFileDrop(['/tmp/照片/a.jpg', '/tmp/照片/b.jpg'], 700, 400))
+    await page.waitForTimeout(600)
+    const uploadDialog = await page.evaluate(() => {
+      const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('上传到哪里'))
+      if (!d) return { found: false }
+      return {
+        found: true,
+        text: d.textContent?.slice(0, 300),
+        hasConfirm: [...d.querySelectorAll('button')].some((b) => b.textContent.trim() === '上传到这里'),
+        hasMkdir: d.textContent?.includes('新建文件夹') ?? false,
+      }
+    })
+    console.log('upload target dialog:', JSON.stringify(uploadDialog))
+    if (!uploadDialog.found) failures.push('拖放文件后没有弹出上传目标选择框')
+    if (uploadDialog.found && !uploadDialog.text?.includes('目标：我的 R2')) failures.push('上传目标框没有显示完整路径“目标：我的 R2”')
+    if (uploadDialog.found && !uploadDialog.hasConfirm) failures.push('上传目标框没有“上传到这里”按钮')
+    if (uploadDialog.found && !uploadDialog.hasMkdir) failures.push('上传目标框没有“新建文件夹”入口')
+    await page.screenshot({ path: path.join(SHOTS, '02d-upload-target.png') })
+    if (uploadDialog.found) {
+      await page.locator('.dialog-actions >> text=取消').click()
+      await page.waitForTimeout(400)
+    }
   }
 
   // 3. 同步任务页：先列已保存任务（零任务空态）
@@ -248,6 +353,42 @@ try {
     if (s.radius !== '8px') failures.push(`选择框圆角应为 8px，实测 ${s.radius}`)
     if (s.appearance !== 'none') failures.push(`选择框应去掉浏览器默认外观（appearance: none），实测 ${s.appearance}`)
     if (!s.hasArrow) failures.push('选择框没有自定义下拉箭头（background-image 应含 SVG）')
+  }
+
+  // 4b2b. 设置页 S3 “修改桶 / 前缀”（问题 1，VISUAL_MOUNTS）：
+  // 网盘行显示的是 rootLabel（桶名），不是旧的 rootRef；S3 行有
+  // “修改桶 / 前缀”入口，点开预填当前桶名。
+  if (process.env.VISUAL_MOUNTS) {
+    const editRoot = await page.evaluate(() => {
+      const section = [...document.querySelectorAll('.settings-card')].find((c) => c.textContent?.includes('已添加的网盘'))
+      if (!section) return { found: false }
+      const text = section.textContent ?? ''
+      const btn = [...section.querySelectorAll('button')].find((b) => b.textContent.trim() === '修改桶 / 前缀')
+      return { found: true, showsBucketLabel: text.includes('test-bucket'), hasEditButton: !!btn }
+    })
+    console.log('settings edit-root:', JSON.stringify(editRoot))
+    if (!editRoot.found) failures.push('设置页找不到网盘一节')
+    if (editRoot.found && !editRoot.showsBucketLabel) failures.push('设置页网盘行没有显示桶名 rootLabel（test-bucket）')
+    if (editRoot.found && !editRoot.hasEditButton) failures.push('设置页 S3 网盘行没有“修改桶 / 前缀”入口')
+    if (editRoot.hasEditButton) {
+      await page.getByRole('button', { name: '修改桶 / 前缀' }).click()
+      await page.waitForTimeout(400)
+      const rootDialog = await page.evaluate(() => {
+        const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('修改桶 / 前缀'))
+        if (!d) return { found: false }
+        const inputs = [...d.querySelectorAll('input')].map((i) => i.value)
+        return { found: true, inputs, hasHint: d.textContent?.includes('不要把桶名再填一遍') ?? false }
+      })
+      console.log('edit-root dialog:', JSON.stringify(rootDialog))
+      if (!rootDialog.found) failures.push('点“修改桶 / 前缀”后没有弹出对话框')
+      if (rootDialog.found && rootDialog.inputs?.[0] !== 'test-bucket') failures.push(`修改桶对话框应预填当前桶名 test-bucket，实测 ${JSON.stringify(rootDialog.inputs)}`)
+      if (rootDialog.found && !rootDialog.hasHint) failures.push('修改桶对话框没有“不要把桶名再填一遍”的提示')
+      await page.screenshot({ path: path.join(SHOTS, '04d-edit-root.png') })
+      if (rootDialog.found) {
+        await page.locator('.dialog-actions >> text=取消').click()
+        await page.waitForTimeout(400)
+      }
+    }
   }
 
   // 4b3. 字体审计（2026-11-25 去加粗试验）：Schibsted Grotesk 400

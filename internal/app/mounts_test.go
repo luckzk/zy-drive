@@ -253,6 +253,12 @@ func TestAddS3MountMockRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddMountWithCredentials(s3): %v", err)
 	}
+	// S3 root is the provider root (""): the bucket lives in the
+	// driver config, never in RootRef — RootRef "test-bucket" used
+	// to make Browse list a "test-bucket" folder inside the bucket.
+	if m.RootRef != "" || m.RootLabel != "test-bucket" {
+		t.Fatalf("s3 root: RootRef=%q RootLabel=%q, want \"\" / \"test-bucket\"", m.RootRef, m.RootLabel)
+	}
 	nodes, err := a.Browse(ctx, m.ID, "")
 	if err != nil || len(nodes) != 2 {
 		t.Fatalf("Browse s3: %v, %+v", err, nodes)
@@ -260,6 +266,154 @@ func TestAddS3MountMockRoundTrip(t *testing.T) {
 	a2 := reopenApp(t, dbPath)
 	if mounts := a2.ListMounts(); len(mounts) != 1 {
 		t.Fatalf("s3 mount after restart: %+v", mounts)
+	}
+}
+
+// TestS3RootRefWithPrefix keeps the prefix out of RootRef too: the
+// driver already scopes every key by its own prefix.
+func TestS3RootRefWithPrefix(t *testing.T) {
+	srv := mockS3Server(false)
+	defer srv.Close()
+	a := newTestApp(t)
+	m, err := a.AddMountWithCredentials(context.Background(), AddMountInput{
+		DisplayName: "R2 照片", Provider: domain.ProviderS3,
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket",
+		Prefix: "photos/2024", AccessKey: "ak-1", SecretKey: "sk-1", PathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(s3 prefix): %v", err)
+	}
+	if m.RootRef != "" || m.RootLabel != "test-bucket/photos/2024" {
+		t.Fatalf("s3 prefix root: RootRef=%q RootLabel=%q, want \"\" / \"test-bucket/photos/2024\"", m.RootRef, m.RootLabel)
+	}
+}
+
+func TestMountConfigRejectsBadS3BucketPrefix(t *testing.T) {
+	a := newTestApp(t)
+	base := AddMountInput{
+		DisplayName: "R2", Provider: domain.ProviderS3,
+		Endpoint: "https://example.invalid", Region: "us-east-1",
+		Bucket: "test-bucket", AccessKey: "ak-1", SecretKey: "sk-1",
+	}
+	cases := []struct {
+		name   string
+		bucket string
+		prefix string
+		want   string
+	}{
+		{"bucket with slash", "a/b", "", "不能有 /"},
+		{"prefix equals bucket", "test-bucket", "test-bucket", "不能就是桶名本身"},
+		{"prefix repeats bucket", "test-bucket", "test-bucket/photos", "不要把桶名再填一遍"},
+	}
+	for _, c := range cases {
+		in := base
+		in.Bucket, in.Prefix = c.bucket, c.prefix
+		if _, _, err := a.mountConfig(in); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Fatalf("%s: got %v, want error containing %q", c.name, err, c.want)
+		}
+	}
+	in := base
+	in.Prefix = "photos/2024"
+	if _, _, err := a.mountConfig(in); err != nil {
+		t.Fatalf("valid bucket/prefix must pass: %v", err)
+	}
+}
+
+// TestLoadMountsHealsLegacyS3RootRef simulates the user's existing R2
+// mount as saved before the fix (RootRef "test-bucket"): reopening
+// the app must rewrite it to "" with the right RootLabel, from the
+// stored bucket config, without deleting and re-adding the mount.
+func TestLoadMountsHealsLegacyS3RootRef(t *testing.T) {
+	srv := mockS3Server(false)
+	defer srv.Close()
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	a := newTestAppWithDB(t, dbPath)
+	ctx := context.Background()
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "R2 备份", Provider: domain.ProviderS3,
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "ak-1", SecretKey: "sk-1", PathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(s3): %v", err)
+	}
+	// Corrupt the row the way the pre-fix code saved it.
+	persisted, err := a.DB.ListMounts()
+	if err != nil || len(persisted) != 1 {
+		t.Fatalf("ListMounts: %v %+v", err, persisted)
+	}
+	legacy := persisted[0].Mount
+	legacy.RootRef = "test-bucket"
+	legacy.RootLabel = ""
+	if err := a.DB.SaveMount(legacy, persisted[0].Config); err != nil {
+		t.Fatalf("SaveMount legacy row: %v", err)
+	}
+	a2 := reopenApp(t, dbPath)
+	mounts := a2.ListMounts()
+	if len(mounts) != 1 || mounts[0].ID != m.ID {
+		t.Fatalf("mounts after restart: %+v", mounts)
+	}
+	if mounts[0].RootRef != "" || mounts[0].RootLabel != "test-bucket" {
+		t.Fatalf("healed root: RootRef=%q RootLabel=%q, want \"\" / \"test-bucket\"", mounts[0].RootRef, mounts[0].RootLabel)
+	}
+	// The heal wrote back: the DB row itself is fixed, not just the
+	// in-memory copy.
+	persisted, err = a2.DB.ListMounts()
+	if err != nil || len(persisted) != 1 || persisted[0].Mount.RootRef != "" || persisted[0].Mount.RootLabel != "test-bucket" {
+		t.Fatalf("DB row after heal: %v %+v", err, persisted)
+	}
+	// And the healed mount still browses its real root.
+	nodes, err := a2.Browse(ctx, mounts[0].ID, "")
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("Browse healed s3: %v, %+v", err, nodes)
+	}
+}
+
+func TestUpdateMountRoot(t *testing.T) {
+	srv := mockS3Server(false)
+	defer srv.Close()
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	a := newTestAppWithDB(t, dbPath)
+	ctx := context.Background()
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "R2 备份", Provider: domain.ProviderS3,
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "ak-1", SecretKey: "sk-1", PathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(s3): %v", err)
+	}
+	// Narrow the mount to a prefix: probe must pass before saving.
+	updated, err := a.UpdateMountRoot(ctx, m.ID, "test-bucket", "photos")
+	if err != nil {
+		t.Fatalf("UpdateMountRoot: %v", err)
+	}
+	if updated.RootRef != "" || updated.RootLabel != "test-bucket/photos" {
+		t.Fatalf("updated root: RootRef=%q RootLabel=%q", updated.RootRef, updated.RootLabel)
+	}
+	// Persisted across a restart.
+	a2 := reopenApp(t, dbPath)
+	mounts := a2.ListMounts()
+	if len(mounts) != 1 || mounts[0].RootLabel != "test-bucket/photos" {
+		t.Fatalf("root after restart: %+v", mounts)
+	}
+	// A rejected prefix changes nothing.
+	if _, err := a2.UpdateMountRoot(ctx, m.ID, "test-bucket", "test-bucket"); err == nil {
+		t.Fatalf("prefix == bucket must be rejected")
+	}
+	if got := a2.ListMounts(); got[0].RootLabel != "test-bucket/photos" {
+		t.Fatalf("failed update must not change the mount: %+v", got)
+	}
+	// Non-S3 mounts cannot use this entry.
+	dir := t.TempDir()
+	lm, err := a2.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "本地", Provider: domain.ProviderLocal, LocalPath: dir,
+	})
+	if err != nil {
+		t.Fatalf("AddMount(local): %v", err)
+	}
+	if _, err := a2.UpdateMountRoot(ctx, lm.ID, "b", ""); err == nil {
+		t.Fatalf("UpdateMountRoot on a local mount must be rejected")
 	}
 }
 

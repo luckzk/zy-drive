@@ -148,8 +148,22 @@ export interface Mount {
   provider: ProviderKind;
   /** credential reference, never a secret */
   accountId: string;
-  /** root location: path, bucket+prefix or folder ID */
+  /**
+   * RootRef is the driver ref of the mount root, as the browse/sync/
+   * upload code consumes it: "" (provider root) for S3, Dropbox
+   * and Drive, the absolute path for local mounts. It is never a
+   * bucket name: S3's driver takes the bucket from its own config,
+   * so a bucket here would make the root list "bucket/" inside the
+   * bucket instead of the bucket itself (fixed 2026-11-25).
+   */
   rootRef: string;
+  /**
+   * RootLabel is the display root shown in Settings ("bucket" or
+   * "bucket/prefix" for S3, the absolute path for local, "" for
+   * Dropbox/Drive). Display only: no browse/sync/upload code may
+   * use it as a ref.
+   */
+  rootLabel?: string;
   /**
    * Group is the sidebar group this mount belongs to (2026-11-24
    * decision). "" means "未分组". Groups are display-only: they
@@ -489,6 +503,8 @@ export const DesktopService = {
   listMounts: bind<[], (Mount | null)[]>("DesktopService.ListMounts", () => []),
   /** ListSyncJobs returns saved sync jobs (creation order). */
   listSyncJobs: bind<[], (SyncJob | null)[]>("DesktopService.ListSyncJobs", () => []),
+  /** Mkdir creates one folder on a mount (upload target picker). */
+  mkdir: bind<[string, string], void>("DesktopService.Mkdir", (mountID: string, ref: string) => [mountID, ref]),
   /** PreviewSync builds a sync plan for confirmation. */
   previewSync: bind<[SyncJob | null], Plan | null>("DesktopService.PreviewSync", (job: SyncJob | null) => [job]),
   /** RemoveAgent unregisters an Agent. */
@@ -522,6 +538,12 @@ export const DesktopService = {
   transfers: bind<[], (Transfer | null)[]>("DesktopService.Transfers", () => []),
   /** UpdateMountGroup changes a mount's sidebar group. */
   updateMountGroup: bind<[string, string], void>("DesktopService.UpdateMountGroup", (id: string, group: string) => [id, group]),
+  /**
+   * UpdateMountRoot changes an S3 mount's bucket/prefix (only the
+   * non-secret config; credentials untouched). It probes the new root
+   * first and saves only when the probe succeeds.
+   */
+  updateMountRoot: bind<[string, string, string], Mount | null>("DesktopService.UpdateMountRoot", (id: string, bucket: string, prefix: string) => [id, bucket, prefix]),
   /**
    * UploadFiles enqueues files dropped on the window for upload into
    * the current directory. The worker executes them asynchronously;

@@ -273,6 +273,32 @@ button {
 .mount-card .mount-name { font-size: 14px; font-weight: 400; }
 .mount-card .mount-meta { font-size: 12px; color: var(--ink-secondary); margin-top: 2px; }
 
+/* ---- 侧栏“网盘”标题行 + 菜单 ----
+   标题在左、+ 小 icon 按钮在右（不要两个大按钮并排）；菜单是浮
+   层，基础曲线淡入上移（rise-sm 300ms，只动 transform/opacity），
+   卡片底色 #F5F5F5、边框 #E5E5E5。 */
+.drives-head {
+  position: relative;
+  display: flex; align-items: center; gap: 4px;
+  margin: 12px 4px 4px;
+}
+.drives-head .icon-btn { font-size: 16px; padding: 2px 8px; }
+.sidebar-menu {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 30;
+  min-width: 148px;
+  background: var(--paper); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  animation: rise-sm 300ms var(--ease) backwards;
+}
+.sidebar-menu button {
+  display: block; width: 100%; text-align: left;
+  border: none; background: none; cursor: pointer;
+  padding: 8px 12px; border-radius: 8px;
+  font-size: 14px; font-weight: 400; color: var(--ink);
+}
+.sidebar-menu button:hover { background: var(--card); }
+
 /* ---- 文件表 ---- */
 .file-table { width: 100%; border-collapse: collapse; }
 .file-table th {
