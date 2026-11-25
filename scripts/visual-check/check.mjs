@@ -52,6 +52,16 @@ const STUB = `(() => {
       if (method === 'DesktopService.Browse') return []
       if (method === 'DesktopService.PreviewSync') return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
       if (method === 'DesktopService.SaveSyncJob') return args[0]
+      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both' }
+      if (method === 'DesktopService.SaveSettings') return null
+      if (method === 'DesktopService.CheckDownloadDir') return null
+      if (method === 'DesktopService.GetVersions') return { backend: '0.3.0', protocol: '1', engine: '0.1.0' }
+      // Open-at-login deliberately throws here: in the dev shell /
+      // non-packaged runs mygo cannot manage login items, and the
+      // Settings page must show its honest "暂不支持" note. The text
+      // mirrors the backend's own error (internal/app/settings.go).
+      if (method === 'DesktopService.GetOpenAtLogin') throw new Error('app: 开机启动在当前运行方式下不可用（需要打包后的桌面应用）')
+      if (method === 'DesktopService.SetOpenAtLogin') return null
       if (method in empty) return empty[method]
       throw new Error('stub: unimplemented ' + method)
     },
@@ -149,9 +159,65 @@ try {
   await page.screenshot({ path: path.join(SHOTS, '03b-sync-create.png') })
 
   // 4. 设置页：Agent 列表（零 Agent 空态）
+  // 4a. 动效中间态：点过去 150ms 时页面过渡应还在跑（500ms 基础
+  // 曲线），opacity 必须在 0 和 1 之间——瞬间硬切会被这项拦下来。
   await page.locator('.nav-item', { hasText: '设置' }).click()
+  await page.waitForTimeout(150)
+  const midTransition = await page.evaluate(() => {
+    const el = document.querySelector('.page-enter')
+    if (!el) return { found: false }
+    const cs = getComputedStyle(el)
+    const btn = document.querySelector('.btn-primary')
+    const bcs = btn ? getComputedStyle(btn) : null
+    return {
+      found: true,
+      opacity: parseFloat(cs.opacity),
+      pageDuration: cs.animationDuration,
+      pageCurve: cs.animationTimingFunction,
+      btnCurve: bcs?.transitionTimingFunction,
+      btnDurations: bcs?.transitionDuration,
+    }
+  })
+  console.log('mid-transition:', JSON.stringify(midTransition))
+  await page.screenshot({ path: path.join(SHOTS, '04-mid-transition.png') })
+  if (!midTransition.found) failures.push('找不到 .page-enter（页面过渡容器）')
+  if (midTransition.found && !(midTransition.opacity > 0.05 && midTransition.opacity < 0.95)) {
+    failures.push(`页面过渡中间态 opacity 应在 0~1 之间，实测 ${midTransition.opacity}（疑似瞬间硬切）`)
+  }
+  // 4b. 动效配置审计：关键元素的曲线必须是基础曲线
+  // cubic-bezier(0.22,1,0.36,1)，页面过渡 500ms，hover 颜色 300ms /
+  // transform 200ms；绝不出现浏览器默认 ease/linear。
+  const EASE = 'cubic-bezier(0.22, 1, 0.36, 1)'
+  if (midTransition.found) {
+    if (midTransition.pageDuration !== '0.5s') failures.push(`页面过渡时长应为 500ms，实测 ${midTransition.pageDuration}`)
+    if (midTransition.pageCurve !== EASE) failures.push(`页面过渡曲线应为基础曲线，实测 ${midTransition.pageCurve}`)
+    // transition-timing-function 是逗号分隔的列表，但每个
+    // cubic-bezier(...) 内部也有逗号，所以按整段 bezier 匹配，
+    // 不能按 ', ' 切分。
+    if (midTransition.btnCurve) {
+      const curves = midTransition.btnCurve.match(/cubic-bezier\([^)]*\)|[a-z-]+/g) ?? []
+      const bad = curves.filter((c) => c !== EASE)
+      if (bad.length) failures.push(`主按钮 transition 曲线应全是基础曲线，实测 ${midTransition.btnCurve}`)
+    }
+    if (midTransition.btnDurations && !midTransition.btnDurations.includes('0.3s')) {
+      failures.push(`主按钮 transition 时长应含 300ms（颜色），实测 ${midTransition.btnDurations}`)
+    }
+  }
   await page.waitForTimeout(600)
   await page.screenshot({ path: path.join(SHOTS, '04-settings.png') })
+
+  // 4c. 深色主题：data-theme="dark" 后底色必须真的变深。
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = 'dark'
+  })
+  await page.waitForTimeout(200)
+  const darkBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor)
+  console.log('dark body background:', darkBg)
+  if (darkBg !== 'rgb(23, 26, 22)') failures.push(`深色主题下页面底色应为 rgb(23, 26, 22)，实测 ${darkBg}`)
+  await page.screenshot({ path: path.join(SHOTS, '04c-settings-dark.png') })
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = 'light'
+  })
 
   // 5. 横向溢出自查：整页横向滚动条即为布局问题；同时量顶栏按钮
   // 是否被裁（右缘超出视口即为问题）

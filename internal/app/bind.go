@@ -97,6 +97,25 @@ func (s *DesktopService) TestAgent(ctx context.Context, id string) (*AgentTestRe
 	return s.app.TestAgent(ctx, id)
 }
 
+// RemoveMount unregisters a mount.
+func (s *DesktopService) RemoveMount(id string) error { return s.app.RemoveMount(id) }
+
+// AddMount registers a mount with credentials: it probes the root
+// listing first and only persists when the probe succeeds.
+func (s *DesktopService) AddMount(ctx context.Context, in AddMountInput) (*domain.Mount, error) {
+	return s.app.AddMountWithCredentials(ctx, in)
+}
+
+// BeginOAuth builds the authorize URL for Dropbox / Drive.
+func (s *DesktopService) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthStart, error) {
+	return s.app.BeginOAuth(provider, clientID)
+}
+
+// ExchangeOAuthCode swaps a pasted authorization code for tokens.
+func (s *DesktopService) ExchangeOAuthCode(ctx context.Context, provider domain.ProviderKind, clientID, clientSecret, code, state, tokenURL string) (*OAuthTokens, error) {
+	return s.app.ExchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL)
+}
+
 // UpdateMountGroup changes a mount's sidebar group.
 func (s *DesktopService) UpdateMountGroup(id, group string) error {
 	return s.app.UpdateMountGroup(id, group)
@@ -115,6 +134,35 @@ func (s *DesktopService) DeleteSyncJob(id string) error { return s.app.DeleteSyn
 
 // AgentStatus summarises the Agent list for the sidebar card.
 func (s *DesktopService) AgentStatus() domain.AgentStatus { return s.app.AgentStatus() }
+
+// GetSettings loads the persisted user settings (defaults for keys
+// never saved). The frontend applies theme/language immediately.
+func (s *DesktopService) GetSettings() (Settings, error) { return s.app.GetSettings() }
+
+// SaveSettings validates and persists the whole settings struct.
+// An invalid download folder (or enum value) fails the whole save.
+func (s *DesktopService) SaveSettings(settings Settings) error {
+	return s.app.SaveSettings(settings)
+}
+
+// CheckDownloadDir checks a path exists and is a directory, for
+// instant feedback in the Settings page before saving.
+func (s *DesktopService) CheckDownloadDir(path string) error {
+	return s.app.CheckDownloadDir(path)
+}
+
+// GetOpenAtLogin reports whether the app starts at login (mygo).
+// Errors in the dev shell / non-packaged runs, where mygo cannot
+// manage login items — the UI then says so instead of faking it.
+func (s *DesktopService) GetOpenAtLogin() (bool, error) { return s.app.GetOpenAtLogin() }
+
+// SetOpenAtLogin turns start-at-login on or off (mygo).
+func (s *DesktopService) SetOpenAtLogin(on bool) error { return s.app.SetOpenAtLogin(on) }
+
+// GetVersions returns backend / protocol / engine versions for the
+// Settings → About section. The frontend version is a frontend
+// constant (frontend/src/version.ts).
+func (s *DesktopService) GetVersions() VersionInfo { return s.app.GetVersions() }
 
 // ValidateJob checks a sync job configuration before it is saved.
 func (s *DesktopService) ValidateJob(job *domain.SyncJob) error {

@@ -7,9 +7,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { Agent, AgentStatus, AgentTestResult, Mount, Node, Plan, Run, SearchResult, SyncJob, Transfer } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, VersionInfo } from '../mygo'
 
-export type { Agent, AgentStatus, AgentTestResult, Mount, Node, Plan, Run, SearchResult, SyncJob, Transfer }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, VersionInfo }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -67,4 +67,15 @@ export const api = {
   setDefaultAgent: (id: string) => DesktopService.setDefaultAgent(id),
   testAgent: (id: string) => DesktopService.testAgent(id),
   updateMountGroup: (id: string, group: string) => DesktopService.updateMountGroup(id, group),
+  addMount: (input: AddMountInput) => DesktopService.addMount(input),
+  removeMount: (id: string) => DesktopService.removeMount(id),
+  beginOAuth: (provider: ProviderKind, clientID: string) => DesktopService.beginOAuth(provider, clientID),
+  exchangeOAuthCode: (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) =>
+    DesktopService.exchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL),
+  getSettings: () => DesktopService.getSettings(),
+  saveSettings: (s: Settings) => DesktopService.saveSettings(s),
+  checkDownloadDir: (path: string) => DesktopService.checkDownloadDir(path),
+  getOpenAtLogin: () => DesktopService.getOpenAtLogin(),
+  setOpenAtLogin: (on: boolean) => DesktopService.setOpenAtLogin(on),
+  getVersions: () => DesktopService.getVersions(),
 }

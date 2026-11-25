@@ -6,13 +6,15 @@
 // a migration destination first — mounts are never deleted with a
 // group.
 //
-// Groups live as long as their mounts do: mounts themselves are
-// session-only in V0.1 (no mount persistence yet), so group
-// assignments do not survive a restart either. Empty groups (no
-// mounts yet) only live in this session.
+// Mounts and their groups are persisted in SQLite (internal/cache):
+// they survive a restart. Removing a mount deletes only the local
+// record (mount row, cached listings, encrypted credential blob);
+// cloud files are never touched.
 import { useState } from 'react'
 import type { AgentStatus, Mount } from '../mygo'
 import { api, friendlyError } from '../api/client'
+import { t, type Lang } from '../lib/i18n'
+import { Skeleton, staggerStyle } from '../components/motion'
 import { mountStatusLabel } from '../lib/format'
 
 export type Page = 'browse' | 'sync' | 'settings'
@@ -21,6 +23,8 @@ const UNGROUPED = ''
 
 export default function Sidebar({
   page,
+  lang,
+  loading,
   onNavigate,
   mounts,
   activeMountId,
@@ -28,8 +32,11 @@ export default function Sidebar({
   agentStatus,
   onGroupsChanged,
   onAddMount,
+  onRemoveMount,
 }: {
   page: Page
+  lang: Lang
+  loading?: boolean
   onNavigate: (p: Page) => void
   mounts: Mount[]
   activeMountId: string | null
@@ -37,6 +44,7 @@ export default function Sidebar({
   agentStatus: AgentStatus | null
   onGroupsChanged: () => void
   onAddMount: () => void
+  onRemoveMount: (id: string) => void
 }) {
   const [extraGroups, setExtraGroups] = useState<string[]>([])
   const [newGroupName, setNewGroupName] = useState('')
@@ -44,6 +52,8 @@ export default function Sidebar({
   const [renaming, setRenaming] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [deleting, setDeleting] = useState<string | null>(null)
+  const [removingMount, setRemovingMount] = useState<string | null>(null)
+  const [removingBusy, setRemovingBusy] = useState(false)
   const [migrateTo, setMigrateTo] = useState<string>('__ungrouped__')
   const [newMigrateGroup, setNewMigrateGroup] = useState('')
   const [busy, setBusy] = useState(false)
@@ -112,20 +122,34 @@ export default function Sidebar({
   return (
     <aside className="sidebar">
       <nav>
-        <button className={page === 'browse' ? 'nav-item active' : 'nav-item'} onClick={() => onNavigate('browse')}>
-          📁 文件浏览
-        </button>
-        <button className={page === 'sync' ? 'nav-item active' : 'nav-item'} onClick={() => onNavigate('sync')}>
-          🔄 同步任务
-        </button>
-        <button className={page === 'settings' ? 'nav-item active' : 'nav-item'} onClick={() => onNavigate('settings')}>
-          ⚙️ 设置
-        </button>
+        {(
+          [
+            ['browse', '📁', t(lang, 'browse')],
+            ['sync', '🔄', t(lang, 'sync')],
+            ['settings', '⚙️', t(lang, 'settings')],
+          ] as const
+        ).map(([p, icon, label], i) => (
+          <button
+            key={p}
+            className={`nav-item nav-enter${page === p ? ' active' : ''}`}
+            style={staggerStyle(i)}
+            onClick={() => onNavigate(p)}
+            aria-current={page === p ? 'page' : undefined}
+          >
+            {icon} {label}
+          </button>
+        ))}
       </nav>
 
-      <div className="nav-section">网盘</div>
+      <div className="nav-section">{t(lang, 'drives')}</div>
       {error && <div className="error-box">{error}</div>}
-      {mounts.length === 0 && (
+      {loading ? (
+        <div style={{ display: 'grid', gap: 8, padding: '4px 0' }}>
+          {[0, 1, 2].map((i) => (
+            <Skeleton key={i} height={56} radius={12} />
+          ))}
+        </div>
+      ) : mounts.length === 0 ? (
         <div style={{ padding: '4px 4px 8px' }}>
           <p className="muted" style={{ fontSize: 13, margin: '0 0 8px' }}>
             还没有网盘，先添加一个才能浏览和同步。
@@ -134,7 +158,7 @@ export default function Sidebar({
             + 添加网盘
           </button>
         </div>
-      )}
+      ) : null}
       {orderedGroups.map((g) => {
         const members = mountsOf(g)
         const isDeleting = deleting === g
@@ -234,19 +258,67 @@ export default function Sidebar({
                 </div>
               </div>
             )}
-            {members.map((m) => {
+            {members.map((m, mi) => {
               const st = mountStatusLabel(m.status)
               return (
-                <div
-                  key={m.id}
-                  className={m.id === activeMountId ? 'mount-card active' : 'mount-card'}
-                  onClick={() => onSelectMount(m)}
-                >
-                  <div className="mount-name">{m.displayName}</div>
-                  <div className="mount-meta">
-                    {m.provider}
-                    {st ? ` · ${st}` : ''}
+                <div key={m.id}>
+                  <div
+                    className={`mount-card stagger-item${m.id === activeMountId ? ' active' : ''}`}
+                    style={staggerStyle(mi)}
+                    onClick={() => onSelectMount(m)}
+                  >
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div className="mount-name">{m.displayName}</div>
+                      <div className="mount-meta">
+                        {m.provider}
+                        {st ? ` · ${st}` : ''}
+                      </div>
+                    </div>
+                    <button
+                      className="icon-btn"
+                      title="移除网盘"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        setRemovingMount(m.id)
+                      }}
+                    >
+                      🗑
+                    </button>
                   </div>
+                  {removingMount === m.id && (
+                    <div className="card" style={{ padding: 12, margin: '4px 0 8px 12px' }}>
+                      <p style={{ margin: '0 0 8px' }}>
+                        <strong>移除“{m.displayName}”？</strong>
+                      </p>
+                      <p className="muted" style={{ margin: '0 0 8px' }}>
+                        只删本地记录和保存的凭证，云端 / 本地文件夹里的文件不动。
+                      </p>
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        <button
+                          className="btn-danger"
+                          disabled={removingBusy}
+                          onClick={async () => {
+                            setRemovingBusy(true)
+                            setError(null)
+                            try {
+                              await api.removeMount(m.id)
+                              setRemovingMount(null)
+                              onRemoveMount(m.id)
+                            } catch (e) {
+                              setError(friendlyError(e))
+                            } finally {
+                              setRemovingBusy(false)
+                            }
+                          }}
+                        >
+                          确认移除
+                        </button>
+                        <button className="btn" onClick={() => setRemovingMount(null)}>
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )
             })}

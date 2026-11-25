@@ -4,6 +4,7 @@
 // toggles multi-select. Clicking an already-selected row deselects it.
 import type { Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
+import { staggerStyle } from './motion'
 
 export default function FileTable({
   nodes,
@@ -39,13 +40,14 @@ export default function FileTable({
         </tr>
       </thead>
       <tbody>
-        {nodes.map((n) => {
+        {nodes.map((n, i) => {
           const key = n.ref || n.path
           const isSelected = selectedId === key
           return (
             <tr
               key={key}
-              className={isSelected ? 'selected' : undefined}
+              className={`stagger-item${isSelected ? ' selected' : ''}`}
+              style={staggerStyle(i)}
               onClick={() => onSelect(isSelected ? null : n)}
               onDoubleClick={() => {
                 if (n.isDir) onOpen(n)

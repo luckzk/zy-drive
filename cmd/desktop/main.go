@@ -17,6 +17,7 @@ import (
 	"syscall"
 
 	"github.com/luckzk/zy-drive/internal/app"
+	"github.com/luckzk/zy-drive/internal/auth"
 	"github.com/luckzk/zy-drive/internal/cache"
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
@@ -59,6 +60,14 @@ func main() {
 	}
 	defer db.Close()
 
+	// Master key for encrypted credential storage: generated once
+	// into <configDir>/master.key (0600) on first run, never
+	// hard-coded, never committed.
+	secrets, err := auth.LoadOrCreateMasterKey(dir)
+	if err != nil {
+		log.Fatalf("desktop: master key: %v", err)
+	}
+
 	// Register drivers: the single assembly point (storage.Registry).
 	// One factory per kind; instances are built per Mount in
 	// app.AddMount, so two accounts of the same kind never share a
@@ -72,6 +81,14 @@ func main() {
 
 	queue := transfer.NewQueue(db)
 	application := app.New(db, registry, queue)
+	application.SetSecrets(secrets)
+
+	// Restore persisted mounts (and their groups) from SQLite;
+	// mounts whose credentials cannot be decrypted/rebuilt stay
+	// listed with status "error" instead of disappearing.
+	if err := application.LoadMounts(); err != nil {
+		log.Printf("desktop: restore mounts: %v", err)
+	}
 
 	// Transfer worker: executes queued copies by streaming source to
 	// target through io.Pipe — never staged on local disk.

@@ -1,44 +1,210 @@
-// Settings — Agent list (not a single Agent). Each row shows name,
-// address, online/offline, version, protocol version, running jobs
-// and last heartbeat, with add / edit / delete / test connection /
-// set-default. The Agent API token is not stored from here: there is
-// no Bind to save a token secret yet, and the Agent only needs the
-// token for /api/jobs — test connection uses the unauthenticated
-// /api/health, so it works without one.
+// Settings — sections: 通用 / 网盘 / 同步默认 / Agent / 关于.
+// The Agent section is kept as-is (add / edit / delete / test
+// connection / set-default); the other sections are new in V0.3.
+//
+// Persistence: one Settings struct in the `settings` table
+// (GetSettings/SaveSettings Bind), reloaded on restart. Theme and
+// language apply the moment they change (App applies them, this page
+// saves); the rest saves per section. Nothing here is faked: the
+// mounts list is real ListMounts data, versions come from the
+// backend, and update check is honestly marked "not wired yet"
+// (no update feed is configured in this repo).
+//
+// Motion (ai-design-skills, B7/B9): sections Reveal once on scroll
+// into view, rows stagger in, loading is skeleton blocks shaped like
+// the real rows (no "加载中…" text, no spinner).
 import { useCallback, useEffect, useState } from 'react'
-import type { Agent } from '../mygo'
+import type { Agent, Mount, Settings, VersionInfo } from '../mygo'
 import { api, friendlyError } from '../api/client'
-import { formatTime, newId } from '../lib/format'
+import { formatTime, mountStatusLabel, newId } from '../lib/format'
+import { t, type Lang } from '../lib/i18n'
+import { FRONTEND_VERSION } from '../version'
+import { Reveal, Skeleton, staggerStyle, useClosing } from '../components/motion'
 
-export default function SettingsPage() {
+export default function SettingsPage({
+  lang,
+  theme,
+  onThemeChange,
+  onLanguageChange,
+  onReauth,
+  onAddMount,
+  onMountsChanged,
+}: {
+  lang: Lang
+  theme: string
+  onThemeChange: (theme: string) => void
+  onLanguageChange: (lang: Lang) => void
+  onReauth: (m: Mount) => void
+  onAddMount: () => void
+  onMountsChanged: () => void
+}) {
+  // ---- persisted settings (draft = form state) ----
+  const [draft, setDraft] = useState<Settings | null>(null)
+  const [settingsLoading, setSettingsLoading] = useState(true)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [savedMsg, setSavedMsg] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // ---- mounts ----
+  const [mounts, setMounts] = useState<Mount[]>([])
+  const [mountsLoading, setMountsLoading] = useState(true)
+  const [mountsError, setMountsError] = useState<string | null>(null)
+  const [deletingMountId, setDeletingMountId] = useState<string | null>(null)
+  const [reauthTarget, setReauthTarget] = useState<Mount | null>(null)
+
+  // ---- about ----
+  const [versions, setVersions] = useState<VersionInfo | null>(null)
+
+  // ---- open at login (real mygo state; null = unavailable here) ----
+  const [openAtLogin, setOpenAtLogin] = useState<boolean | null>(null)
+  const [loginNote, setLoginNote] = useState<string | null>(null)
+
+  // ---- download folder check ----
+  const [dirMsg, setDirMsg] = useState<string | null>(null)
+
+  const loadSettings = useCallback(async () => {
+    setSettingsLoading(true)
+    setSettingsError(null)
+    try {
+      setDraft(await api.getSettings())
+    } catch (e) {
+      setSettingsError(friendlyError(e))
+    } finally {
+      setSettingsLoading(false)
+    }
+  }, [])
+
+  const loadMounts = useCallback(async () => {
+    setMountsLoading(true)
+    setMountsError(null)
+    try {
+      setMounts(await api.listMounts())
+    } catch (e) {
+      setMountsError(friendlyError(e))
+    } finally {
+      setMountsLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSettings()
+    void loadMounts()
+    void api
+      .getVersions()
+      .then(setVersions)
+      .catch(() => undefined)
+    void api
+      .getOpenAtLogin()
+      .then((on) => {
+        setOpenAtLogin(on)
+        setLoginNote(null)
+      })
+      .catch((e) => {
+        // Dev shell / non-packaged run: mygo can't manage login
+        // items there. Say so; don't fake a value.
+        setOpenAtLogin(null)
+        setLoginNote(friendlyError(e))
+      })
+  }, [loadSettings, loadMounts])
+
+  const saveDraft = async (next: Settings) => {
+    setBusy(true)
+    setSettingsError(null)
+    setSavedMsg(null)
+    try {
+      await api.saveSettings(next)
+      setDraft(next)
+      setSavedMsg(t(lang, 'saved'))
+    } catch (e) {
+      setSettingsError(friendlyError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Theme/language: apply now (whole app follows), then persist.
+  const changeTheme = (next: string) => {
+    if (!draft) return
+    const s = { ...draft, theme: next }
+    setDraft(s)
+    onThemeChange(next)
+    void saveDraft(s)
+  }
+
+  const changeLanguage = (next: Lang) => {
+    if (!draft) return
+    const s = { ...draft, language: next }
+    setDraft(s)
+    onLanguageChange(next)
+    void saveDraft(s)
+  }
+
+  const checkDir = async () => {
+    if (!draft) return
+    setDirMsg(null)
+    try {
+      await api.checkDownloadDir(draft.downloadDir)
+      setDirMsg('这个文件夹存在，可以用作默认下载文件夹。')
+    } catch (e) {
+      setDirMsg(friendlyError(e))
+    }
+  }
+
+  const toggleLogin = async () => {
+    if (openAtLogin === null) return
+    const next = !openAtLogin
+    setOpenAtLogin(next)
+    try {
+      await api.setOpenAtLogin(next)
+    } catch (e) {
+      setOpenAtLogin(!next)
+      setLoginNote(friendlyError(e))
+    }
+  }
+
+  const removeMount = async (m: Mount) => {
+    try {
+      await api.removeMount(m.id)
+      setDeletingMountId(null)
+      setReauthTarget((prev) => (prev?.id === m.id ? null : prev))
+      await loadMounts()
+      onMountsChanged()
+    } catch (e) {
+      setMountsError(friendlyError(e))
+    }
+  }
+
+  // ---- Agent (unchanged behaviour, V0.1) ----
   const [agents, setAgents] = useState<Agent[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [agentsLoading, setAgentsLoading] = useState(true)
+  const [agentsError, setAgentsError] = useState<string | null>(null)
   const [editing, setEditing] = useState<Agent | null>(null)
   const [formName, setFormName] = useState('')
   const [formAddress, setFormAddress] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
-  const [busy, setBusy] = useState(false)
+  const [agentBusy, setAgentBusy] = useState(false)
+  const [agentDialogClosing, requestAgentDialogClose, resetAgentDialog] = useClosing(() => setEditing(null))
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
+  const loadAgents = useCallback(async () => {
+    setAgentsLoading(true)
+    setAgentsError(null)
     try {
       setAgents(await api.listAgents())
     } catch (e) {
-      setError(friendlyError(e))
+      setAgentsError(friendlyError(e))
     } finally {
-      setLoading(false)
+      setAgentsLoading(false)
     }
   }, [])
 
   useEffect(() => {
-    void load()
-  }, [load])
+    void loadAgents()
+  }, [loadAgents])
 
   const startAdd = () => {
+    resetAgentDialog()
     setEditing({
       id: '',
       name: '',
@@ -54,21 +220,22 @@ export default function SettingsPage() {
   }
 
   const startEdit = (a: Agent) => {
+    resetAgentDialog()
     setEditing(a)
     setFormName(a.name)
     setFormAddress(a.address)
   }
 
-  const saveForm = async () => {
+  const saveAgentForm = async () => {
     if (!editing) return
     const name = formName.trim()
     const address = formAddress.trim()
     if (!name || !address) {
-      setError('名字和地址都要填。')
+      setAgentsError('名字和地址都要填。')
       return
     }
-    setBusy(true)
-    setError(null)
+    setAgentBusy(true)
+    setAgentsError(null)
     try {
       const saved = await api.saveAgent({
         ...editing,
@@ -77,40 +244,40 @@ export default function SettingsPage() {
         address,
       })
       if (!saved) throw new Error('保存 Agent 失败')
-      setEditing(null)
-      await load()
+      requestAgentDialogClose()
+      await loadAgents()
     } catch (e) {
-      setError(friendlyError(e))
+      setAgentsError(friendlyError(e))
     } finally {
-      setBusy(false)
+      setAgentBusy(false)
     }
   }
 
-  const remove = async (a: Agent) => {
+  const removeAgent = async (a: Agent) => {
     try {
       await api.removeAgent(a.id)
       setDeletingId(null)
-      await load()
+      await loadAgents()
     } catch (e) {
-      setError(friendlyError(e))
+      setAgentsError(friendlyError(e))
     }
   }
 
-  const setDefault = async (id: string) => {
+  const setDefaultAgent = async (id: string) => {
     try {
       await api.setDefaultAgent(id)
-      await load()
+      await loadAgents()
     } catch (e) {
-      setError(friendlyError(e))
+      setAgentsError(friendlyError(e))
     }
   }
 
-  const test = async (a: Agent) => {
+  const testAgent = async (a: Agent) => {
     setTestingId(a.id)
     try {
       const res = await api.testAgent(a.id)
       setTestMsg((prev) => ({ ...prev, [a.id]: res?.message ?? '无返回' }))
-      await load()
+      await loadAgents()
     } catch (e) {
       setTestMsg((prev) => ({ ...prev, [a.id]: friendlyError(e) }))
     } finally {
@@ -120,78 +287,364 @@ export default function SettingsPage() {
 
   return (
     <div>
-      <h1 style={{ marginTop: 0 }}>设置</h1>
-      {error && <div className="error-box">{error}</div>}
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <h2 style={{ margin: 0 }}>Agent</h2>
-        <span style={{ flex: 1 }} />
-        <button className="btn-primary" onClick={startAdd}>
-          添加 Agent
-        </button>
-      </div>
-      <p className="muted" style={{ fontSize: 13 }}>
-        Agent 是跑在服务器上的执行端：桌面配好同步任务后，Agent 在服务器上跑，文件不经过这台电脑。本地文件夹的任务只能在本机跑。
-      </p>
-
-      {loading ? (
-        <p className="muted">加载中…</p>
-      ) : agents.length === 0 ? (
-        <div className="empty">
-          <h2>还没有配置 Agent</h2>
-          <p>没有 Agent 也能用：同步任务在本机跑。想让任务在服务器上跑，先在服务器上起一个 mcm-agent，再点“添加 Agent”。</p>
+      <h1 style={{ marginTop: 0 }}>{t(lang, 'settings')}</h1>
+      {(settingsError || agentsError) && <div className="error-box">{settingsError ?? agentsError}</div>}
+      {savedMsg && (
+        <div className="notice-box" style={{ borderColor: 'var(--brand)' }}>
+          {savedMsg}
         </div>
-      ) : (
-        agents.map((a) => (
-          <div key={a.id} className="agent-row">
-            <div className="agent-main">
-              <div className="agent-name">
-                <span className={a.online ? 'dot dot-green' : 'dot dot-grey'} />
-                {a.name}
-                {a.default && <span className="badge badge-green" style={{ marginLeft: 8 }}>默认</span>}
-                {!a.online && <span className="badge" style={{ marginLeft: 8 }}>离线</span>}
-              </div>
-              <div className="agent-meta">
-                {a.address}
-                {a.version ? ` · 版本 ${a.version}` : ''}
-                {a.protocolVersion ? ` · 协议 ${a.protocolVersion}` : ''}
-                {` · 运行中 ${a.jobsRunning} 个任务`}
-                {a.lastHeartbeat ? ` · 上次心跳 ${formatTime(a.lastHeartbeat)}` : ' · 还没有心跳'}
-              </div>
-              {testMsg[a.id] && <div style={{ fontSize: 13, marginTop: 4 }}>{testMsg[a.id]}</div>}
-            </div>
-            <button className="btn btn-sm" disabled={testingId === a.id} onClick={() => void test(a)}>
-              {testingId === a.id ? '测试中…' : '测试连接'}
-            </button>
-            {!a.default && (
-              <button className="btn btn-sm" onClick={() => void setDefault(a.id)}>
-                设为默认
-              </button>
-            )}
-            <button className="btn btn-sm" onClick={() => startEdit(a)}>
-              编辑
-            </button>
-            {deletingId === a.id ? (
-              <>
-                <button className="btn-danger btn-sm" onClick={() => void remove(a)}>
-                  确认删除？
-                </button>
-                <button className="btn btn-sm" onClick={() => setDeletingId(null)}>
-                  取消
-                </button>
-              </>
-            ) : (
-              <button className="btn btn-sm" onClick={() => setDeletingId(a.id)}>
-                删除
-              </button>
-            )}
-          </div>
-        ))
       )}
 
+      {/* ---- 通用 ---- */}
+      <Reveal>
+        <h2>{t(lang, 'general')}</h2>
+        {settingsLoading || !draft ? (
+          <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载设置">
+            <Skeleton height={36} width="60%" />
+            <Skeleton height={36} width="60%" />
+            <Skeleton height={36} width="80%" />
+          </div>
+        ) : (
+          <>
+            <div className="field">
+              <label>主题</label>
+              <select className="select" value={theme} onChange={(e) => changeTheme(e.target.value)}>
+                <option value="light">浅色</option>
+                <option value="dark">深色</option>
+              </select>
+              <div className="hint">切换后整个界面立即跟随，不用重启。</div>
+            </div>
+            <div className="field">
+              <label>语言 / Language</label>
+              <select className="select" value={lang} onChange={(e) => changeLanguage(e.target.value as Lang)}>
+                <option value="zh">中文</option>
+                <option value="en">English</option>
+              </select>
+              <div className="hint">
+                English 翻译目前只覆盖主界面（导航、顶栏、设置页标题与按钮）；文件浏览、同步任务、添加网盘向导等页面仍显示中文，未翻译的文案不假装已翻译。
+              </div>
+            </div>
+            <div className="field">
+              <label>默认下载文件夹</label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input
+                  className="input"
+                  value={draft.downloadDir}
+                  onChange={(e) => {
+                    setDraft({ ...draft, downloadDir: e.target.value })
+                    setDirMsg(null)
+                  }}
+                  placeholder="例如：/Users/zy/Downloads，留空为不设置"
+                />
+                <button className="btn" disabled={busy} onClick={() => void checkDir()}>
+                  检查
+                </button>
+              </div>
+              <div className="hint">保存时会校验：路径必须存在且是一个文件夹，否则保存失败。</div>
+              {dirMsg && <div className="hint">{dirMsg}</div>}
+            </div>
+            <div className="field">
+              <label>开机启动</label>
+              {openAtLogin === null ? (
+                <p className="muted" style={{ margin: '4px 0' }}>
+                  桌面版暂不支持：{loginNote ?? '当前运行方式下无法管理开机启动，需要打包后的桌面应用（macOS 上是系统设置 → 通用 → 登录项）。'}
+                </p>
+              ) : (
+                <label className="radio-row">
+                  <input type="checkbox" checked={openAtLogin} onChange={() => void toggleLogin()} />
+                  <span>登录 Mac 时自动启动 ZyDrive{openAtLogin ? '（已开启）' : '（未开启）'}</span>
+                </label>
+              )}
+              {loginNote && openAtLogin !== null && <div className="hint">{loginNote}</div>}
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
+                {t(lang, 'save')}
+              </button>
+            </div>
+          </>
+        )}
+      </Reveal>
+
+      {/* ---- 网盘 ---- */}
+      <Reveal>
+        <h2>{t(lang, 'drives')}</h2>
+        {mountsLoading ? (
+          <div style={{ display: 'grid', gap: 8 }} aria-label="正在加载网盘">
+            {[0, 1].map((i) => (
+              <div key={i} className="agent-row">
+                <div className="agent-main">
+                  <Skeleton height={14} width={140} />
+                  <div style={{ marginTop: 6 }}>
+                    <Skeleton height={12} width={220} />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : mountsError ? (
+          <div className="error-box">
+            {mountsError}
+            <div style={{ marginTop: 8 }}>
+              <button className="btn btn-sm" onClick={() => void loadMounts()}>
+                {t(lang, 'retry')}
+              </button>
+            </div>
+          </div>
+        ) : mounts.length === 0 ? (
+          <div className="empty">
+            <h2>还没有添加网盘</h2>
+            <p>添加一个网盘后，就能在这里浏览、重新授权或移除它。</p>
+            <button className="btn-primary" onClick={onAddMount}>
+              添加网盘
+            </button>
+          </div>
+        ) : (
+          mounts.map((m, i) => (
+            <div key={m.id} className="agent-row stagger-item" style={staggerStyle(i)}>
+              <div className="agent-main">
+                <div className="agent-name">
+                  <span className={m.status === 'ok' ? 'dot dot-green' : 'dot dot-red'} />
+                  {m.displayName}
+                  {m.status === 'auth_expired' && (
+                    <span className="badge badge-amber" style={{ marginLeft: 8 }}>
+                      授权过期
+                    </span>
+                  )}
+                  {m.status === 'error' && (
+                    <span className="badge badge-red" style={{ marginLeft: 8 }}>
+                      异常
+                    </span>
+                  )}
+                </div>
+                <div className="agent-meta">
+                  {m.provider}
+                  {m.group ? ` · 分组“${m.group}”` : ''}
+                  {mountStatusLabel(m.status) ? ` · ${mountStatusLabel(m.status)}` : ''}
+                  {m.rootRef ? ` · ${m.rootRef}` : ''}
+                </div>
+                {reauthTarget?.id === m.id && (
+                  <div style={{ fontSize: 13, marginTop: 4 }}>
+                    已打开添加向导：按新凭证走完后，这个旧网盘还留在这里——确认新网盘能用后，再点“删除”移除旧的。
+                  </div>
+                )}
+              </div>
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  setReauthTarget(m)
+                  onReauth(m)
+                }}
+              >
+                重新授权
+              </button>
+              {deletingMountId === m.id ? (
+                <>
+                  <button className="btn-danger btn-sm" onClick={() => void removeMount(m)}>
+                    确认删除？
+                  </button>
+                  <button className="btn btn-sm" onClick={() => setDeletingMountId(null)}>
+                    {t(lang, 'cancel')}
+                  </button>
+                </>
+              ) : (
+                <button className="btn btn-sm" onClick={() => setDeletingMountId(m.id)}>
+                  {t(lang, 'delete')}
+                </button>
+              )}
+            </div>
+          ))
+        )}
+        {mounts.length > 0 && (
+          <p className="muted" style={{ fontSize: 13 }}>
+            删除网盘只删本机的记录和保存的凭证，不会删除云端 / 本地文件夹里的文件。
+          </p>
+        )}
+      </Reveal>
+
+      {/* ---- 同步默认 ---- */}
+      <Reveal>
+        <h2>{t(lang, 'syncDefaults')}</h2>
+        <p className="muted" style={{ fontSize: 13 }}>
+          新建同步任务时用这些默认值；已经建好的任务不受影响，各自保留原来的设置。
+        </p>
+        {settingsLoading || !draft ? (
+          <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载同步默认设置">
+            <Skeleton height={36} width="60%" />
+            <Skeleton height={36} width="40%" />
+            <Skeleton height={36} width="40%" />
+          </div>
+        ) : (
+          <>
+            <div className="field">
+              <label>默认比较方式</label>
+              <select
+                className="select"
+                value={draft.syncCompare}
+                onChange={(e) => setDraft({ ...draft, syncCompare: e.target.value as Settings['syncCompare'] })}
+              >
+                <option value="size+time">大小 + 修改时间</option>
+                <option value="size">仅大小</option>
+                <option value="checksum">校验值</option>
+              </select>
+            </div>
+            <div className="field">
+              <label>默认并发数（1–16）</label>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={16}
+                value={draft.syncConcurrency}
+                onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
+              />
+              <div className="hint">已保存，但当前同步引擎固定 2 路并发、尚未读取这个设置；引擎支持后才生效，不假装现在就能调。</div>
+            </div>
+            <div className="field">
+              <label>限速（KB/s，0 = 不限速）</label>
+              <input
+                className="input"
+                type="number"
+                min={0}
+                value={draft.syncSpeedLimitKBps}
+                onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
+              />
+              <div className="hint">已保存，但当前同步引擎没有限速器；引擎支持后才生效。</div>
+            </div>
+            <div className="field">
+              <label>冲突处理默认策略</label>
+              <select
+                className="select"
+                value={draft.syncConflict}
+                onChange={(e) => setDraft({ ...draft, syncConflict: e.target.value })}
+              >
+                <option value="keep-both">保留双方：新版占原名，另一份存为冲突副本</option>
+                <option value="ask" disabled>
+                  每次询问（未实现）
+                </option>
+                <option value="newer-wins" disabled>
+                  新版直接覆盖旧版（未实现）
+                </option>
+              </select>
+              <div className="hint">V0.1 引擎的冲突规则是固定的（新版占原名、另一份保留为冲突副本），其他策略后续版本再提供。</div>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
+                {t(lang, 'save')}
+              </button>
+            </div>
+          </>
+        )}
+      </Reveal>
+
+      {/* ---- Agent（V0.1 原样保留） ---- */}
+      <Reveal>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <h2 style={{ margin: 0 }}>{t(lang, 'agent')}</h2>
+          <span style={{ flex: 1 }} />
+          <button className="btn-primary" onClick={startAdd}>
+            添加 Agent
+          </button>
+        </div>
+        <p className="muted" style={{ fontSize: 13 }}>
+          Agent 是跑在服务器上的执行端：桌面配好同步任务后，Agent 在服务器上跑，文件不经过这台电脑。本地文件夹的任务只能在本机跑。
+        </p>
+
+        {agentsLoading ? (
+          <div style={{ display: 'grid', gap: 8 }} aria-label="正在加载 Agent">
+            {[0, 1].map((i) => (
+              <div key={i} className="agent-row">
+                <div className="agent-main">
+                  <Skeleton height={14} width={160} />
+                  <div style={{ marginTop: 6 }}>
+                    <Skeleton height={12} width={260} />
+                  </div>
+                </div>
+                <Skeleton height={28} width={72} />
+              </div>
+            ))}
+          </div>
+        ) : agents.length === 0 ? (
+          <div className="empty">
+            <h2>还没有配置 Agent</h2>
+            <p>没有 Agent 也能用：同步任务在本机跑。想让任务在服务器上跑，先在服务器上起一个 mcm-agent，再点“添加 Agent”。</p>
+          </div>
+        ) : (
+          agents.map((a, i) => (
+            <div key={a.id} className="agent-row stagger-item" style={staggerStyle(i)}>
+              <div className="agent-main">
+                <div className="agent-name">
+                  <span className={a.online ? 'dot dot-green' : 'dot dot-grey'} />
+                  {a.name}
+                  {a.default && (
+                    <span className="badge badge-green" style={{ marginLeft: 8 }}>
+                      默认
+                    </span>
+                  )}
+                  {!a.online && (
+                    <span className="badge" style={{ marginLeft: 8 }}>
+                      离线
+                    </span>
+                  )}
+                </div>
+                <div className="agent-meta">
+                  {a.address}
+                  {a.version ? ` · 版本 ${a.version}` : ''}
+                  {a.protocolVersion ? ` · 协议 ${a.protocolVersion}` : ''}
+                  {` · 运行中 ${a.jobsRunning} 个任务`}
+                  {a.lastHeartbeat ? ` · 上次心跳 ${formatTime(a.lastHeartbeat)}` : ' · 还没有心跳'}
+                </div>
+                {testMsg[a.id] && <div style={{ fontSize: 13, marginTop: 4 }}>{testMsg[a.id]}</div>}
+              </div>
+              <button className="btn btn-sm" disabled={testingId === a.id} onClick={() => void testAgent(a)}>
+                {testingId === a.id ? '测试中…' : '测试连接'}
+              </button>
+              {!a.default && (
+                <button className="btn btn-sm" onClick={() => void setDefaultAgent(a.id)}>
+                  设为默认
+                </button>
+              )}
+              <button className="btn btn-sm" onClick={() => startEdit(a)}>
+                {t(lang, 'edit')}
+              </button>
+              {deletingId === a.id ? (
+                <>
+                  <button className="btn-danger btn-sm" onClick={() => void removeAgent(a)}>
+                    {t(lang, 'confirmDelete')}
+                  </button>
+                  <button className="btn btn-sm" onClick={() => setDeletingId(null)}>
+                    {t(lang, 'cancel')}
+                  </button>
+                </>
+              ) : (
+                <button className="btn btn-sm" onClick={() => setDeletingId(a.id)}>
+                  {t(lang, 'delete')}
+                </button>
+              )}
+            </div>
+          ))
+        )}
+      </Reveal>
+
+      {/* ---- 关于 ---- */}
+      <Reveal>
+        <h2>{t(lang, 'about')}</h2>
+        <p style={{ margin: '4px 0' }}>
+          后端版本：<strong>{versions?.backend ?? '—'}</strong>
+        </p>
+        <p style={{ margin: '4px 0' }}>
+          前端版本：<strong>{FRONTEND_VERSION}</strong>
+        </p>
+        <p style={{ margin: '4px 0' }}>
+          协议版本：<strong>{versions?.protocol ?? '—'}</strong>
+          {versions?.engine ? ` · 同步引擎 ${versions.engine}` : ''}
+        </p>
+        <div className="notice-box">暂未接入检查更新：还没有配置更新源（mygo Updater 需要打包时配置更新 feed），所以这里不假装检查过。当前版本见上方。</div>
+      </Reveal>
+
       {editing && (
-        <div className="dialog-backdrop" onClick={() => setEditing(null)}>
-          <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <div className={`dialog-backdrop${agentDialogClosing ? ' closing' : ''}`} onClick={requestAgentDialogClose}>
+          <div className={`dialog${agentDialogClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
             <h1>{editing.id ? '编辑 Agent' : '添加 Agent'}</h1>
             <div className="field">
               <label>名字</label>
@@ -211,11 +664,11 @@ export default function SettingsPage() {
               API Token 现在不在这里填：桌面端还没有保存 Token 的接口。Token 只在 Agent 启动时配，同步任务真正推到 Agent 上跑的功能在 V0.2 接入。
             </div>
             <div className="dialog-actions">
-              <button className="btn" onClick={() => setEditing(null)}>
-                取消
+              <button className="btn" onClick={requestAgentDialogClose}>
+                {t(lang, 'cancel')}
               </button>
-              <button className="btn-primary" disabled={busy} onClick={() => void saveForm()}>
-                保存
+              <button className="btn-primary" disabled={agentBusy} onClick={() => void saveAgentForm()}>
+                {t(lang, 'save')}
               </button>
             </div>
           </div>

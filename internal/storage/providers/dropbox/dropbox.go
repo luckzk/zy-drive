@@ -54,9 +54,18 @@ type Provider struct {
 // New builds a Dropbox provider. cfg.Token is the OAuth access token
 // (memory only). cfg.Extra may carry refresh_token / client_id /
 // client_secret for refresh; without them an expired token is fatal
-// and the user must re-authorise.
+// and the user must re-authorise. cfg.Extra["api_base"] /
+// ["content_base"] override the API endpoints (tests and
+// self-hosted/proxied deployments; normally empty).
 func New(cfg storage.Config) (storage.Provider, error) {
-	return newWithBases(cfg, defaultAPIBase, defaultContentBase)
+	apiBase, contentBase := defaultAPIBase, defaultContentBase
+	if v := cfg.Extra["api_base"]; v != "" {
+		apiBase = v
+	}
+	if v := cfg.Extra["content_base"]; v != "" {
+		contentBase = v
+	}
+	return newWithBases(cfg, apiBase, contentBase)
 }
 
 func newWithBases(cfg storage.Config, apiBase, contentBase string) (*Provider, error) {

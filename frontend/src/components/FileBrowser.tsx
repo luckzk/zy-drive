@@ -2,9 +2,10 @@
 // default: the Inspector only mounts after the user clicks a file or
 // folder, and hides on blank click / re-click / close. Double-click
 // enters a folder without opening the Inspector.
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Mount, Node } from '../mygo'
 import { api, friendlyError } from '../api/client'
+import { Skeleton } from './motion'
 import FileTable from './FileTable'
 import Inspector from './Inspector'
 
@@ -20,6 +21,23 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Node | null>(null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  // Inspector close animates out (300ms) before unmounting.
+  const [inspectorClosing, setInspectorClosing] = useState(false)
+  const inspectorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (inspectorTimer.current) clearTimeout(inspectorTimer.current)
+    },
+    [],
+  )
+  const closeInspector = () => {
+    if (inspectorClosing || !selected) return
+    setInspectorClosing(true)
+    inspectorTimer.current = setTimeout(() => {
+      setSelected(null)
+      setInspectorClosing(false)
+    }, 300)
+  }
 
   const ref = crumbs.length > 0 ? crumbs[crumbs.length - 1].ref : mount.rootRef
 
@@ -60,7 +78,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
         style={{ flex: 1, minWidth: 0, padding: 16, overflowY: 'auto' }}
         onClick={(e) => {
           // Blank click hides the Inspector.
-          if (e.target === e.currentTarget) setSelected(null)
+          if (e.target === e.currentTarget) closeInspector()
         }}
       >
         <div className="crumbs">
@@ -90,7 +108,23 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
             </div>
           </div>
         ) : loading ? (
-          <p className="muted">加载中…</p>
+          <div aria-label="正在加载文件列表">
+            <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+              <Skeleton height={12} width={120} />
+              <Skeleton height={12} width={80} />
+              <Skeleton height={12} width={100} />
+            </div>
+            <div style={{ display: 'grid', gap: 8 }}>
+              {[0, 1, 2, 3, 4, 5].map((i) => (
+                <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                  <Skeleton height={16} width={16} />
+                  <Skeleton height={14} width={`${55 - i * 5}%`} />
+                  <span style={{ flex: 1 }} />
+                  <Skeleton height={14} width={64} />
+                </div>
+              ))}
+            </div>
+          </div>
         ) : (
           <FileTable
             nodes={nodes}
@@ -115,7 +149,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
           </p>
         )}
       </div>
-      {selected && <Inspector node={selected} mount={mount} onClose={() => setSelected(null)} />}
+      {selected && <Inspector node={selected} mount={mount} closing={inspectorClosing} onClose={closeInspector} />}
     </div>
   )
 }

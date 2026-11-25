@@ -72,6 +72,14 @@ func runMygo(application *app.App, frontendDir string, generate bool) error {
 	mygo.SetFrontend(os.DirFS(frontendDir))
 	mygo.App.SetName("ZyDrive")
 	mygo.App.SetVersion(version.AppVersion)
+	// Open-at-login goes through mygo (login item on macOS 13+,
+	// launch agent on macOS 12, XDG autostart on Linux, Run entry on
+	// Windows). internal/app stays mygo-free: these hooks are the
+	// only bridge, and without them the setting reports unavailable.
+	application.SetLoginHooks(
+		func() (bool, error) { return mygo.App.OpenAtLogin(), nil },
+		func(on bool) error { return mygo.App.SetOpenAtLogin(on) },
+	)
 	mygo.Bind(application.BindService())
 
 	var mainWin *mygo.Window

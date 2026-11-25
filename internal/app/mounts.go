@@ -37,6 +37,9 @@ func (a *App) ProviderFor(mountID string) (storage.Provider, error) {
 	if !ok {
 		return nil, fmt.Errorf("app: unknown mount %q", mountID)
 	}
+	if h.Provider == nil {
+		return nil, fmt.Errorf("app: mount %q 未能加载（凭证或配置有问题），请删除后重新添加", mountID)
+	}
 	return h.Provider, nil
 }
 

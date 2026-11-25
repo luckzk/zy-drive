@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Agent, Mount, Plan, SyncJob } from '../mygo'
 import { api, friendlyError, type SideSel } from '../api/client'
 import { directionLabel, formatSize, formatTime, newId, runOnLabel } from '../lib/format'
+import { Accordion, Skeleton, staggerStyle } from '../components/motion'
 import DualPane from '../components/DualPane'
 
 const LOCAL_ROOT: SideSel = { mountId: 'local', ref: 'local:///', label: '本地 /' }
@@ -92,6 +93,7 @@ function SyncJobEditor({
   initial,
   mounts,
   agents,
+  defaultCompare,
   onSaved,
   onCancel,
   onRan,
@@ -99,6 +101,9 @@ function SyncJobEditor({
   initial: SyncJob | null
   mounts: Mount[]
   agents: Agent[]
+  // New jobs start from the Settings → 同步默认 comparison; existing
+  // jobs keep their own value (initial wins, never overwritten).
+  defaultCompare: SyncJob['compare']
   onSaved: (job: SyncJob) => void
   onCancel: () => void
   onRan: () => void
@@ -114,7 +119,7 @@ function SyncJobEditor({
     return second ? rootSel(second) : LOCAL_ROOT
   })
   const [direction, setDirection] = useState<SyncJob['direction']>(initial?.direction ?? 'copy')
-  const [compare, setCompare] = useState<SyncJob['compare']>(initial?.compare ?? 'size+time')
+  const [compare, setCompare] = useState<SyncJob['compare']>(initial?.compare ?? defaultCompare)
   const [excludeText, setExcludeText] = useState((initial?.exclude ?? []).join('\n'))
   const [runOn, setRunOn] = useState<'local' | 'agent'>(initial?.runOn === 'agent' || initial?.runOn === 'server' ? 'agent' : 'local')
   const [agentId, setAgentId] = useState(initial?.agentId ?? '')
@@ -385,6 +390,9 @@ export default function SyncJobsPage({
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [highlightId, setHighlightId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  // New-job compare default, from Settings → 同步默认 (falls back to
+  // size+time when settings can't be read, e.g. dev shell).
+  const [defaultCompare, setDefaultCompare] = useState<SyncJob['compare']>('size+time')
   const highlightRef = useRef<Record<string, HTMLDivElement | null>>({})
 
   const load = useCallback(async () => {
@@ -401,6 +409,10 @@ export default function SyncJobsPage({
 
   useEffect(() => {
     void load()
+    void api
+      .getSettings()
+      .then((s) => setDefaultCompare(s.syncCompare))
+      .catch(() => undefined)
   }, [load])
 
   const afterSaved = (saved: SyncJob) => {
@@ -478,19 +490,33 @@ export default function SyncJobsPage({
 
       {error && <div className="error-box">{error}</div>}
 
-      {creating && (
+      <Accordion open={creating}>
         <SyncJobEditor
           initial={null}
           mounts={mounts}
           agents={agents}
+          defaultCompare={defaultCompare}
           onSaved={afterSaved}
           onCancel={() => setCreating(false)}
           onRan={onRan}
         />
-      )}
+      </Accordion>
 
       {loading ? (
-        <p className="muted">加载中…</p>
+        <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载同步任务">
+          {[0, 1].map((i) => (
+            <div key={i} className="job-card">
+              <Skeleton height={16} width="40%" />
+              <div style={{ marginTop: 8 }}>
+                <Skeleton height={12} width="75%" />
+              </div>
+              <div style={{ marginTop: 12, display: 'flex', gap: 8 }}>
+                <Skeleton height={28} width={96} />
+                <Skeleton height={28} width={96} />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : jobs.length === 0 && !creating ? (
         <div className="empty">
           <h2>还没有同步任务</h2>
@@ -498,13 +524,14 @@ export default function SyncJobsPage({
           <p>同步可以在本机跑，也可以指定一台服务器 Agent 跑（Agent 执行在 V0.2 接入）。</p>
         </div>
       ) : (
-        jobs.map((job) => (
+        jobs.map((job, ji) => (
           <div
             key={job.id}
             ref={(el) => {
               highlightRef.current[job.id] = el
             }}
-            className={highlightId === job.id ? 'job-card highlight' : 'job-card'}
+            className={`job-card stagger-item${highlightId === job.id ? ' highlight' : ''}`}
+            style={staggerStyle(ji)}
           >
             <div className="job-title">{job.name}</div>
             <div className="job-meta">
@@ -544,19 +571,20 @@ export default function SyncJobsPage({
                 </button>
               )}
             </div>
-            {expandedId === job.id && (
+            <Accordion open={expandedId === job.id}>
               <div className="accordion">
                 <SyncJobEditor
                   key={job.id}
                   initial={job}
                   mounts={mounts}
                   agents={agents}
+                  defaultCompare={defaultCompare}
                   onSaved={afterSaved}
                   onCancel={() => setExpandedId(null)}
                   onRan={onRan}
                 />
               </div>
-            )}
+            </Accordion>
           </div>
         ))
       )}

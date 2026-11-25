@@ -22,6 +22,9 @@ node scripts/visual-check/check.mjs
   脚本还会量按钮尺寸并断言：按钮宽必须大于高（横排），且不溢出侧栏
 - `03-sync.png`：同步任务页（先列已保存任务）
 - `04-settings.png`：设置页（Agent 列表）
+- `04-mid-transition.png`：点进设置页 150ms 时的动效中间态——页面过渡（500ms 基础曲线）必须还在跑，脚本会量 `.page-enter` 的 opacity（须在 0~1 之间），瞬间硬切会在这里失败
+- `04c-settings-dark.png`：深色主题下的设置页（脚本会断言 body 底色变深）
+- 动效配置审计：主按钮的 transition 曲线必须全是基础曲线 `cubic-bezier(0.22, 1, 0.36, 1)`，页面过渡 500ms，hover 颜色 300ms；绝不出现浏览器默认 ease/linear
 - `05-browse-no-stub.png`：不注桩时 Bind 失败的人话错误态
 - 脚本最后检查整页有无横向溢出（scrollWidth > clientWidth 即失败）
 

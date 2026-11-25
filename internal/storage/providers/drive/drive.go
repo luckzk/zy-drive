@@ -79,9 +79,18 @@ type Provider struct {
 
 // New builds a Drive provider. cfg.Token is the OAuth access token.
 // cfg.Extra may carry refresh_token / client_id / client_secret /
-// rootId (default "root").
+// rootId (default "root"). cfg.Extra["api_base"] / ["upload_base"]
+// override the API endpoints (tests and self-hosted/proxied
+// deployments; normally empty).
 func New(cfg storage.Config) (storage.Provider, error) {
-	return newWithBases(cfg, defaultAPIBase, defaultUploadBase)
+	apiBase, uploadBase := defaultAPIBase, defaultUploadBase
+	if v := cfg.Extra["api_base"]; v != "" {
+		apiBase = v
+	}
+	if v := cfg.Extra["upload_base"]; v != "" {
+		uploadBase = v
+	}
+	return newWithBases(cfg, apiBase, uploadBase)
 }
 
 func newWithBases(cfg storage.Config, apiBase, uploadBase string) (*Provider, error) {

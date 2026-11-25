@@ -4,6 +4,7 @@
 import { useState } from 'react'
 import type { Mount } from '../mygo'
 import { api, friendlyError } from '../api/client'
+import { useClosing } from './motion'
 
 export default function CommandPalette({
   activeMount,
@@ -14,6 +15,7 @@ export default function CommandPalette({
   onClose: () => void
   onPick: (mount: Mount, ref: string) => void
 }) {
+  const [closing, requestClose] = useClosing(onClose)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<{ name: string; path: string; ref: string; isDir: boolean }[]>([])
   const [localOnly, setLocalOnly] = useState(false)
@@ -38,8 +40,8 @@ export default function CommandPalette({
   }
 
   return (
-    <div className="dialog-backdrop" onClick={onClose}>
-      <div className="palette" onClick={(e) => e.stopPropagation()}>
+    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} onClick={requestClose}>
+      <div className={`palette${closing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
         <input
           className="input"
           autoFocus
@@ -47,7 +49,7 @@ export default function CommandPalette({
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') void run()
-            if (e.key === 'Escape') onClose()
+            if (e.key === 'Escape') requestClose()
           }}
           placeholder={activeMount ? `在 ${activeMount.displayName} 里搜索…` : '先添加一个网盘才能搜索'}
         />
@@ -63,7 +65,7 @@ export default function CommandPalette({
               className="palette-row"
               onClick={() => {
                 onPick(activeMount!, r.ref)
-                onClose()
+                requestClose()
               }}
             >
               {r.isDir ? '📁' : '📄'} {r.name} <span className="muted">· {r.path}</span>
@@ -72,7 +74,7 @@ export default function CommandPalette({
           {activeMount && query.trim() && !searching && !error && results.length === 0 && <p className="muted">没有找到“{query.trim()}”。</p>}
         </div>
         <div style={{ textAlign: 'right', marginTop: 12 }}>
-          <button className="btn" onClick={onClose}>
+          <button className="btn" onClick={requestClose}>
             关闭
           </button>
         </div>

@@ -151,6 +151,11 @@ var migrations = []string{
 		updated_at TEXT NOT NULL
 	)`,
 	`ALTER TABLE sync_jobs ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
+	// v18 (2026-11-25, Mount onboarding): non-secret driver config per
+	// mount (endpoint/region/bucket/client_id/token_url/local root).
+	// Secrets stay in the secrets table, encrypted; this column never
+	// holds a token, key or client secret.
+	`ALTER TABLE mounts ADD COLUMN config_json TEXT NOT NULL DEFAULT '{}'`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.

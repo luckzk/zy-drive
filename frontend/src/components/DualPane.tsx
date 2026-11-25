@@ -8,6 +8,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Mount, Node } from '../mygo'
 import { api, friendlyError, type SideSel } from '../api/client'
 import { formatSize } from '../lib/format'
+import { Skeleton, staggerStyle } from './motion'
 
 interface Crumb {
   name: string
@@ -160,9 +161,14 @@ export default function DualPane({
           </div>
         </div>
       ) : loading ? (
-        <p className="muted" style={{ marginTop: 8 }}>
-          加载中…
-        </p>
+        <div className="pane-list" aria-label="正在加载文件夹">
+          {[0, 1, 2, 3].map((i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '8px 0' }}>
+              <Skeleton height={14} width={14} />
+              <Skeleton height={14} width={`${60 - i * 8}%`} />
+            </div>
+          ))}
+        </div>
       ) : (
         <div className="pane-list">
           {endpoint === 'local' && parentAbs !== null && (
@@ -171,10 +177,11 @@ export default function DualPane({
             </div>
           )}
           {nodes.length === 0 && <p className="muted">这个文件夹是空的。</p>}
-          {nodes.map((n) => (
+          {nodes.map((n, i) => (
             <div
               key={refOf(n)}
-              className="pane-row"
+              className="pane-row stagger-item"
+              style={staggerStyle(i)}
               onClick={() => {
                 if (!n.isDir) return
                 if (endpoint === 'local') {

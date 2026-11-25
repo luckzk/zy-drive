@@ -10,6 +10,7 @@
 import { useState } from 'react'
 import type { Caps, Mount, Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
+import { Accordion } from './motion'
 
 function capsList(caps: Caps): string[] {
   const out: string[] = []
@@ -25,12 +26,15 @@ function capsList(caps: Caps): string[] {
   return out
 }
 
-export default function Inspector({ node, mount, onClose }: { node: Node; mount: Mount | null; onClose: () => void }) {
+export default function Inspector({ node, mount, closing, onClose }: { node: Node; mount: Mount | null; closing?: boolean; onClose: () => void }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const supported = mount ? capsList(mount.caps) : []
 
   return (
-    <aside style={{ width: 280, flexShrink: 0, borderLeft: '1px solid var(--border)', padding: 16, overflowY: 'auto' }}>
+    <aside
+      className={closing ? 'inspector-exit' : 'inspector-enter'}
+      style={{ width: 280, flexShrink: 0, borderLeft: '1px solid var(--border)', padding: 16, overflowY: 'auto' }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h2 style={{ margin: 0 }}>详情</h2>
         <button className="icon-btn" onClick={onClose} aria-label="关闭详情">
@@ -58,7 +62,7 @@ export default function Inspector({ node, mount, onClose }: { node: Node; mount:
         <button className="btn btn-sm" onClick={() => setAdvancedOpen((v) => !v)}>
           高级 {advancedOpen ? '▾' : '▸'}
         </button>
-        {advancedOpen && (
+        <Accordion open={advancedOpen}>
           <div style={{ marginTop: 8 }}>
             {supported.length > 0 ? (
               <>
@@ -75,7 +79,7 @@ export default function Inspector({ node, mount, onClose }: { node: Node; mount:
               </p>
             )}
           </div>
-        )}
+        </Accordion>
       </div>
     </aside>
   )

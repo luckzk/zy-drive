@@ -5,6 +5,49 @@ import { bind } from "mygo-runtime";
 // ---- Types ----
 
 /**
+ * AddMountInput is the wizard's payload for registering one mount
+ * with credentials. It is flat on purpose: mygo.Bind generates the
+ * TypeScript client from it, and every field is one form input.
+ * Secrets travel here only in memory, from the user's own Mac UI;
+ * they are encrypted before anything is written to SQLite.
+ */
+export interface AddMountInput {
+  displayName: string;
+  provider: ProviderKind;
+  group?: string;
+  /** S3-compatible endpoint (R2/MinIO/...) */
+  endpoint?: string;
+  /** S3 region */
+  region?: string;
+  /** S3 bucket */
+  bucket?: string;
+  /** S3 key prefix inside the bucket */
+  prefix?: string;
+  /** S3 path-style addressing (MinIO/...) */
+  pathStyle?: boolean;
+  /** S3 AccessKey (secret) */
+  accessKey?: string;
+  /** S3 SecretKey (secret) */
+  secretKey?: string;
+  /** OAuth access token (secret) */
+  accessToken?: string;
+  /** OAuth refresh token (secret) */
+  refreshToken?: string;
+  /** OAuth app client id (not secret) */
+  clientId?: string;
+  /** OAuth app client secret (secret) */
+  clientSecret?: string;
+  /** OAuth token endpoint override (tests) */
+  tokenUrl?: string;
+  /** API base override for Dropbox/Drive (tests / proxied deployments; normally empty) */
+  apiBase?: string;
+  /** Drive root folder id, default "root" */
+  rootId?: string;
+  /** local mount: absolute folder path */
+  localPath?: string;
+}
+
+/**
  * Agent is one server-side execution node (2026-11-24 decision:
  * settings hold a *list* of Agents, not a single one). The desktop is
  * the control plane; each Agent is a headless mcm-agent process on
@@ -161,6 +204,24 @@ export interface Node {
 }
 
 /**
+ * OAuthStart is what BeginOAuth returns: the URL to open + the state
+ * the exchange must present back.
+ */
+export interface OAuthStart {
+  authUrl: string;
+  state: string;
+}
+
+/**
+ * OAuthTokens is what ExchangeOAuthCode returns: the tokens the wizard
+ * puts into the AddMount form (memory only until AddMount saves).
+ */
+export interface OAuthTokens {
+  accessToken: string;
+  refreshToken?: string;
+}
+
+/**
  * Plan is the full, user-confirmable result of scan+compare. Mirror and
  * bidirectional plans may contain deletions; they must be confirmed by
  * the user before Execute runs. Copy plans never contain deletions.
@@ -235,6 +296,40 @@ export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancel
 export interface SearchResult {
   nodes: Node[];
   localOnly: boolean;
+}
+
+/**
+ * Settings is the whole user-facing settings surface, persisted as
+ * key/value rows in the pre-existing `settings` table (see
+ * internal/cache/settings.go — no new table was needed). The frontend
+ * loads it once at startup and saves it from the Settings page; a
+ * restart reloads the same rows, so theme/language/download folder
+ * and the sync defaults all survive.
+ *
+ * Fields the engine cannot honour yet are still stored, and the UI
+ * says so instead of pretending: SyncConcurrency /
+ * SyncSpeedLimitKBps are saved now, but the V0.1 transfer worker is
+ * fixed at 2-way concurrency with no rate limiter, so they take
+ * effect only when the engine supports them. SyncConflict has a
+ * single implemented value ("keep-both", the frozen V0.1 rule in
+ * internal/sync/conflict.go: newer keeps the name, the other copy is
+ * kept as a conflict copy); anything else is rejected here.
+ */
+export interface Settings {
+  /** light | dark */
+  theme: string;
+  /** zh | en */
+  language: string;
+  /** default download folder, "" = unset */
+  downloadDir: string;
+  /** size+time | size | checksum */
+  syncCompare: CompareMode;
+  /** 1..16, stored; engine not yet wired */
+  syncConcurrency: number;
+  /** 0 = unlimited, stored; engine not yet wired */
+  syncSpeedLimitKBps: number;
+  /** keep-both (only implemented value) */
+  syncConflict: string;
 }
 
 /**
@@ -314,16 +409,58 @@ export type TransferKind = "upload" | "download" | "copy";
  */
 export type TransferStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "interrupted";
 
+/**
+ * VersionInfo is the About section: backend + protocol versions
+ * from the Go build. The frontend version is a frontend constant
+ * (frontend/src/version.ts); the two are displayed side by side.
+ */
+export interface VersionInfo {
+  backend: string;
+  protocol: string;
+  engine: string;
+}
+
 // ---- Services ----
 
 /** DesktopService is the mygo.Bind service for the desktop frontend. */
 export const DesktopService = {
+  /**
+   * AddMount registers a mount with credentials: it probes the root
+   * listing first and only persists when the probe succeeds.
+   */
+  addMount: bind<[AddMountInput], Mount | null>("DesktopService.AddMount", (in_: AddMountInput) => [in_]),
   /** AgentStatus summarises the Agent list for the sidebar card. */
   agentStatus: bind<[], AgentStatus>("DesktopService.AgentStatus", () => []),
+  /** BeginOAuth builds the authorize URL for Dropbox / Drive. */
+  beginOAuth: bind<[ProviderKind, string], OAuthStart | null>("DesktopService.BeginOAuth", (provider: ProviderKind, clientID: string) => [provider, clientID]),
   /** Browse lists a directory (cache-first, background refresh). */
   browse: bind<[string, string], Node[]>("DesktopService.Browse", (mountID: string, ref: string) => [mountID, ref]),
+  /**
+   * CheckDownloadDir checks a path exists and is a directory, for
+   * instant feedback in the Settings page before saving.
+   */
+  checkDownloadDir: bind<[string], void>("DesktopService.CheckDownloadDir", (path: string) => [path]),
   /** DeleteSyncJob removes a saved sync job. It never touches cloud data. */
   deleteSyncJob: bind<[string], void>("DesktopService.DeleteSyncJob", (id: string) => [id]),
+  /** ExchangeOAuthCode swaps a pasted authorization code for tokens. */
+  exchangeOAuthCode: bind<[ProviderKind, string, string, string, string, string], OAuthTokens | null>("DesktopService.ExchangeOAuthCode", (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) => [provider, clientID, clientSecret, code, state, tokenURL]),
+  /**
+   * GetOpenAtLogin reports whether the app starts at login (mygo).
+   * Errors in the dev shell / non-packaged runs, where mygo cannot
+   * manage login items — the UI then says so instead of faking it.
+   */
+  getOpenAtLogin: bind<[], boolean>("DesktopService.GetOpenAtLogin", () => []),
+  /**
+   * GetSettings loads the persisted user settings (defaults for keys
+   * never saved). The frontend applies theme/language immediately.
+   */
+  getSettings: bind<[], Settings>("DesktopService.GetSettings", () => []),
+  /**
+   * GetVersions returns backend / protocol / engine versions for the
+   * Settings → About section. The frontend version is a frontend
+   * constant (frontend/src/version.ts).
+   */
+  getVersions: bind<[], VersionInfo>("DesktopService.GetVersions", () => []),
   /** ListAgents returns the configured server Agents. */
   listAgents: bind<[], (Agent | null)[]>("DesktopService.ListAgents", () => []),
   /** ListMounts returns mounts for the sidebar. */
@@ -334,16 +471,25 @@ export const DesktopService = {
   previewSync: bind<[SyncJob | null], Plan | null>("DesktopService.PreviewSync", (job: SyncJob | null) => [job]),
   /** RemoveAgent unregisters an Agent. */
   removeAgent: bind<[string], void>("DesktopService.RemoveAgent", (id: string) => [id]),
+  /** RemoveMount unregisters a mount. */
+  removeMount: bind<[string], void>("DesktopService.RemoveMount", (id: string) => [id]),
   /** RunSync executes a confirmed plan. */
   runSync: bind<[SyncJob | null, Plan | null], Run | null>("DesktopService.RunSync", (job: SyncJob | null, plan: Plan | null) => [job, plan]),
   /** SaveAgent adds or edits an Agent (name/address), persisting it. */
   saveAgent: bind<[Agent | null], Agent | null>("DesktopService.SaveAgent", (ag: Agent | null) => [ag]),
+  /**
+   * SaveSettings validates and persists the whole settings struct.
+   * An invalid download folder (or enum value) fails the whole save.
+   */
+  saveSettings: bind<[Settings], void>("DesktopService.SaveSettings", (settings: Settings) => [settings]),
   /** SaveSyncJob validates and persists a sync job. */
   saveSyncJob: bind<[SyncJob | null], SyncJob | null>("DesktopService.SaveSyncJob", (job: SyncJob | null) => [job]),
   /** Search searches a mount. LocalOnly reports "本地结果". */
   search: bind<[string, string], SearchResult | null>("DesktopService.Search", (mountID: string, query: string) => [mountID, query]),
   /** SetDefaultAgent flags one Agent as the default executor. */
   setDefaultAgent: bind<[string], void>("DesktopService.SetDefaultAgent", (id: string) => [id]),
+  /** SetOpenAtLogin turns start-at-login on or off (mygo). */
+  setOpenAtLogin: bind<[boolean], void>("DesktopService.SetOpenAtLogin", (on: boolean) => [on]),
   /**
    * TestAgent calls the Agent's unauthenticated /api/health and reports
    * whether it answers and which versions it runs. It never sends any

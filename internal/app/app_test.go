@@ -4,16 +4,32 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luckzk/zy-drive/internal/auth"
 	"github.com/luckzk/zy-drive/internal/cache"
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
+	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
+	"github.com/luckzk/zy-drive/internal/storage/providers/dropbox"
 	"github.com/luckzk/zy-drive/internal/storage/providers/local"
+	"github.com/luckzk/zy-drive/internal/storage/providers/s3"
 	"github.com/luckzk/zy-drive/internal/transfer"
 )
 
-func newTestApp(t *testing.T) *App {
+// testSecretsStore builds a throwaway master-key store (same
+// password+salt every call, so a "restarted" App can be built with an
+// equal store and still decrypt what the first App saved).
+func testSecretsStore(t *testing.T) *auth.SecretsStore {
 	t.Helper()
-	db, err := cache.Open(filepath.Join(t.TempDir(), "app.db"))
+	s, err := auth.NewSecretsStore("test-master-password", []byte("test-salt-16bytes"))
+	if err != nil {
+		t.Fatalf("NewSecretsStore: %v", err)
+	}
+	return s
+}
+
+func newTestAppWithDB(t *testing.T, dbPath string) *App {
+	t.Helper()
+	db, err := cache.Open(dbPath)
 	if err != nil {
 		t.Fatalf("cache.Open: %v", err)
 	}
@@ -21,11 +37,22 @@ func newTestApp(t *testing.T) *App {
 	reg := storage.Default()
 	// Registry is process-wide; registration panics on duplicates, so
 	// only register once per test binary run.
-	func() {
+	register := func(kind domain.ProviderKind, f storage.Factory) {
 		defer func() { _ = recover() }()
-		reg.Register(domain.ProviderLocal, local.New)
-	}()
-	return New(db, reg, transfer.NewQueue(db))
+		reg.Register(kind, f)
+	}
+	register(domain.ProviderLocal, local.New)
+	register(domain.ProviderS3, s3.New)
+	register(domain.ProviderDropbox, dropbox.New)
+	register(domain.ProviderDrive, drive.New)
+	a := New(db, reg, transfer.NewQueue(db))
+	a.SetSecrets(testSecretsStore(t))
+	return a
+}
+
+func newTestApp(t *testing.T) *App {
+	t.Helper()
+	return newTestAppWithDB(t, filepath.Join(t.TempDir(), "app.db"))
 }
 
 func TestValidateJobLocalOnlyRunsLocal(t *testing.T) {

@@ -10,9 +10,15 @@
 // All data comes from the backend through api/client (mygo.Bind).
 // There is no demo data anywhere: no mounts means an empty state
 // with an add-drive guide, never invented drives or files.
+//
+// Motion (ai-design-skills, B7): page switches fade + rise 500ms
+// (base curve) via .page-enter, keyed by page; loading states are
+// skeleton blocks shaped like the real content, never "加载中…" text.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Agent, AgentStatus, Mount, Transfer } from './mygo'
+import type { Agent, AgentStatus, Mount, Settings, Transfer } from './mygo'
 import { api, friendlyError } from './api/client'
+import { t, type Lang } from './lib/i18n'
+import { Skeleton } from './components/motion'
 import Sidebar, { type Page } from './components/Sidebar'
 import FileBrowser from './components/FileBrowser'
 import TransferDock from './components/TransferDock'
@@ -20,6 +26,10 @@ import CommandPalette from './components/CommandPalette'
 import AddMountDialog from './components/AddMountDialog'
 import SyncJobsPage from './pages/SyncJobs'
 import SettingsPage from './pages/Settings'
+
+function applyTheme(theme: string) {
+  document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : 'light'
+}
 
 export default function App() {
   const [page, setPage] = useState<Page>('browse')
@@ -32,6 +42,13 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showPalette, setShowPalette] = useState(false)
   const [showAddMount, setShowAddMount] = useState(false)
+  const [reauthMount, setReauthMount] = useState<Mount | null>(null)
+  // Settings live here because theme/language apply app-wide the
+  // moment they change (Settings page edits them through these
+  // handlers, which save + apply immediately).
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [theme, setTheme] = useState('light')
+  const [lang, setLang] = useState<Lang>('zh')
 
   const activeMountIdRef = useRef<string | null>(null)
   const setActiveMount = (id: string | null) => {
@@ -70,10 +87,22 @@ export default function App() {
     }
   }, [])
 
+  const loadSettings = useCallback(async () => {
+    try {
+      const s = await api.getSettings()
+      setSettings(s)
+      setTheme(s.theme)
+      setLang(s.language === 'en' ? 'en' : 'zh')
+      applyTheme(s.theme)
+    } catch {
+      // Dev shell / no backend yet: keep light + zh defaults.
+    }
+  }, [])
+
   useEffect(() => {
     setLoading(true)
-    void Promise.all([loadMounts(), loadAgents(), loadTransfers()]).finally(() => setLoading(false))
-  }, [loadMounts, loadAgents, loadTransfers])
+    void Promise.all([loadMounts(), loadAgents(), loadTransfers(), loadSettings()]).finally(() => setLoading(false))
+  }, [loadMounts, loadAgents, loadTransfers, loadSettings])
 
   // Poll the transfer queue while the app is open.
   useEffect(() => {
@@ -104,6 +133,26 @@ export default function App() {
     setPage('sync')
   }
 
+  // Theme/language change from the Settings page: apply immediately
+  // (whole app follows, no restart). The Settings page owns saving:
+  // it persists the draft after calling these, so there is exactly
+  // one save path and an unsaved draft can't be clobbered here.
+  const changeTheme = (next: string) => {
+    setTheme(next)
+    applyTheme(next)
+    setSettings((prev) => (prev ? { ...prev, theme: next } : prev))
+  }
+
+  const changeLanguage = (next: Lang) => {
+    setLang(next)
+    setSettings((prev) => (prev ? { ...prev, language: next } : prev))
+  }
+
+  const openReauth = (m: Mount) => {
+    setReauthMount(m)
+    setShowAddMount(true)
+  }
+
   return (
     <div className="app-shell">
       <header className="app-header">
@@ -111,18 +160,20 @@ export default function App() {
         <input
           className="input"
           style={{ flex: 1 }}
-          placeholder="搜索全部网盘… (Ctrl+K)"
+          placeholder={t(lang, 'searchPlaceholder')}
           onFocus={() => setShowPalette(true)}
           readOnly
         />
         <button className="btn-primary" onClick={goCreateSync}>
-          新建同步
+          {t(lang, 'newSync')}
         </button>
       </header>
 
       <div className="app-body">
         <Sidebar
           page={page}
+          lang={lang}
+          loading={loading}
           onNavigate={setPage}
           mounts={mounts}
           activeMountId={activeMountId}
@@ -130,47 +181,63 @@ export default function App() {
           agentStatus={agentStatus}
           onGroupsChanged={() => void loadMounts()}
           onAddMount={() => setShowAddMount(true)}
+          onRemoveMount={() => void loadMounts()}
         />
 
         <main style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          {page === 'browse' && (
-            <>
-              {loading ? (
-                <p className="muted" style={{ padding: 16 }}>
-                  加载中…
-                </p>
-              ) : loadError ? (
-                <div style={{ padding: 16 }}>
-                  <div className="error-box">{loadError}</div>
-                  <button className="btn" onClick={() => void loadMounts()}>
-                    重试
-                  </button>
-                </div>
-              ) : mounts.length === 0 ? (
-                <div style={{ padding: 16 }}>
-                  <div className="empty">
-                    <h2>还没有添加网盘</h2>
-                    <p>添加一个网盘后，就能在这里浏览、上传、下载，在同步任务里跨网盘复制。</p>
-                    <button className="btn-primary" onClick={() => setShowAddMount(true)}>
-                      添加网盘
+          <div key={page} className="page-enter" style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            {page === 'browse' && (
+              <>
+                {loading ? (
+                  <div style={{ padding: 16 }}>
+                    <Skeleton height={20} width={240} />
+                    <div style={{ marginTop: 16, display: 'grid', gap: 8 }}>
+                      {[0, 1, 2, 3, 4].map((i) => (
+                        <Skeleton key={i} height={36} />
+                      ))}
+                    </div>
+                  </div>
+                ) : loadError ? (
+                  <div style={{ padding: 16 }}>
+                    <div className="error-box">{loadError}</div>
+                    <button className="btn" onClick={() => void loadMounts()}>
+                      {t(lang, 'retry')}
                     </button>
                   </div>
-                </div>
-              ) : activeMount ? (
-                <FileBrowser key={activeMount.id} mount={activeMount} />
-              ) : null}
-            </>
-          )}
-          {page === 'sync' && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-              <SyncJobsPage mounts={mounts} agents={agents} onRan={() => void loadTransfers()} />
-            </div>
-          )}
-          {page === 'settings' && (
-            <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-              <SettingsPage />
-            </div>
-          )}
+                ) : mounts.length === 0 ? (
+                  <div style={{ padding: 16 }}>
+                    <div className="empty">
+                      <h2>还没有添加网盘</h2>
+                      <p>添加一个网盘后，就能在这里浏览、上传、下载，在同步任务里跨网盘复制。</p>
+                      <button className="btn-primary" onClick={() => setShowAddMount(true)}>
+                        添加网盘
+                      </button>
+                    </div>
+                  </div>
+                ) : activeMount ? (
+                  <FileBrowser key={activeMount.id} mount={activeMount} />
+                ) : null}
+              </>
+            )}
+            {page === 'sync' && (
+              <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+                <SyncJobsPage mounts={mounts} agents={agents} onRan={() => void loadTransfers()} />
+              </div>
+            )}
+            {page === 'settings' && (
+              <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
+                <SettingsPage
+                  lang={lang}
+                  theme={theme}
+                  onThemeChange={changeTheme}
+                  onLanguageChange={changeLanguage}
+                  onReauth={openReauth}
+                  onAddMount={() => setShowAddMount(true)}
+                  onMountsChanged={() => void loadMounts()}
+                />
+              </div>
+            )}
+          </div>
         </main>
       </div>
 
@@ -183,7 +250,23 @@ export default function App() {
           onPick={(m) => selectMount(m)}
         />
       )}
-      {showAddMount && <AddMountDialog onClose={() => setShowAddMount(false)} />}
+      {showAddMount && (
+        <AddMountDialog
+          initialProvider={reauthMount?.provider}
+          initialStep={reauthMount ? 2 : 1}
+          initialName={reauthMount?.displayName}
+          initialGroup={reauthMount?.group ?? ''}
+          onClose={() => {
+            setShowAddMount(false)
+            setReauthMount(null)
+          }}
+          onAdded={(m) => {
+            setShowAddMount(false)
+            setReauthMount(null)
+            void loadMounts().then(() => setActiveMount(m.id))
+          }}
+        />
+      )}
     </div>
   )
 }

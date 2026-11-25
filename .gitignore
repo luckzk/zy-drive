@@ -11,6 +11,7 @@ mcm
 *.db-journal
 *.db-wal
 *.db-shm
+master.key
 .env
 config.yaml
 config.json

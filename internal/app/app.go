@@ -7,6 +7,7 @@ package app
 
 import (
 	"github.com/luckzk/zy-drive/internal/agentapi"
+	"github.com/luckzk/zy-drive/internal/auth"
 	"github.com/luckzk/zy-drive/internal/cache"
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
@@ -24,6 +25,16 @@ type App struct {
 
 	mounts map[string]MountHandle
 	agents map[string]*domain.Agent
+	// secrets encrypts mount credentials at rest (AES-256-GCM, key
+	// from the config dir's master.key). Nil until SetSecrets is
+	// called at startup; cloud mounts cannot be added without it.
+	secrets *auth.SecretsStore
+	// loginGet/loginSet are installed by cmd/desktop (mygo shell)
+	// and call mygo.App.OpenAtLogin / SetOpenAtLogin. Nil anywhere
+	// else (dev shell, tests): Get/SetOpenAtLogin then report
+	// honestly that the setting is unavailable in this run mode.
+	loginGet func() (bool, error)
+	loginSet func(bool) error
 	// localProv is the on-demand local-filesystem provider for the
 	// "local" pseudo-mount, rooted at "/" so absolute local:// paths
 	// resolve. Built lazily; local jobs never leave this machine.
