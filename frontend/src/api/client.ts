@@ -102,6 +102,10 @@ export const api = {
     DesktopService.exchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL),
   getSettings: () => DesktopService.getSettings(),
   saveSettings: (s: Settings) => DesktopService.saveSettings(s),
+  // Settings → 网络: what the OS has configured (for display),
+  // and a one-shot connectivity test through the current setup.
+  getSystemProxy: () => DesktopService.getSystemProxy(),
+  testProxy: () => DesktopService.testProxy(),
   checkDownloadDir: (path: string) => DesktopService.checkDownloadDir(path),
   getOpenAtLogin: () => DesktopService.getOpenAtLogin(),
   setOpenAtLogin: (on: boolean) => DesktopService.setOpenAtLogin(on),

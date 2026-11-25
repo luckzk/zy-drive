@@ -10,6 +10,7 @@ import (
 
 	"github.com/luckzk/zy-drive/internal/agentapi"
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/netproxy"
 )
 
 // agents.go holds the multi-Agent registry (2026-11-24 decision).
@@ -133,7 +134,7 @@ func (a *App) TestAgent(ctx context.Context, id string) (*AgentTestResult, error
 	if err != nil {
 		return nil, err
 	}
-	httpClient := &http.Client{Timeout: 10 * time.Second}
+	httpClient := netproxy.NewClient(10)
 	resp, err := httpClient.Do(req)
 	if err != nil {
 		ag.Online = false

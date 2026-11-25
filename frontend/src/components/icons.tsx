@@ -69,8 +69,11 @@ export function IconCheck({ size = 16 }: { size?: number }) {
 // SectionIcon — one flat-color-icons glyph per Settings section
 // (same icon family as the file manager, kept consistent):
 // general → settings, drives → folder, sync defaults →
-// synchronize, Agent → services, about → info.
-export function SectionIcon({ section, size = 20 }: { section: 'general' | 'drives' | 'sync' | 'agent' | 'about'; size?: number }) {
+// synchronize, Agent → services, about → info. Network has no
+// globe/wifi in the installed flat-color-icons set, so it uses
+// the neutral line globe (IconGlobe) below.
+export function SectionIcon({ section, size = 20 }: { section: 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network'; size?: number }) {
+  if (section === 'network') return <IconGlobe size={size} />
   const data =
     section === 'general'
       ? settingsIcon
@@ -82,6 +85,20 @@ export function SectionIcon({ section, size = 20 }: { section: 'general' | 'driv
             ? servicesIcon
             : infoIcon
   return <Icon icon={data} width={size} height={size} aria-hidden="true" style={{ flexShrink: 0 }} />
+}
+
+// Neutral line SVGs (no match in flat-color-icons): a pencil for
+// rename, a chevron for the advanced toggle, a globe for the
+// Network settings section. 1.8px stroke, currentColor, same
+// 24×24 grid habit as the rest of the UI.
+export function IconGlobe({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18" />
+      <path d="M12 3a13.5 13.5 0 0 1 3.5 9 13.5 13.5 0 0 1-3.5 9 13.5 13.5 0 0 1-3.5-9 13.5 13.5 0 0 1 3.5-9z" />
+    </svg>
+  )
 }
 
 // Neutral line SVGs (no match in flat-color-icons): a pencil for

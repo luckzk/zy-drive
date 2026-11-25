@@ -327,8 +327,15 @@ button {
 /* ---- 添加网盘第 1 步：原型 Demo v8 的大图标网格 ----
    两列卡片，每张一张大品牌 logo（32px）+ 名字 + 一行小字，
    点整张卡片选中；选中态是品牌绿边框 + 淡绿底（原型 .pick.on），
-   不是原来的小列表行 + “选择”小按钮。 */
-.provider-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+   不是原来的小列表行 + “选择”小按钮。
+   padding-top: 8px — the global button:hover lifts a card
+   translateY(-1px) and the card's shadow extends above it; the
+   grid sits flush at the top of the scrolling .dialog-body, so
+   without this the top row is clipped by the dialog's top edge
+   on hover (2026-11-25, user report on 0.8.4). 8px covers the
+   1px lift + shadow + a safety margin, and costs nothing in
+   scroll (the grid is inside the scrollable body). */
+.provider-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding-top: 8px; }
 .provider-card {
   display: flex; gap: 10px; align-items: center; text-align: left; width: 100%;
   border: 1.5px solid var(--border); border-radius: 12px; padding: 12px;

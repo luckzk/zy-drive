@@ -20,6 +20,14 @@ import (
 type mockFS struct {
 	dirs  map[string]bool   // "/a/b" -> dir exists ("" is root)
 	files map[string][]byte // "/a/b.txt" -> content
+	// Quota controls: quotaResp overrides the get_space_usage
+	// body (default: individual 2 GiB), quotaStatus/quotaErr
+	// make it fail, quotaBody records the raw request body of
+	// the last Quota call (to assert the `null` Void form).
+	quotaResp   map[string]any
+	quotaStatus int
+	quotaErr    string
+	quotaBody   string
 }
 
 func newMockFS() *mockFS {
@@ -74,10 +82,13 @@ func writeErr(w http.ResponseWriter, status int, summary string) {
 // handler serves both the RPC and content endpoints on one server.
 func (m *mockFS) handler(w http.ResponseWriter, r *http.Request) {
 	var arg map[string]any
+	rawBody := ""
 	if h := r.Header.Get("Dropbox-API-Arg"); h != "" {
 		_ = json.Unmarshal([]byte(h), &arg)
 	} else if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&arg)
+		data, _ := io.ReadAll(r.Body)
+		rawBody = string(data)
+		_ = json.Unmarshal(data, &arg)
 	}
 	pth := ""
 	if v, ok := arg["path"].(string); ok {
@@ -173,6 +184,15 @@ func (m *mockFS) handler(w http.ResponseWriter, r *http.Request) {
 	case "/2/files/get_temporary_link":
 		writeJSON(w, map[string]any{"link": "https://dl.dropboxusercontent.com/s/tmp"})
 	case "/2/users/get_space_usage":
+		m.quotaBody = rawBody
+		if m.quotaStatus != 0 {
+			writeErr(w, m.quotaStatus, m.quotaErr)
+			return
+		}
+		if m.quotaResp != nil {
+			writeJSON(w, m.quotaResp)
+			return
+		}
 		writeJSON(w, map[string]any{"used": 123456789, "allocation": map[string]any{"allocated": 2147483648, ".tag": "individual"}})
 	case "/oauth2/token":
 		writeJSON(w, map[string]any{"access_token": "new-access-token", "token_type": "bearer", "expires_in": 14400})
@@ -267,5 +287,82 @@ func TestDropboxQuota(t *testing.T) {
 	}
 	if used != 123456789 || total != 2147483648 {
 		t.Fatalf("Quota: got used=%d total=%d, want 123456789 / 2147483648", used, total)
+	}
+}
+
+// TestDropboxQuotaTeamAllocation: a team account reports
+// allocation {.tag: "team", allocated, used} — the total still
+// comes from `allocated`. (The reporting user is personal, so
+// this is a regression guard, not the live root cause.)
+func TestDropboxQuotaTeamAllocation(t *testing.T) {
+	fs := newMockFS()
+	fs.quotaResp = map[string]any{"used": 111, "allocation": map[string]any{".tag": "team", "allocated": 1099511627776, "used": 222}}
+	srv := httptest.NewServer(http.HandlerFunc(fs.handler))
+	defer srv.Close()
+	p, err := newWithBases(storage.Config{Token: "test-token"}, srv.URL, srv.URL)
+	if err != nil {
+		t.Fatalf("newWithBases: %v", err)
+	}
+	qs := any(p).(storage.QuotaSource)
+	used, total, err := qs.Quota(t.Context())
+	if err != nil {
+		t.Fatalf("Quota(team): %v", err)
+	}
+	if used != 111 || total != 1099511627776 {
+		t.Fatalf("Quota(team): got used=%d total=%d, want 111 / 1099511627776", used, total)
+	}
+}
+
+// TestDropboxQuotaMissingScope (2026-11-25): the live root cause
+// of the user's "容量暂不可用" — get_space_usage requires
+// account_info.read, which the 0.8.4 token did not have, so
+// Dropbox answers 403 missing_scope while file browsing works.
+// The driver must surface that error (not swallow it, not turn
+// it into a zero quota) so the quota layer can map it to the
+// scope + re-authorize guidance.
+func TestDropboxQuotaMissingScope(t *testing.T) {
+	fs := newMockFS()
+	fs.quotaStatus = http.StatusForbidden
+	fs.quotaErr = "missing_scope/"
+	srv := httptest.NewServer(http.HandlerFunc(fs.handler))
+	defer srv.Close()
+	// A refresher is configured (as a real mount has one): the
+	// shared client refreshes once on the 403 and retries, and
+	// the retry still 403s — that second 403 is the error the
+	// quota layer sees. Without a refresher the refresh failure
+	// would mask the 403 entirely.
+	p, err := newWithBases(storage.Config{Token: "test-token", Extra: map[string]string{
+		"refresh_token": "test-refresh", "token_url": srv.URL + "/oauth2/token", "client_id": "x",
+	}}, srv.URL, srv.URL)
+	if err != nil {
+		t.Fatalf("newWithBases: %v", err)
+	}
+	qs := any(p).(storage.QuotaSource)
+	_, _, err = qs.Quota(t.Context())
+	if err == nil {
+		t.Fatal("Quota must fail on 403 missing_scope")
+	}
+	if !strings.Contains(err.Error(), "missing_scope") || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("Quota error must carry the 403 missing_scope, got: %v", err)
+	}
+}
+
+// TestDropboxQuotaSendsNullBody: Void RPC input is sent as a
+// literal JSON `null` body (the documented form), not an empty
+// body.
+func TestDropboxQuotaSendsNullBody(t *testing.T) {
+	fs := newMockFS()
+	srv := httptest.NewServer(http.HandlerFunc(fs.handler))
+	defer srv.Close()
+	p, err := newWithBases(storage.Config{Token: "test-token"}, srv.URL, srv.URL)
+	if err != nil {
+		t.Fatalf("newWithBases: %v", err)
+	}
+	qs := any(p).(storage.QuotaSource)
+	if _, _, err := qs.Quota(t.Context()); err != nil {
+		t.Fatalf("Quota: %v", err)
+	}
+	if fs.quotaBody != "null" {
+		t.Fatalf("Quota request body: %q, want JSON null", fs.quotaBody)
 	}
 }

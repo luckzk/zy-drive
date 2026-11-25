@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/netproxy"
 	"github.com/luckzk/zy-drive/internal/version"
 )
 
@@ -33,6 +34,16 @@ type Settings struct {
 	SyncConcurrency    int                `json:"syncConcurrency"`    // 1..16, stored; engine not yet wired
 	SyncSpeedLimitKBps int                `json:"syncSpeedLimitKBps"` // 0 = unlimited, stored; engine not yet wired
 	SyncConflict       string             `json:"syncConflict"`       // keep-both (only implemented value)
+	// Proxy (Settings -> Network, 2026-11-25): where outbound
+	// traffic goes. system (default) = macOS system proxy when
+	// detected, else HTTP(S)_PROXY env vars; manual = the two
+	// addresses below; direct = no proxy at all. Saved as
+	// proxy.mode / proxy.http / proxy.socks5. Applies
+	// immediately on save — the shared netproxy transport reads
+	// the current config per request, no restart.
+	ProxyMode   string `json:"proxyMode"`   // system | manual | direct
+	ProxyHTTP   string `json:"proxyHttp"`   // manual HTTP proxy, "host:port" or full URL
+	ProxySOCKS5 string `json:"proxySocks5"` // manual SOCKS5 proxy, "host:port" or full URL
 }
 
 // DefaultSettings is what a fresh install (or a missing key) gets.
@@ -45,6 +56,9 @@ func DefaultSettings() Settings {
 		SyncConcurrency:    4,
 		SyncSpeedLimitKBps: 0,
 		SyncConflict:       "keep-both",
+		ProxyMode:          string(netproxy.ModeSystem),
+		ProxyHTTP:          "",
+		ProxySOCKS5:        "",
 	}
 }
 
@@ -95,6 +109,18 @@ func (a *App) GetSettings() (Settings, error) {
 	if v, ok := a.getSetting("sync.conflict"); ok && v == "keep-both" {
 		s.SyncConflict = v
 	}
+	if v, ok := a.getSetting("proxy.mode"); ok {
+		switch v {
+		case string(netproxy.ModeSystem), string(netproxy.ModeManual), string(netproxy.ModeDirect):
+			s.ProxyMode = v
+		}
+	}
+	if v, ok := a.getSetting("proxy.http"); ok {
+		s.ProxyHTTP = v
+	}
+	if v, ok := a.getSetting("proxy.socks5"); ok {
+		s.ProxySOCKS5 = v
+	}
 	return s, nil
 }
 
@@ -122,6 +148,27 @@ func (a *App) SaveSettings(s Settings) error {
 	if s.SyncConflict != "keep-both" {
 		return fmt.Errorf("app: 冲突处理只有“保留双方”已实现，其他策略在后续版本提供")
 	}
+	// An empty mode (old clients, hand-built structs) is the
+	// system default, not an error.
+	if s.ProxyMode == "" {
+		s.ProxyMode = string(netproxy.ModeSystem)
+	}
+	proxyCfg := netproxy.Config{Mode: netproxy.Mode(s.ProxyMode), HTTP: s.ProxyHTTP, SOCKS5: s.ProxySOCKS5}
+	if err := proxyCfg.Validate(); err != nil {
+		return err
+	}
+	// Normalize manual addresses before persisting, so the
+	// stored value is always the canonical "scheme://host:port".
+	if s.ProxyMode == string(netproxy.ModeManual) {
+		if addr, err := netproxy.NormalizeAddr(s.ProxyHTTP, "http"); err == nil {
+			s.ProxyHTTP = addr
+			proxyCfg.HTTP = addr
+		}
+		if addr, err := netproxy.NormalizeAddr(s.ProxySOCKS5, "socks5"); err == nil {
+			s.ProxySOCKS5 = addr
+			proxyCfg.SOCKS5 = addr
+		}
+	}
 	if dir := strings.TrimSpace(s.DownloadDir); dir != "" {
 		if err := checkDownloadDir(dir); err != nil {
 			return err
@@ -141,13 +188,38 @@ func (a *App) SaveSettings(s Settings) error {
 		"sync.concurrency":       strconv.Itoa(s.SyncConcurrency),
 		"sync.speed_limit_kbps":  strconv.Itoa(s.SyncSpeedLimitKBps),
 		"sync.conflict":          s.SyncConflict,
+		"proxy.mode":             s.ProxyMode,
+		"proxy.http":             s.ProxyHTTP,
+		"proxy.socks5":           s.ProxySOCKS5,
 	}
 	for k, v := range kv {
 		if err := a.DB.SetSetting(k, v); err != nil {
 			return err
 		}
 	}
+	// Apply immediately: the next outbound request already uses
+	// the new proxy (Validate passed above, so this cannot fail
+	// for a config reason).
+	if err := netproxy.Configure(proxyCfg); err != nil {
+		return err
+	}
 	return nil
+}
+
+// ApplyProxySettings reads the stored proxy settings and applies
+// them to the shared transport. Called once at startup (after the
+// DB opens, before LoadMounts) so a saved manual proxy is live
+// from the first request; SaveSettings applies the same way.
+func (a *App) ApplyProxySettings() error {
+	s, err := a.GetSettings()
+	if err != nil {
+		return err
+	}
+	return netproxy.Configure(netproxy.Config{
+		Mode:   netproxy.Mode(s.ProxyMode),
+		HTTP:   s.ProxyHTTP,
+		SOCKS5: s.ProxySOCKS5,
+	})
 }
 
 // CheckDownloadDir reports whether a path exists and is a directory.

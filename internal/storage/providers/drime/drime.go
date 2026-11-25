@@ -72,6 +72,7 @@ import (
 	"time"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/netproxy"
 	"github.com/luckzk/zy-drive/internal/storage"
 	shttp "github.com/luckzk/zy-drive/internal/storage/http"
 	"github.com/luckzk/zy-drive/internal/storage/oauth"
@@ -180,7 +181,7 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 	// 401-refresh path has exactly that flaw. Drime does it right.)
 	p.client.HTTP = &http.Client{
 		Timeout:   120 * time.Second,
-		Transport: authTransport{base: http.DefaultTransport, tokens: ts},
+		Transport: authTransport{base: netproxy.Transport(), tokens: ts},
 	}
 	// Refresh only when a refresher exists: a personal access token
 	// never expires, so a 401 on it means wrong/revoked — the

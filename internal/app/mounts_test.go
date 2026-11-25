@@ -820,3 +820,70 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		t.Fatalf("unknown state must be rejected")
 	}
 }
+
+// TestMountConfigWithoutName (2026-11-25): the wizard's
+// in-component test runs right after the token exchange, possibly
+// before the user typed a name — a connectivity probe must not
+// fail on the missing display name. The name is still required
+// at save time (AddMountWithCredentials) and by the wizard's
+// Next gating.
+func TestMountConfigWithoutName(t *testing.T) {
+	srv := mockS3Server(false)
+	defer srv.Close()
+	a := newTestApp(t)
+	ctx := context.Background()
+	if err := a.TestMountConfig(ctx, AddMountInput{
+		Provider: domain.ProviderS3,
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "ak-1", SecretKey: "sk-1", PathStyle: true,
+	}); err != nil {
+		t.Fatalf("TestMountConfig without a name must probe, not complain about the name: %v", err)
+	}
+}
+
+// TestAddMountSkipProbeUsesRecentTest (2026-11-25): the wizard
+// tests in-component (step 2) and saves in step 3 without probing
+// again. A SkipProbe save of the exact config tested minutes ago
+// is stored Verified=true; the same save with a changed credential
+// is stored Verified=false — the memo keys on the probe inputs,
+// never on the display name (renaming after a passed test must
+// not void it).
+func TestAddMountSkipProbeUsesRecentTest(t *testing.T) {
+	srv := mockS3Server(false)
+	defer srv.Close()
+	a := newTestApp(t)
+	ctx := context.Background()
+	base := AddMountInput{
+		Provider: domain.ProviderS3,
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "ak-1", SecretKey: "sk-1", PathStyle: true,
+	}
+	if err := a.TestMountConfig(ctx, base); err != nil {
+		t.Fatalf("TestMountConfig: %v", err)
+	}
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "R2 备份", Provider: base.Provider,
+		Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket,
+		AccessKey: base.AccessKey, SecretKey: base.SecretKey, PathStyle: true,
+		SkipProbe: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(skipProbe after test): %v", err)
+	}
+	if !m.Verified {
+		t.Fatal("a mount saved right after a passed test must be Verified, without a second probe")
+	}
+	// A different credential was never tested: unverified.
+	m2, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "R2 备份 2", Provider: base.Provider,
+		Endpoint: base.Endpoint, Region: base.Region, Bucket: base.Bucket,
+		AccessKey: "ak-OTHER", SecretKey: base.SecretKey, PathStyle: true,
+		SkipProbe: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(untested skipProbe): %v", err)
+	}
+	if m2.Verified {
+		t.Fatal("a mount saved without any passed test must stay unverified")
+	}
+}

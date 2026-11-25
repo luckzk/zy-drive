@@ -6,6 +6,9 @@
 package app
 
 import (
+	"sync"
+	"time"
+
 	"github.com/luckzk/zy-drive/internal/agentapi"
 	"github.com/luckzk/zy-drive/internal/auth"
 	"github.com/luckzk/zy-drive/internal/cache"
@@ -40,6 +43,14 @@ type App struct {
 	// resolve. Built lazily; local jobs never leave this machine.
 	localProv storage.Provider
 	events    *EventBus
+	// testedOK remembers configs TestMountConfig probed
+	// successfully (in-component test, wizard step 2): a save
+	// within 5 minutes for the same config is stored Verified
+	// without probing again — the wizard must not test twice.
+	// Only SHA-256 hashes of the config are kept, in memory;
+	// no secret is stored or logged here.
+	testedMu sync.Mutex
+	testedOK map[string]time.Time
 }
 
 // Events returns the app event bus.

@@ -13,6 +13,9 @@
 //     required to run from the repo.
 //   - Menu via mygo.NewMenu + App.SetMenu; tray via mygo.NewTray
 //     (after ready). Both are best-effort: a tray failure only logs.
+//     The tray icon and the Dock icon come from resources/icon.png
+//     (loadAppIcon); a missing icon only means a title-only tray
+//     item and a generic Dock icon, never a crash.
 //   - App.Run must be called from main(); it blocks until quit.
 //
 // Fallback: when there is no system webview (mygo.WebViewAvailable
@@ -63,6 +66,38 @@ func runDesktop(application *app.App, addr string, devShell bool, frontendDir st
 	runDevShell(addr, frontendDir, ctx)
 }
 
+// loadAppIcon reads the app icon PNG (the user's green cloud,
+// frontend/public/logo.svg exported to PNG) for the macOS menu-bar
+// tray icon and the Dock icon. Candidates, in order:
+//   - resources/icon.png next to the repo (running from source)
+//   - <exe dir>/../Resources/icon.png (inside ZyDrive.app:
+//     Contents/MacOS/zy-drive-desktop -> Contents/Resources/)
+//   - <exe dir>/icon.png (a bare binary next to its icon)
+// The PNG is binary and cannot be pushed to the repo — the user
+// regenerates it once on their Mac with
+// `node scripts/visual-check/export-logo-png.mjs`. Missing icon
+// is best-effort only: the tray falls back to a title-only item
+// and the Dock keeps its generic icon, never a crash.
+func loadAppIcon() ([]byte, error) {
+	candidates := []string{"resources/icon.png"}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates,
+			filepath.Join(dir, "..", "Resources", "icon.png"),
+			filepath.Join(dir, "icon.png"),
+		)
+	}
+	var lastErr error
+	for _, p := range candidates {
+		if b, err := os.ReadFile(p); err == nil {
+			return b, nil
+		} else {
+			lastErr = err
+		}
+	}
+	return nil, lastErr
+}
+
 func runMygo(application *app.App, frontendDir string, generate bool) error {
 	if !generate {
 		if _, err := os.Stat(filepath.Join(frontendDir, "index.html")); err != nil {
@@ -83,10 +118,25 @@ func runMygo(application *app.App, frontendDir string, generate bool) error {
 	mygo.Bind(application.BindService())
 
 	var mainWin *mygo.Window
+	// The menu-bar tray icon and the Dock icon come from the same
+	// PNG (the user's cloud). Both are best-effort: on a machine
+	// without resources/icon.png the app still runs — the tray
+	// shows its title only, the Dock keeps the generic icon.
+	iconPNG, iconErr := loadAppIcon()
+	if iconErr != nil {
+		log.Printf("desktop: no app icon found (run: node scripts/visual-check/export-logo-png.mjs): %v", iconErr)
+	}
 	mygo.App.WhenReady(func() {
 		mygo.App.SetMenu(buildMenu())
+		if iconPNG != nil {
+			// Dock.SetIcon is a no-op off macOS (mygo v0.10.0).
+			if err := mygo.App.Dock.SetIcon(iconPNG); err != nil {
+				log.Printf("desktop: dock icon: %v", err)
+			}
+		}
 		if _, err := mygo.NewTray(mygo.TrayOptions{
 			ID:      "zy-drive",
+			Icon:    iconPNG,
 			Title:   "ZyDrive",
 			ToolTip: "ZyDrive",
 			Menu: mygo.NewMenu([]*mygo.MenuItem{

@@ -20,7 +20,19 @@ import { formatQuotaSize } from '../lib/format'
 export default function QuotaBar({ quota, compact = false }: { quota: MountQuota | undefined; compact?: boolean }) {
   if (!quota) return null
   if (quota.error) {
-    return <div className="quota-text">容量暂不可用</div>
+    // The backend maps the failure to one plain-language reason
+    // (see friendlyQuotaError): sidebar keeps the short line and
+    // puts the reason on the tooltip; the browse header /
+    // Inspector show it inline so the user sees WHY, not just
+    // that capacity is unavailable.
+    return (
+      <div className="quota-bar">
+        <div className="quota-text" title={compact ? quota.error : undefined}>
+          容量暂不可用
+        </div>
+        {!compact && <div className="quota-text muted">{quota.error}</div>}
+      </div>
+    )
   }
   if (quota.unlimited) {
     return (

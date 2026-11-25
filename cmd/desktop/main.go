@@ -107,6 +107,13 @@ func main() {
 		log.Printf("desktop: custom-oauth-clients.json: %v (own apps unavailable this run)", err)
 	}
 
+	// Apply the saved proxy settings before any outbound request:
+	// a manual proxy stored in Settings must be live from the
+	// first List/Quota call, not only after the user re-saves.
+	if err := application.ApplyProxySettings(); err != nil {
+		log.Printf("desktop: proxy settings: %v (falling back to system proxy)", err)
+	}
+
 	// Restore persisted mounts (and their groups) from SQLite;
 	// mounts whose credentials cannot be decrypted/rebuilt stay
 	// listed with status "error" instead of disappearing.

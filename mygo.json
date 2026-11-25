@@ -9,5 +9,6 @@
  "name": "ZyDrive",
  "out": "build",
  "slug": "zy-drive",
- "version": "0.8.4"
+ "icon": "resources/icon.png",
+ "version": "0.8.5"
 }

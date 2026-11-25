@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -114,10 +115,12 @@ func (a *App) AddMount(ctx context.Context, m *domain.Mount, cfg storage.Config)
 // a plain-language error; the caller shows it and offers a retry.
 //
 // SkipProbe (C, one-page form) changes only the last step: the
-// mount is saved WITHOUT a probe, marked Verified=false, and the
-// user re-tests it later from Settings. The OAuth wizard never
-// sets it — a token that was just exchanged should always probe
-// before it is saved.
+// mount is saved WITHOUT a probe — UNLESS the same config passed
+// TestMountConfig in the last 5 minutes (the wizard's
+// in-component test, step 2): then it is stored Verified=true
+// without probing again, so the wizard never tests twice. Any
+// other SkipProbe save is marked Verified=false and the user
+// re-tests it later from Settings.
 func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*domain.Mount, error) {
 	if strings.TrimSpace(in.DisplayName) == "" {
 		return nil, fmt.Errorf("app: 请给网盘起个名字")
@@ -147,8 +150,12 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		return nil, fmt.Errorf("app: 创建驱动失败：%w", err)
 	}
 	if in.SkipProbe {
-		// Saved unverified on purpose: the provider is built
-		// (bad config still fails here) but never probed.
+		// Saved without a fresh probe on purpose: the provider
+		// is built (bad config still fails here) but never
+		// probed — unless the same config was just tested OK
+		// in-component (see TestMountConfig): then the earlier
+		// probe is what verifies it.
+		verified = a.testedRecently(in.Provider, cfg, creds)
 	} else {
 		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -705,15 +712,18 @@ func probeRoot(ctx context.Context, p storage.Provider) error {
 // plain-language error and still offers "保存" — saving is the
 // user's choice, the test is only information.
 func (a *App) TestMountConfig(ctx context.Context, in AddMountInput) error {
-	if strings.TrimSpace(in.DisplayName) == "" {
-		return fmt.Errorf("app: 请给网盘起个名字")
-	}
+	// No display-name check here: a connectivity probe does not
+	// need a name — the wizard's in-component test (step 2) runs
+	// right after the token exchange, possibly before the user
+	// typed a name, and a name error there would read as a
+	// connection failure. The name is still required at save
+	// (AddMountWithCredentials) and by the wizard's Next gating.
 	switch in.Provider {
 	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderLocal:
 	default:
 		return fmt.Errorf("app: %s 还在 V0.2 接入，现在加不了", in.Provider)
 	}
-	cfg, _, err := a.mountConfig(in)
+	cfg, creds, err := a.mountConfig(in)
 	if err != nil {
 		return err
 	}
@@ -726,7 +736,41 @@ func (a *App) TestMountConfig(ctx context.Context, in AddMountInput) error {
 	if err := probeRoot(probeCtx, p); err != nil {
 		return humanProbeError(in.Provider, err)
 	}
+	// Remember the pass: a save of this exact config within 5
+	// minutes is stored Verified without probing again.
+	a.rememberTested(in.Provider, cfg, creds)
 	return nil
+}
+
+// testMemoKey hashes the probe inputs (provider + driver config
+// incl. credentials). DisplayName/Group are deliberately NOT part
+// of the key: renaming after a passed test must not void it.
+func testMemoKey(provider domain.ProviderKind, cfg storage.Config, creds mountCredentials) string {
+	canon, _ := json.Marshal(struct {
+		Provider domain.ProviderKind `json:"provider"`
+		Config   storage.Config      `json:"config"`
+		Creds    mountCredentials    `json:"creds"`
+	}{provider, cfg, creds})
+	sum := sha256.Sum256(canon)
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *App) rememberTested(provider domain.ProviderKind, cfg storage.Config, creds mountCredentials) {
+	a.testedMu.Lock()
+	defer a.testedMu.Unlock()
+	if a.testedOK == nil {
+		a.testedOK = map[string]time.Time{}
+	}
+	a.testedOK[testMemoKey(provider, cfg, creds)] = time.Now()
+}
+
+// testedRecently reports whether this exact config passed
+// TestMountConfig within the last 5 minutes.
+func (a *App) testedRecently(provider domain.ProviderKind, cfg storage.Config, creds mountCredentials) bool {
+	a.testedMu.Lock()
+	defer a.testedMu.Unlock()
+	at, ok := a.testedOK[testMemoKey(provider, cfg, creds)]
+	return ok && time.Since(at) <= 5*time.Minute
 }
 
 // TestMount re-probes a saved mount (C, Settings → "重新测试"):

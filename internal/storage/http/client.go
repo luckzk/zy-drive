@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/luckzk/zy-drive/internal/netproxy"
 )
 
 // RetryPolicy is declared per driver (limits live in Caps / driver code,
@@ -62,7 +64,11 @@ func New(policy *RetryPolicy) *Client {
 		p = *policy
 	}
 	return &Client{
-		HTTP:   &http.Client{Timeout: 120 * time.Second},
+		// Shared proxy-aware transport: every driver request
+		// (Dropbox/Drive/Drime/OneDrive) follows the proxy the
+		// user configured in Settings -> Network (system / manual
+		// / direct), not just ProxyFromEnvironment.
+		HTTP:   netproxy.NewClient(120),
 		Policy: p,
 	}
 }

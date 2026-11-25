@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/luckzk/zy-drive/internal/netproxy"
 )
 
 func TestSettingsRoundTripAcrossRestart(t *testing.T) {
@@ -25,14 +27,24 @@ func TestSettingsRoundTripAcrossRestart(t *testing.T) {
 	}
 
 	// Save a non-default set, then "restart" (fresh App, same DB).
+	// The proxy fields ride along: manual mode with a bare
+	// host:port is stored normalized (http://...), and saving
+	// applies it to the shared transport at once.
 	want := Settings{
 		Theme: "dark", Language: "en", DownloadDir: downloadDir,
 		SyncCompare: "checksum", SyncConcurrency: 8,
 		SyncSpeedLimitKBps: 1024, SyncConflict: "keep-both",
+		ProxyMode: "manual", ProxyHTTP: "http://127.0.0.1:18080", ProxySOCKS5: "",
 	}
 	if err := a.SaveSettings(want); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
 	}
+	if cur := netproxy.Current(); cur.Mode != netproxy.ModeManual || cur.HTTP != "http://127.0.0.1:18080" {
+		t.Fatalf("SaveSettings must apply the proxy at once, got %+v", cur)
+	}
+	// The proxy config is process-global: restore the default so
+	// later tests (mock token endpoints on loopback) are unaffected.
+	defer func() { _ = netproxy.Configure(netproxy.DefaultConfig()) }()
 	a2 := reopenApp(t, dbPath)
 	got, err = a2.GetSettings()
 	if err != nil {

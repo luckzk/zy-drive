@@ -26,6 +26,11 @@ frontend/vite.config.d.ts
 # 由 frontend/scripts/decode-fonts.mjs 解码，见该文件注释）
 frontend/public/fonts/*.woff2
 *.tsbuildinfo
+# Logo PNGs are binaries generated from the user's SVG (仓库里只存
+# frontend/public/logo.svg 文本；PNG 由 scripts/visual-check/
+# export-logo-png.mjs 生成，见 README 的 macOS 图标一节）
+frontend/public/logo.png
+resources/icon.png
 
 # Visual check (scripts/visual-check): harness deps, browser, shots — never commit
 scripts/visual-check/node_modules/

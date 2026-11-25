@@ -261,6 +261,7 @@ export default function App() {
                 <SettingsPage
                   lang={lang}
                   theme={theme}
+                  quotas={quotas}
                   onThemeChange={changeTheme}
                   onLanguageChange={changeLanguage}
                   onReauth={openReauth}

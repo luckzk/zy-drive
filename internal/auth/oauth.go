@@ -13,9 +13,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/luckzk/zy-drive/internal/netproxy"
 )
 
 // OAuthConfig describes one provider's Authorization Code flow.
@@ -124,9 +127,18 @@ func ExchangeCode(ctx context.Context, cfg *OAuthConfig, code string) (accessTok
 		return "", "", err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := http.DefaultClient.Do(req)
+	// Proxy-aware client (Settings -> Network): the exchange must
+	// follow the user's proxy, not just the process env vars.
+	// On failure the error carries a [proxy-kind=...] marker so
+	// the UI can tell "the proxy itself is down" apart from
+	// "the proxy cannot reach the provider" and "direct is
+	// blocked" — and the log line records provider, target host,
+	// proxy and error kind, never the code or a token.
+	resp, err := netproxy.NewClient(60).Do(req)
 	if err != nil {
-		return "", "", fmt.Errorf("auth: token exchange request: %w", err)
+		kind, proxyAddr := netproxy.ClassifyError(cfg.TokenURL, err)
+		log.Printf("oauth exchange: %s", netproxy.DescribeError(cfg.TokenURL, err))
+		return "", "", fmt.Errorf("auth: token exchange request [proxy-kind=%s proxy=%s]: %w", kind, proxyAddr, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))

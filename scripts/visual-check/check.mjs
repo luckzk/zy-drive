@@ -91,6 +91,14 @@ const STUB_QUOTAS_JSON = process.env.VISUAL_MOUNTS ? JSON.stringify(STUB_QUOTAS)
 const SLOW_MS = process.env.VISUAL_SLOW_LOAD ? 1200 : 0
 const STUB = `(() => {
   const SLOW_MS = ${SLOW_MS}
+  // window.open is intercepted in checks: the wizard auto-opens
+  // the authorize URL in the browser (2026-11-25 redesign) — in
+  // the headless check that would load the real Dropbox authorize
+  // page in a new tab. Record the URL and return a fake window so
+  // the frontend treats the tab as opened (no popup-blocked
+  // fallback) and nothing actually navigates.
+  window.__openedUrls = []
+  window.open = (url, ...rest) => { window.__openedUrls.push(String(url)); return { closed: false, close: () => {} } }
   // 慢速只影响首次调用：首屏加载时序的断言要看到“加载中”
   // 的样子，但后面的步骤（设置页等）各自调 ListMounts 时
   // 不应再被拖慢，否则固定等待会赶不上。
@@ -151,8 +159,12 @@ const STUB = `(() => {
         const mount = (${STUB_MOUNTS}).find((m) => m.id === args[0]) ?? (${STUB_MOUNTS})[0]
         return { ...mount, rootRef: '', rootLabel: args[1] + (args[2] ? '/' + args[2] : '') }
       }
-      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both' }
+      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '' }
       if (method === 'DesktopService.SaveSettings') return null
+      // 网络（v0.8.5）：检测到的系统代理 + 代理测试桩。via 与
+      // Detail 的文案照抄后端（internal/app/proxy.go）的格式。
+      if (method === 'DesktopService.GetSystemProxy') return { detected: true, http: 'http://127.0.0.1:7890', https: 'http://127.0.0.1:7890', via: '系统代理：http://127.0.0.1:7890' }
+      if (method === 'DesktopService.TestProxy') return { ok: true, detail: '经代理 http://127.0.0.1:7890 连通（200 OK，跟随系统代理）' }
       if (method === 'DesktopService.CheckDownloadDir') return null
       if (method === 'DesktopService.GetVersions') return { backend: '0.3.0', protocol: '1', engine: '0.1.0' }
       // Open-at-login deliberately throws here: in the dev shell /
@@ -462,7 +474,7 @@ try {
     if (dbxStep2?.includes('OAuth 客户端 ID')) failures.push('Dropbox 第 2 步串了 Drive 的字段名“OAuth 客户端 ID”')
     if (dbxStep2?.includes('Google Cloud Console')) failures.push('Dropbox 第 2 步串了 Drive 的指引（Google Cloud Console）')
     // 第 2 步长表单可滚动到底（v0.8.3）：内容区能纵向滚动，
-    // 滚到底后最后一项完整可见，“下一步：测试”按钮固定可见。
+    // 滚到底后最后一项完整可见，“下一步”按钮固定可见。
     const dbxScroll = await page.evaluate(() => {
       const body = document.querySelector('.dialog-body')
       if (!body) return { hasBody: false }
@@ -470,7 +482,7 @@ try {
       const items = [...body.querySelectorAll('.field, .notice-box, p')]
       const last = items[items.length - 1]?.getBoundingClientRect()
       const bodyRect = body.getBoundingClientRect()
-      const nextBtn = [...document.querySelectorAll('.dialog-actions button')].find((b) => b.textContent?.trim() === '下一步：测试')
+      const nextBtn = [...document.querySelectorAll('.dialog-actions button')].find((b) => b.textContent?.trim() === '下一步')
       const btnRect = nextBtn?.getBoundingClientRect()
       return {
         hasBody: true,
@@ -485,7 +497,7 @@ try {
     if (dbxScroll.hasBody && !dbxScroll.scrollable) failures.push('Dropbox 第 2 步长表单不能滚动（内容区应能纵向滚动）')
     if (dbxScroll.hasBody && !dbxScroll.atBottom) failures.push('Dropbox 第 2 步内容区滚不到底')
     if (dbxScroll.hasBody && !dbxScroll.lastVisible) failures.push('Dropbox 第 2 步滚到底后最后一项没有完整可见')
-    if (dbxScroll.hasBody && !dbxScroll.nextBtnInViewport) failures.push('Dropbox 第 2 步“下一步：测试”按钮不在视口内（底部栏应固定可见）')
+    if (dbxScroll.hasBody && !dbxScroll.nextBtnInViewport) failures.push('Dropbox 第 2 步“下一步”按钮不在视口内（底部栏应固定可见）')
     await page.screenshot({ path: path.join(SHOTS, '01e-wizard-dropbox.png') })
     await page.locator('.dialog-actions >> text=上一步').click()
     await page.waitForTimeout(300)
@@ -504,16 +516,35 @@ try {
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
 
-    // 1g. 一键授权自动回调 + 二选一卡片（v0.8.3）：Dropbox 配了
+    // 1g. 一键授权自动回调 + 二选一卡片（v0.8.5 改版）：Dropbox 配了
     // 内置 Client ID（桩），第 2 步是“官方应用（一键授权）”与
     // “自己的应用”两个并排选项卡片（没有三角折叠），默认官方
-    // 应用；点“打开浏览器授权”后，桩的 PollOAuthCallback 立刻
-    // 返回 done，Token 应自动换好填进表单（不用手动粘贴 code），
-    // 手动粘贴框仍在（浏览器没跳回时的兜底）。切到“自己的应用”
-    // 填 Client ID 点“保存为我的应用”，再切回官方应用，一键
-    // 授权必须还在（内置不受影响）。
+    // 应用；主流程只剩“打开浏览器授权”一个按钮 + 状态文案——
+    // 点它后浏览器自动打开（window.open 被桩拦下，只记 URL）、
+    // 桩的 PollOAuthCallback 立刻返回 done，Token 自动换好、
+    // 连接在授权组件内自动测过；授权码框、换取按钮、Token 粘贴
+    // 框全收进默认折叠的“手动粘贴（自动跳回失败时用）”兜底。
+    // “下一步”只在测试通过且名字填好时才可用；第 3 步只剩
+    // 确认与保存，不再重复测一次；从第 3 步点“上一步”回来，
+    // 授权与测试结果必须还在（不用重新授权）。
     await page.getByRole('button', { name: '添加网盘', exact: true }).click()
     await page.waitForTimeout(400)
+    // 1g0. 顶行卡片 hover 不被裁（2026-11-25）：网格顶部留了
+    // 8px 内边距，hover 上移 1px 后卡片顶边仍在对话框内容区内。
+    await page.hover('.provider-card >> nth=0')
+    await page.waitForTimeout(300)
+    const hoverTop = await page.evaluate(() => {
+      const card = document.querySelector('.provider-card')
+      const body = document.querySelector('.dialog-body')
+      if (!card || !body) return { found: false }
+      const r = card.getBoundingClientRect()
+      const bodyTop = body.getBoundingClientRect().top
+      return { found: true, cardTop: Math.round(r.top), bodyTop: Math.round(bodyTop), clipped: r.top < bodyTop - 1 }
+    })
+    console.log('hover top card:', JSON.stringify(hoverTop))
+    if (!hoverTop.found) failures.push('hover 检查找不到 provider-card / dialog-body')
+    if (hoverTop.found && hoverTop.clipped) failures.push(`顶行卡片 hover 上移后被裁：卡片顶 ${hoverTop.cardTop} < 内容区顶 ${hoverTop.bodyTop}`)
+    await page.screenshot({ path: path.join(SHOTS, '01g-hover-top-card.png') })
     await page.locator('.provider-card', { hasText: 'Dropbox' }).first().click()
     await page.waitForTimeout(300)
     await page.getByRole('button', { name: '下一步', exact: true }).click()
@@ -526,48 +557,87 @@ try {
     if (noDetails > 0) failures.push(`添加网盘向导里还有 ${noDetails} 个 <details> 三角折叠（应已全部删掉）`)
     await page.getByRole('button', { name: '打开浏览器授权', exact: true }).click()
     await page.waitForTimeout(3000)
-    const autoTokens = await page.evaluate(() => {
-      const d = document.querySelector('.dialog')
-      if (!d) return { found: false, hasAccess: false, hasRefresh: false, text: '', hasPasteBox: false }
-      const inputs = [...d.querySelectorAll('input')]
-      return {
-        found: true,
-        text: d.textContent ?? '',
-        hasAccess: inputs.some((i) => i.value === 'stub-access'),
-        hasRefresh: inputs.some((i) => i.value === 'stub-refresh'),
-        hasPasteBox: inputs.some((i) => (i.getAttribute('placeholder') ?? '').includes('code=')),
-      }
-    })
-    console.log('oneclick auto:', JSON.stringify({ hasAccess: autoTokens.hasAccess, hasRefresh: autoTokens.hasRefresh, hasPasteBox: autoTokens.hasPasteBox }))
-    if (!autoTokens.found) failures.push('一键授权后对话框不见了')
-    if (!autoTokens.hasAccess) failures.push('自动回调后 Access Token 没有自动填进表单（应由 PollOAuthCallback → 换取 Token 自动完成）')
-    if (!autoTokens.hasRefresh) failures.push('自动回调后 Refresh Token 没有自动填进表单')
-    if (!autoTokens.text.includes('Token 已换取成功')) failures.push('自动回调后没有显示“Token 已换取成功”')
-    if (!autoTokens.hasPasteBox) failures.push('手动粘贴 code 的兜底框不见了（浏览器没跳回时要用）')
-    // v0.8.4（Dropbox 一键授权修复）：自动换到 Token 后，同一个
-    // 单次有效的 code 不能再换一次——手动“换取 Token”按钮必须
-    // 变成禁用的“已换到 Token”，并显示链接生成时间（10 分钟有效）。
-    const afterExchange = await page.evaluate(() => {
+    const autoFlow = await page.evaluate(() => {
       const d = document.querySelector('.dialog')
       if (!d) return { found: false }
-      const btns = [...d.querySelectorAll('button')]
-      const exBtn = btns.find((b) => (b.textContent ?? '').includes('换取 Token') || (b.textContent ?? '').includes('已换到 Token'))
-      const codeInput = [...d.querySelectorAll('input')].find((i) => (i.getAttribute('placeholder') ?? '').includes('code='))
+      const text = d.textContent ?? ''
+      const inputs = [...d.querySelectorAll('input')]
+      const nextBtn = [...d.querySelectorAll('.dialog-actions button')].find((b) => (b.textContent ?? '').trim() === '下一步')
       return {
         found: true,
-        exchangeLabel: exBtn?.textContent ?? '',
-        exchangeDisabled: exBtn ? exBtn.disabled : null,
-        codeInputDisabled: codeInput ? codeInput.disabled : null,
-        hasLinkTime: (d.textContent ?? '').includes('链接生成于'),
-        hasSpentNote: (d.textContent ?? '').includes('不用再换一次'),
+        text,
+        openedUrls: window.__openedUrls ?? [],
+        hasTestPassed: text.includes('连接测试通过'),
+        hasTokenMsg: text.includes('Token 已换取成功'),
+        hasLinkTime: text.includes('链接生成于'),
+        // 手动兜底默认折叠：没展开之前没有 code 输入框。
+        hasPasteBox: inputs.some((i) => (i.getAttribute('placeholder') ?? '').includes('code=')),
+        nextDisabled: nextBtn ? nextBtn.disabled : null,
+        nextHint: text.includes('还差一步：请填写名字。'),
       }
     })
-    console.log('oneclick after exchange:', JSON.stringify(afterExchange))
-    if (!afterExchange.exchangeLabel.includes('已换到 Token')) failures.push('自动换到 Token 后手动按钮没有变成“已换到 Token”（同一 code 不能再换一次）')
-    if (afterExchange.exchangeDisabled !== true) failures.push('自动换到 Token 后手动“换取 Token”按钮没有禁用（会造成二次换取）')
-    if (afterExchange.codeInputDisabled !== true) failures.push('自动换到 Token 后授权码输入框没有禁用')
-    if (!afterExchange.hasLinkTime) failures.push('授权链接旁没有显示生成时间（code 只有 10 分钟有效）')
-    if (!afterExchange.hasSpentNote) failures.push('自动换到 Token 后没有“不用再换一次”的提示')
+    console.log('oneclick auto:', JSON.stringify({ opened: autoFlow.openedUrls, hasTestPassed: autoFlow.hasTestPassed, hasTokenMsg: autoFlow.hasTokenMsg, hasPasteBox: autoFlow.hasPasteBox, nextDisabled: autoFlow.nextDisabled }))
+    if (!autoFlow.found) failures.push('一键授权后对话框不见了')
+    if (!autoFlow.openedUrls?.some((u) => u.includes('dropbox.com/oauth2/authorize'))) failures.push('点“打开浏览器授权”后没有自动打开浏览器授权页（window.open 没被调用）')
+    if (!autoFlow.hasTokenMsg) failures.push('自动回调后没有显示“Token 已换取成功”')
+    if (!autoFlow.hasTestPassed) failures.push('自动换到 Token 后没有在授权组件内自动测试连接（应显示“连接测试通过”）')
+    if (!autoFlow.hasLinkTime) failures.push('授权链接旁没有显示生成时间（code 只有 10 分钟有效）')
+    if (autoFlow.hasPasteBox) failures.push('手动粘贴框默认是展开的（应默认折叠，只在“手动粘贴”入口里）')
+    if (autoFlow.nextDisabled !== true) failures.push('名字没填时“下一步”应禁用（测试通过还不够，名字必填）')
+    if (!autoFlow.nextHint) failures.push('“下一步”禁用时没有说明还缺名字（应显示“还差一步：请填写名字。”）')
+    // 填名字：“下一步”放行；第 3 步只剩确认与保存（不再重复
+    // 测一次）；点“上一步”回来，授权与测试结果必须还在。
+    await page.locator('.dialog input').first().fill('Dropbox 测试')
+    await page.waitForTimeout(300)
+    const nextEnabled = await page.evaluate(() => {
+      const b = [...document.querySelectorAll('.dialog-actions button')].find((x) => (x.textContent ?? '').trim() === '下一步')
+      return b ? !b.disabled : null
+    })
+    if (nextEnabled !== true) failures.push('名字填好且测试通过后“下一步”仍禁用')
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(400)
+    const step3 = await page.locator('.dialog').textContent()
+    if (!step3?.includes('连接已在上一步测通过')) failures.push('第 3 步没有说明连接已在上一步测过（不应再重复测一次）')
+    if (!step3?.includes('保存')) failures.push('第 3 步没有“保存”按钮')
+    await page.getByRole('button', { name: '上一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const backToStep2 = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      if (!d) return { found: false }
+      const text = d.textContent ?? ''
+      const nextBtn = [...d.querySelectorAll('.dialog-actions button')].find((b) => (b.textContent ?? '').trim() === '下一步')
+      return { found: true, stillPassed: text.includes('连接测试通过'), nextDisabled: nextBtn ? nextBtn.disabled : null }
+    })
+    if (!backToStep2.stillPassed) failures.push('从第 3 步点“上一步”回来，授权组件内的测试通过状态丢了（应保留，不用重新授权）')
+    if (backToStep2.nextDisabled !== false) failures.push('从第 3 步回来后“下一步”应仍可用（名字已填、测试已通过）')
+    // 手动兜底（默认折叠）：展开后 code 框里是自动收到的 code
+    // （已禁用：code 已用过）、换取按钮变成禁用的“已换到
+    // Token”、Token 字段里是桩换到的 Token。
+    await page.getByRole('button', { name: '手动粘贴（自动跳回失败时用）', exact: true }).click()
+    await page.waitForTimeout(300)
+    const manual = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      if (!d) return { found: false }
+      const inputs = [...d.querySelectorAll('input')]
+      const codeInput = inputs.find((i) => (i.getAttribute('placeholder') ?? '').includes('code='))
+      const exBtn = [...d.querySelectorAll('button')].find((b) => (b.textContent ?? '').includes('换取 Token') || (b.textContent ?? '').includes('已换到 Token'))
+      return {
+        found: true,
+        codeValue: codeInput?.value ?? '',
+        codeDisabled: codeInput ? codeInput.disabled : null,
+        exchangeLabel: exBtn?.textContent ?? '',
+        exchangeDisabled: exBtn ? exBtn.disabled : null,
+        hasAccess: inputs.some((i) => i.value === 'stub-access'),
+        hasRefresh: inputs.some((i) => i.value === 'stub-refresh'),
+      }
+    })
+    console.log('oneclick manual:', JSON.stringify(manual))
+    if (manual.codeValue !== 'stub-code-1') failures.push(`手动粘贴框里没有自动收到的 code，实测 ${JSON.stringify(manual.codeValue)}`)
+    if (manual.codeDisabled !== true) failures.push('自动换到 Token 后授权码输入框没有禁用')
+    if (!manual.exchangeLabel.includes('已换到 Token')) failures.push('自动换到 Token 后手动按钮没有变成“已换到 Token”（同一 code 不能再换一次）')
+    if (manual.exchangeDisabled !== true) failures.push('自动换到 Token 后手动“换取 Token”按钮没有禁用（会造成二次换取）')
+    if (!manual.hasAccess) failures.push('手动粘贴区里没有自动换到的 Access Token')
+    if (!manual.hasRefresh) failures.push('手动粘贴区里没有自动换到的 Refresh Token')
     await page.screenshot({ path: path.join(SHOTS, '01g-wizard-oneclick.png') })
     // 切到自己的应用：填 Client ID，保存为我的应用。
     await page.locator('.provider-card', { hasText: '自己的应用' }).first().click()
@@ -592,6 +662,7 @@ try {
     const backToBuiltin = await page.locator('.dialog').textContent()
     if (!backToBuiltin?.includes('一键授权（ZyDrive 官方应用）')) failures.push('切回官方应用后一键授权不见了（内置应不受自建应用影响）')
     if (!backToBuiltin?.includes('打开浏览器授权')) failures.push('切回官方应用后没有“打开浏览器授权”按钮')
+    if (!backToBuiltin?.includes('连接测试通过')) failures.push('切回官方应用后授权组件内的测试通过状态丢了（测试属于 Token，切换应用来源不应清掉它）')
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
   }
@@ -1081,7 +1152,7 @@ try {
     }
   })
   console.log('settings cards:', JSON.stringify(settingsCards))
-  if (settingsCards.cardCount < 5) failures.push(`设置页分组卡片应至少 5 张（通用/网盘/同步默认/Agent/关于），实测 ${settingsCards.cardCount} 张`)
+  if (settingsCards.cardCount < 6) failures.push(`设置页分组卡片应至少 6 张（通用/网络/网盘/同步默认/Agent/关于），实测 ${settingsCards.cardCount} 张`)
   for (const c of settingsCards.cardInfo) {
     if (c.bg !== 'rgb(245, 245, 245)') failures.push(`设置卡片背景应为 --card #F5F5F5，实测 ${c.bg}`)
     if (c.radius !== '16px') failures.push(`设置卡片圆角应为 16px，实测 ${c.radius}`)
@@ -1101,6 +1172,58 @@ try {
     if (s.radius !== '8px') failures.push(`选择框圆角应为 8px，实测 ${s.radius}`)
     if (s.appearance !== 'none') failures.push(`选择框应去掉浏览器默认外观（appearance: none），实测 ${s.appearance}`)
     if (!s.hasArrow) failures.push('选择框没有自定义下拉箭头（background-image 应含 SVG）')
+  }
+
+  // 4b3. 设置页“网络”区（v0.8.5）：三选一（跟随系统代理默认 /
+  // 手动设置 / 直连）+ 检测到的系统代理一行 + 手动地址字段 +
+  // “测试代理”按钮。桩的系统代理是 127.0.0.1:7890。
+  const networkSection = await page.evaluate(() => {
+    const card = [...document.querySelectorAll('.settings-card')].find((c) => {
+      const h2 = c.querySelector('h2')
+      return h2?.textContent?.trim() === '网络'
+    })
+    if (!card) return { found: false }
+    const text = card.textContent ?? ''
+    const radios = [...card.querySelectorAll('input[type="radio"]')].map((r) => ({ checked: r.checked }))
+    return {
+      found: true,
+      hasSystem: text.includes('跟随系统代理'),
+      hasManual: text.includes('手动设置'),
+      hasDirect: text.includes('直连'),
+      systemChecked: radios[0]?.checked ?? null,
+      detectedLine: text.includes('系统代理：http://127.0.0.1:7890'),
+      hasTestBtn: [...card.querySelectorAll('button')].some((b) => (b.textContent ?? '').trim() === '测试代理'),
+      hasManualFields: text.includes('HTTP 代理'),
+    }
+  })
+  console.log('settings network:', JSON.stringify(networkSection))
+  if (!networkSection.found) failures.push('设置页没有“网络”区（v0.8.5 应新增）')
+  if (networkSection.found) {
+    if (!networkSection.hasSystem || !networkSection.hasManual || !networkSection.hasDirect) failures.push('网络区三选一不完整（跟随系统代理 / 手动设置 / 直连）')
+    if (networkSection.systemChecked !== true) failures.push('网络区默认应选中“跟随系统代理”')
+    if (!networkSection.detectedLine) failures.push('网络区没有显示检测到的系统代理（桩：http://127.0.0.1:7890）')
+    if (!networkSection.hasTestBtn) failures.push('网络区没有“测试代理”按钮')
+    if (networkSection.hasManualFields) failures.push('手动地址字段在“跟随系统代理”模式下不应显示')
+    // 切到手动设置：地址字段出现，填 HTTP 代理、保存、测试。
+    await page.locator('.settings-card', { hasText: '网络' }).getByRole('radio', { name: '手动设置' }).click()
+    await page.waitForTimeout(300)
+    const manualShown = await page.evaluate(() => {
+      const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '网络')
+      return card?.textContent?.includes('HTTP 代理') ?? false
+    })
+    if (!manualShown) failures.push('切到“手动设置”后没有出现 HTTP 代理地址字段')
+    await page.locator('.settings-card', { hasText: '网络' }).locator('input[placeholder*="127.0.0.1:7890"]').first().fill('http://127.0.0.1:7890')
+    await page.getByRole('button', { name: '保存代理设置', exact: true }).click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '测试代理', exact: true }).click()
+    await page.waitForTimeout(300)
+    const proxyTest = await page.evaluate(() => {
+      const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '网络')
+      return card?.textContent?.includes('连通') ?? false
+    })
+    if (!proxyTest) failures.push('点“测试代理”后没有显示连通结果（桩应返回经代理连通）')
+    const networkCard = page.locator('.settings-card').nth(1)
+    await networkCard.screenshot({ path: path.join(SHOTS, '04b-settings-network.png') })
   }
 
   // 4b2b. 设置页 S3 “修改桶 / 前缀”（问题 1，VISUAL_MOUNTS）：

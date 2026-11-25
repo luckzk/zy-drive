@@ -177,6 +177,12 @@ func (p *Provider) rpc(ctx context.Context, op, endpoint string, arg any, out an
 		if err := json.NewEncoder(&buf).Encode(arg); err != nil {
 			return p.wrap(op, err)
 		}
+	} else {
+		// Void input (only Quota calls rpc with a nil arg):
+		// Dropbox's documented form is a literal JSON `null`
+		// body, not an empty body — every SDK sends `null`
+		// for get_space_usage / get_current_account.
+		buf.WriteString("null")
 	}
 	token, err := p.tokens.Token(ctx)
 	if err != nil {

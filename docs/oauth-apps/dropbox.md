@@ -25,12 +25,18 @@
 ### 2. 勾权限并提交
 
 1. 进新建应用的 **Permissions** 页。
-2. 勾选以下四项：
+2. 勾选以下五项：
    - `files.metadata.read`
    - `files.metadata.write`
    - `files.content.read`
    - `files.content.write`
+   - `account_info.read`（容量显示需要它：`/2/users/get_space_usage`
+     要求这个权限；没有它文件照常用、容量会报 `missing_scope`，
+     侧栏显示“容量暂不可用”。旧版指南漏了这一项。）
 3. 点页面下方的 **Submit**。
+   - 注意：给应用加权限后，**已授权过的 Token 不会自动获得新权限**，
+     必须在 ZyDrive 里重新授权一次（设置页 → 网盘 → 重新授权），
+     新 Token 才会带上 `account_info.read`，容量才会显示。
 
 ### 3. 复制 App key（就是 Client ID）
 

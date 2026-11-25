@@ -365,6 +365,12 @@ export interface PlanSummary {
  */
 export type ProviderKind = "s3" | "dropbox" | "drive" | "onedrive" | "drime" | "local" | "facebook" | "instagram";
 
+/** ProxyTestResult is what TestProxy returns. */
+export interface ProxyTestResult {
+  ok: boolean;
+  detail: string;
+}
+
 /**
  * Run is one actual execution of a SyncJob: plan, progress, result.
  * Every Run has a unique ID tying together plan, transfer batch and errors.
@@ -430,6 +436,20 @@ export interface Settings {
   syncSpeedLimitKBps: number;
   /** keep-both (only implemented value) */
   syncConflict: string;
+  /**
+   * Proxy (Settings -> Network, 2026-11-25): where outbound
+   * traffic goes. system (default) = macOS system proxy when
+   * detected, else HTTP(S)_PROXY env vars; manual = the two
+   * addresses below; direct = no proxy at all. Saved as
+   * proxy.mode / proxy.http / proxy.socks5. Applies
+   * immediately on save — the shared netproxy transport reads
+   * the current config per request, no restart.
+   */
+  proxyMode: string;
+  /** manual HTTP proxy, "host:port" or full URL */
+  proxyHttp: string;
+  /** manual SOCKS5 proxy, "host:port" or full URL */
+  proxySocks5: string;
 }
 
 /**
@@ -468,6 +488,26 @@ export interface SyncJob {
   nextRunAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** SystemProxyInfo is what GetSystemProxy returns for display. */
+export interface SystemProxyInfo {
+  detected: boolean;
+  http?: string;
+  https?: string;
+  socks5?: string;
+  /** a PAC URL was configured */
+  pac?: boolean;
+  /**
+   * PACNote explains the PAC limitation in plain language when
+   * the system proxy came from a PAC file.
+   */
+  pacNote?: string;
+  /**
+   * Via is the one-line summary the Settings page shows, e.g.
+   * "系统代理：http://127.0.0.1:7890" or "未检测到系统代理".
+   */
+  via: string;
 }
 
 /**
@@ -609,6 +649,8 @@ export const DesktopService = {
    * never saved). The frontend applies theme/language immediately.
    */
   getSettings: bind<[], Settings>("DesktopService.GetSettings", () => []),
+  /** GetSystemProxy reports the OS-configured proxy (Settings -> Network). */
+  getSystemProxy: bind<[], SystemProxyInfo>("DesktopService.GetSystemProxy", () => []),
   /**
    * GetVersions returns backend / protocol / engine versions for the
    * Settings → About section. The frontend version is a frontend
@@ -682,6 +724,11 @@ export const DesktopService = {
    * one-page form "测试连接") without persisting anything.
    */
   testMountConfig: bind<[AddMountInput], void>("DesktopService.TestMountConfig", (in_: AddMountInput) => [in_]),
+  /**
+   * TestProxy sends one request through the current proxy setup and
+   * reports pass/fail with the reason.
+   */
+  testProxy: bind<[], ProxyTestResult>("DesktopService.TestProxy", () => []),
   /** Transfers lists transfers for the bottom queue panel. */
   transfers: bind<[], (Transfer | null)[]>("DesktopService.Transfers", () => []),
   /** UpdateMountGroup changes a mount's sidebar group. */

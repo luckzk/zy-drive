@@ -59,6 +59,23 @@ make build
 
 > 二进制名随产品名：`zy-drive-desktop` / `zy-drive-agent` / `zy-drive`（2026-11-25 从 `mcm-*` 改名；旧的 `./build/mcm-desktop` 已失效，重新 `make build` 即可）。配置目录 `~/.config/zy-drive`（Agent 为 `~/.config/zy-drive-agent`）。
 
+## macOS 应用图标（Dock / 菜单栏）
+
+`make build` 只产出裸二进制，直接跑它时 Dock 显示通用图标——Dock 图标只存在于 `.app` 包里。拿到带图标的版本（Mac 上）：
+
+```sh
+# 1. 先生成图标 PNG（只跑一次；PNG 是二进制，推不上仓库，Mac 上必须本地跑）
+#    需要先在 scripts/visual-check/ 里装好依赖与浏览器（见该目录 README）
+node scripts/visual-check/export-logo-png.mjs
+# 2. 打出 .app（需要 mygo CLI；没有就按提示装：go install github.com/egoist/mygo/cmd/mygo@v0.10.0）
+make app
+# 3. 把 build/darwin-arm64/ZyDrive.app 拖进“应用程序”，或直接双击启动
+```
+
+- Dock 图标：`mygo build` 用仓库根 `resources/icon.png` 做 `.app` 图标；缺了它 `make app` 会明确报错，不会静默打出默认图标的包。
+- 菜单栏托盘图标：桌面启动时读同一份 `resources/icon.png`（`.app` 内是 `Contents/Resources/icon.png`，源码运行是仓库根那份），显示在屏幕顶部菜单栏；缺了它托盘只显示“ZyDrive”文字，不影响运行。
+- 窗口内顶栏图标：应用窗口左上角的云是 `frontend/public/logo.svg`（用户提供的 SVG，构建时进 `frontend/dist`），与上面两处不是同一份文件；顶栏 logo 在 0.8.5 的 visual-check 里有断言（存在且可见）。
+
 ## 目录
 
 ```

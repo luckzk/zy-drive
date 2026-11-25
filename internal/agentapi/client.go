@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/netproxy"
 )
 
 // Client is the desktop-side Agent client. It negotiates the protocol
@@ -25,7 +25,7 @@ type Client struct {
 // NewClient returns a Client for an Agent at baseURL (e.g.
 // https://agent.example.com, no trailing slash).
 func NewClient(baseURL, apiToken string) *Client {
-	return &Client{baseURL: baseURL, token: apiToken, http: &http.Client{Timeout: 30 * time.Second}}
+	return &Client{baseURL: baseURL, token: apiToken, http: netproxy.NewClient(30)}
 }
 
 // Health checks the Agent and verifies the protocol version.

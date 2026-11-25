@@ -22,6 +22,7 @@ import (
 	"github.com/aws/smithy-go"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/netproxy"
 	"github.com/luckzk/zy-drive/internal/storage"
 )
 
@@ -73,6 +74,14 @@ func New(cfg storage.Config) (storage.Provider, error) {
 			o.BaseEndpoint = aws.String(cfg.Endpoint)
 		}
 		o.UsePathStyle = cfg.Extra["pathStyle"] == "true"
+		// Proxy-aware HTTP client (Settings -> Network): S3/R2
+		// requests follow the user's proxy like every other
+		// driver. Set here, not via config.WithHTTPClient:
+		// LoadDefaultConfig tries to add custom RootCAs to a
+		// plain *http.Client and fails when the environment
+		// carries any (sandbox MITM CA). No timeout: the SDK
+		// default had none either.
+		o.HTTPClient = netproxy.NewClient(0)
 	})
 	return &Provider{client: client, bucket: bucket, prefix: strings.Trim(cfg.Extra["prefix"], "/")}, nil
 }

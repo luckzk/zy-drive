@@ -14,7 +14,7 @@
 // into view, rows stagger in, loading is skeleton blocks shaped like
 // the real rows (no "加载中…" text, no spinner).
 import { useCallback, useEffect, useState } from 'react'
-import type { Agent, Mount, Settings, VersionInfo } from '../mygo'
+import type { Agent, Mount, MountQuota, Settings, SystemProxyInfo, VersionInfo } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { formatTime, mountStatusLabel, newId } from '../lib/format'
 import { t, type Lang } from '../lib/i18n'
@@ -22,7 +22,7 @@ import { FRONTEND_VERSION } from '../version'
 import { Reveal, Skeleton, staggerStyle, useClosing } from '../components/motion'
 import { SectionIcon } from '../components/icons'
 
-type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about'
+type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network'
 
 // SectionHead — one Settings section's title row: flat-color-icons
 // glyph + 18px title (weight stays 400) + one-line description,
@@ -55,6 +55,7 @@ function SectionHead({
 export default function SettingsPage({
   lang,
   theme,
+  quotas,
   onThemeChange,
   onLanguageChange,
   onReauth,
@@ -63,6 +64,11 @@ export default function SettingsPage({
 }: {
   lang: Lang
   theme: string
+  // Capacity per mount (from App's 5-minute refresh): a failed
+  // quota carries the plain-language reason, shown under the
+  // mount row next to the re-authorize button — that is where
+  // the fix (e.g. re-authorize after a missing scope) happens.
+  quotas?: Record<string, MountQuota>
   onThemeChange: (theme: string) => void
   onLanguageChange: (lang: Lang) => void
   onReauth: (m: Mount) => void
@@ -149,11 +155,30 @@ export default function SettingsPage({
   // ---- download folder check ----
   const [dirMsg, setDirMsg] = useState<string | null>(null)
 
+  // ---- 网络 / 代理 ----
+  const [systemProxy, setSystemProxy] = useState<SystemProxyInfo | null>(null)
+  const [proxyTestResult, setProxyTestResult] = useState<string | null>(null)
+  const [proxyTestBusy, setProxyTestBusy] = useState(false)
+  // The proxy fields as last saved: the manual address inputs
+  // edit the draft, and "测试代理" only means something once the
+  // draft is saved (the backend applies on save, immediately).
+  const [lastSavedProxy, setLastSavedProxy] = useState<{ mode: string; http: string; socks5: string } | null>(null)
+
+  const loadSystemProxy = useCallback(async () => {
+    try {
+      setSystemProxy(await api.getSystemProxy())
+    } catch {
+      setSystemProxy(null)
+    }
+  }, [])
+
   const loadSettings = useCallback(async () => {
     setSettingsLoading(true)
     setSettingsError(null)
     try {
-      setDraft(await api.getSettings())
+      const s = await api.getSettings()
+      setDraft(s)
+      setLastSavedProxy({ mode: s.proxyMode, http: s.proxyHttp, socks5: s.proxySocks5 })
     } catch (e) {
       setSettingsError(friendlyError(e))
     } finally {
@@ -176,6 +201,7 @@ export default function SettingsPage({
   useEffect(() => {
     void loadSettings()
     void loadMounts()
+    void loadSystemProxy()
     void api
       .getVersions()
       .then(setVersions)
@@ -192,7 +218,7 @@ export default function SettingsPage({
         setOpenAtLogin(null)
         setLoginNote(friendlyError(e))
       })
-  }, [loadSettings, loadMounts])
+  }, [loadSettings, loadMounts, loadSystemProxy])
 
   const saveDraft = async (next: Settings) => {
     setBusy(true)
@@ -201,11 +227,43 @@ export default function SettingsPage({
     try {
       await api.saveSettings(next)
       setDraft(next)
+      setLastSavedProxy({ mode: next.proxyMode, http: next.proxyHttp, socks5: next.proxySocks5 })
       setSavedMsg(t(lang, 'saved'))
     } catch (e) {
       setSettingsError(friendlyError(e))
     } finally {
       setBusy(false)
+    }
+  }
+
+  // Proxy mode applies the moment it changes (like theme): the
+  // backend applies the saved config immediately, no restart.
+  const changeProxyMode = (mode: string) => {
+    if (!draft) return
+    const s = { ...draft, proxyMode: mode }
+    setDraft(s)
+    void saveDraft(s)
+  }
+
+  // "测试代理": one request through the current (saved) proxy
+  // setup. Only meaningful once the draft is saved — the test
+  // button stays disabled while the manual addresses are dirty.
+  const proxyDirty =
+    draft !== null &&
+    lastSavedProxy !== null &&
+    (draft.proxyMode !== lastSavedProxy.mode || draft.proxyHttp !== lastSavedProxy.http || draft.proxySocks5 !== lastSavedProxy.socks5)
+
+  const runProxyTest = async () => {
+    if (!draft || proxyDirty) return
+    setProxyTestBusy(true)
+    setProxyTestResult(null)
+    try {
+      const res = await api.testProxy()
+      setProxyTestResult(res?.detail ?? '无返回')
+    } catch (e) {
+      setProxyTestResult(friendlyError(e))
+    } finally {
+      setProxyTestBusy(false)
     }
   }
 
@@ -458,6 +516,88 @@ export default function SettingsPage({
         </section>
       </Reveal>
 
+      {/* ---- 网络 ---- */}
+      <Reveal>
+        <section className="settings-card">
+        <SectionHead section="network" title="网络" desc="网盘连接走不走代理。保存后立即生效，不用重启。" />
+        {settingsLoading || !draft ? (
+          <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载设置">
+            <Skeleton height={36} width="60%" />
+            <Skeleton height={36} width="80%" />
+          </div>
+        ) : (
+          <>
+            <div className="field">
+              <label>代理</label>
+              <label className="radio-row">
+                <input
+                  type="radio"
+                  name="proxy-mode"
+                  checked={draft.proxyMode === '' || draft.proxyMode === 'system'}
+                  onChange={() => changeProxyMode('system')}
+                />
+                <span>跟随系统代理（默认）</span>
+              </label>
+              <label className="radio-row">
+                <input type="radio" name="proxy-mode" checked={draft.proxyMode === 'manual'} onChange={() => changeProxyMode('manual')} />
+                <span>手动设置</span>
+              </label>
+              <label className="radio-row">
+                <input type="radio" name="proxy-mode" checked={draft.proxyMode === 'direct'} onChange={() => changeProxyMode('direct')} />
+                <span>直连（不走代理）</span>
+              </label>
+              <div className="hint">跟随系统代理：用 macOS 系统设置里的代理（包括 PAC 解析出的第一个代理）；没检测到系统代理时，改读 HTTP_PROXY / HTTPS_PROXY 环境变量。只影响新发起的请求，已在传的文件不受影响。</div>
+            </div>
+            {systemProxy && (
+              <p className="muted" style={{ margin: '0 0 12px' }}>
+                {systemProxy.via}
+                {systemProxy.pacNote ? ` ${systemProxy.pacNote}` : ''}
+              </p>
+            )}
+            {draft.proxyMode === 'manual' && (
+              <>
+                <div className="field">
+                  <label>HTTP 代理（可选）</label>
+                  <input
+                    className="input"
+                    placeholder="例如：http://127.0.0.1:7890"
+                    autoComplete="off"
+                    value={draft.proxyHttp}
+                    onChange={(e) => setDraft({ ...draft, proxyHttp: e.target.value })}
+                  />
+                  <div className="hint">格式：http://主机:端口 或 https://主机:端口。留空表示 HTTP(S) 请求不走 HTTP 代理。</div>
+                </div>
+                <div className="field">
+                  <label>SOCKS5 代理（可选）</label>
+                  <input
+                    className="input"
+                    placeholder="例如：socks5://127.0.0.1:1080"
+                    autoComplete="off"
+                    value={draft.proxySocks5}
+                    onChange={(e) => setDraft({ ...draft, proxySocks5: e.target.value })}
+                  />
+                  <div className="hint">格式：socks5://主机:端口。只有没填 HTTP 代理时才用 SOCKS5（与 macOS 的处理一致）。</div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
+                    保存代理设置
+                  </button>
+                </div>
+                {proxyDirty && <p className="muted">地址改了还没保存，先点“保存代理设置”。</p>}
+              </>
+            )}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <button className="btn" disabled={proxyTestBusy || proxyDirty} onClick={() => void runProxyTest()}>
+                {proxyTestBusy ? '测试中…' : '测试代理'}
+              </button>
+            </div>
+            {proxyTestResult && <div className="notice-box">{proxyTestResult}</div>}
+            <p className="muted">测试代理会对 Dropbox 的 token 端点发一次请求：通了就说明这套代理能连上网盘服务；不通会写清是代理本身没起来、还是代理连不上对方。</p>
+          </>
+        )}
+        </section>
+      </Reveal>
+
       {/* ---- 网盘 ---- */}
       <Reveal>
         <section className="settings-card">
@@ -525,6 +665,11 @@ export default function SettingsPage({
                 {testMountMsg[m.id] && (
                   <div style={{ fontSize: 13, marginTop: 4 }}>
                     {testMountMsg[m.id]}
+                  </div>
+                )}
+                {quotas?.[m.id]?.error && (
+                  <div style={{ fontSize: 13, marginTop: 4 }}>
+                    容量暂不可用：{quotas[m.id].error}
                   </div>
                 )}
                 {reauthTarget?.id === m.id && (

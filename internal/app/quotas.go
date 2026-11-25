@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log"
 	"strings"
 	"time"
 
@@ -53,6 +54,11 @@ func (a *App) mountQuota(ctx context.Context, m *domain.Mount) *domain.MountQuot
 	defer cancel()
 	used, total, err := qs.Quota(probeCtx)
 	if err != nil {
+		// Log the real reason: the UI only shows "容量暂不可用",
+		// so without this line the cause (e.g. a missing scope)
+		// is invisible anywhere. ProviderError never contains
+		// tokens, so this is safe to log.
+		log.Printf("quota: mount=%s provider=%s: %v", m.ID, m.Provider, err)
 		q.Error = friendlyQuotaError(err)
 		return q
 	}
@@ -68,12 +74,28 @@ func (a *App) mountQuota(ctx context.Context, m *domain.Mount) *domain.MountQuot
 	return q
 }
 
-// friendlyQuotaError strips the storage prefix so the UI shows a
-// short human reason ("容量暂不可用" is rendered by the frontend;
-// the raw message is kept here for debugging, without secrets —
-// ProviderError never contains tokens).
+// friendlyQuotaError turns a quota failure into one plain-language
+// reason the UI shows next to "容量暂不可用" (sidebar tooltip,
+// browse header / Inspector inline, Settings drives row). The raw
+// message is only kept in the backend log (see mountQuota) —
+// ProviderError never contains tokens.
 func friendlyQuotaError(err error) string {
 	msg := err.Error()
 	msg = strings.TrimPrefix(msg, "storage: ")
-	return msg
+	switch {
+	case strings.Contains(msg, "missing_scope") && strings.Contains(msg, "dropbox"):
+		// get_space_usage needs account_info.read: the token was
+		// authorized before ZyDrive requested it (0.8.4 and
+		// earlier did not). Files still work; only capacity
+		// fails. Enabling the scope in the App Console alone is
+		// not enough — an old token never gains a new scope, so
+		// the user must re-authorize this mount.
+		return "容量接口需要 account_info.read 权限：请先在 Dropbox 应用控制台 → Permissions 里勾选 account_info.read 并提交，然后在设置页 → 网盘 → 重新授权这个网盘"
+	case strings.Contains(msg, "401"), strings.Contains(msg, "invalid_access_token"), strings.Contains(msg, "expired_access_token"):
+		return "授权已过期或被撤销：请重新授权这个网盘"
+	case strings.Contains(msg, "connection"), strings.Contains(msg, "timeout"), strings.Contains(msg, "network"), strings.Contains(msg, "no such host"):
+		return "网络问题，容量暂时查不到：请检查网络或代理设置（设置 → 网络）"
+	default:
+		return msg
+	}
 }

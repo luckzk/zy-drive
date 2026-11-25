@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/luckzk/zy-drive/internal/netproxy"
 )
 
 // FormRefresher builds a Refresher that exchanges a refresh token at a
@@ -34,9 +37,15 @@ func FormRefresher(tokenURL, clientID, clientSecret string) Refresher {
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		resp, err := http.DefaultClient.Do(req)
+		// Proxy-aware client (Settings -> Network), same as the
+		// code exchange: a refresh must follow the user's proxy.
+		// The log line records target, proxy and error kind,
+		// never a token.
+		resp, err := netproxy.NewClient(60).Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("oauth: refresh request: %w", err)
+			kind, proxyAddr := netproxy.ClassifyError(tokenURL, err)
+			log.Printf("oauth refresh: %s", netproxy.DescribeError(tokenURL, err))
+			return nil, fmt.Errorf("oauth: refresh request [proxy-kind=%s proxy=%s]: %w", kind, proxyAddr, err)
 		}
 		defer resp.Body.Close()
 		var body struct {

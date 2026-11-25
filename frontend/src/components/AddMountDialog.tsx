@@ -92,7 +92,7 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[] }> = {
     steps: [
       '打开 dropbox.com/developers/apps，点 Create app。',
       '选 Scoped access，权限选 Full Dropbox（或 App folder，只访问它自己的文件夹）。',
-      'Permissions 页勾选 files.metadata.read、files.metadata.write、files.content.read、files.content.write。',
+      'Permissions 页勾选 files.metadata.read、files.metadata.write、files.content.read、files.content.write、account_info.read（最后一项是容量显示要的，没有它文件照常用、容量会报 missing_scope）。',
       'Settings 页拿到 App key（就是 Client ID）和 App secret；Redirect URIs 里加一行 http://localhost（不带端口，运行时用随机端口）。',
       '点“生成授权链接”，在浏览器里登录 Dropbox 点允许；授权完浏览器会自动跳回 ZyDrive，code 自己换成 Token，不用复制。如果浏览器没跳回，再从地址栏复制 code= 后面的值，粘贴回来点“换取 Token”。',
     ],
@@ -121,105 +121,114 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[] }> = {
 }
 
 // OAuthCodeFlow — the one mechanical piece the three OAuth
-// providers genuinely share: generate the authorize link, wait
-// for the browser to jump back (A: the frontend polls and the
-// code exchanges itself), or paste the code by hand when the
-// jump-back did not happen. Everything around it (field labels,
-// app-console guide, scopes, paste hints) is per-provider in the
-// branches below, so the three step-2 forms no longer look — or
-// read — like the same form.
+// providers genuinely share: generate the authorize link, open the
+// browser, wait for the jump-back, exchange automatically, then
+// test the connection right here in the component. The main flow
+// shows exactly one button + status text; the code box, the manual
+// exchange button and the token paste live in the parent's
+// collapsed "手动粘贴" entry (fallback only). Everything around it
+// (field labels, app-console guide, scopes, paste hints) is
+// per-provider in the branches below, so the three step-2 forms no
+// longer look — or read — like the same form.
+//
+// Status flow (2026-11-25 redesign): idle → waiting （等浏览器
+// 返回…) → exchanging （换取中，inside oauthMsg) → testing （正在
+// 测试连接…) → passed （测试通过，下一步可用） / failed （原因 +
+// “重新测试”）. A network-kind exchange failure shows one error +
+// one "重新换取（不用重新授权）" retry; a dead code gets no retry,
+// only a new link.
 function OAuthCodeFlow({
   authUrl,
-  code,
-  setCode,
+  popupBlocked,
+  onOpenAuthUrl,
   oauthBusy,
   oauthMsg,
   waiting,
   onCancelWait,
   genAuthLink,
-  exchangeCode,
   generateLabel,
   generatePrimary,
-  // tokensReady: a token was already obtained from this flow —
-  // the code is spent, exchanging again can only fail.
-  // linkAt: when the current link was minted (ms epoch); the
-  // code lives 10 minutes and is single-use.
-  tokensReady,
   linkAt,
+  authTest,
+  authTestMsg,
+  onRetest,
+  exchangeRetryable,
+  onRetryExchange,
 }: {
   authUrl: string
-  code: string
-  setCode: (v: string) => void
+  popupBlocked: boolean
+  onOpenAuthUrl: () => void
   oauthBusy: boolean
   oauthMsg: string | null
   waiting: boolean
   onCancelWait: () => void
   genAuthLink: () => void
-  exchangeCode: () => void
   // One-click card: the same button, relabelled as the card's
   // primary action ("打开浏览器授权").
   generateLabel?: string
   generatePrimary?: boolean
-  tokensReady?: boolean
+  // linkAt: when the current link was minted (ms epoch); the
+  // code lives 10 minutes and is single-use.
   linkAt?: number | null
+  authTest: 'idle' | 'testing' | 'passed' | 'failed'
+  authTestMsg: string | null
+  onRetest: () => void
+  exchangeRetryable: boolean
+  onRetryExchange: () => void
 }) {
-  // While the poll is waiting for the browser to jump back, the
-  // code will exchange itself the moment it lands — a manual
-  // paste + click in that window would race it and exchange the
-  // same single-use code twice (Dropbox one-click fix,
-  // 2026-11-25). Manual exchange is only live once waiting stops
-  // (cancelled, timed out, or the jump-back never happened).
-  const manualDisabled = oauthBusy || waiting || !!tokensReady
   return (
     <>
-      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
         <button className={generatePrimary ? 'btn-primary' : 'btn'} disabled={oauthBusy} onClick={genAuthLink}>
           {oauthBusy ? '生成中…' : (generateLabel ?? '生成授权链接')}
         </button>
+        {authUrl && (
+          <button className="btn" onClick={onOpenAuthUrl}>
+            在浏览器里打开
+          </button>
+        )}
+        {waiting && (
+          <button className="btn" onClick={onCancelWait}>
+            取消等待
+          </button>
+        )}
       </div>
-      {authUrl && (
-        <>
-          <div className="field">
-            <label>授权链接（复制到浏览器里打开，或点下面的按钮）</label>
-            <textarea className="textarea" readOnly rows={3} value={authUrl} onFocus={(e) => e.target.select()} />
-          </div>
-          {linkAt && (
-            <p className="muted" style={{ margin: '0 0 12px' }}>
-              链接生成于 {new Date(linkAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}，10 分钟内有效；授权码只能用一次，换过就作废了。
-            </p>
-          )}
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button className="btn" onClick={() => window.open(authUrl, '_blank', 'noopener')}>
-              在浏览器里打开
-            </button>
-            {waiting && (
-              <button className="btn" onClick={onCancelWait}>
-                取消等待
-              </button>
-            )}
-          </div>
-          {waiting && (
-            <div className="notice-box">
-              已打开授权页：等你在浏览器里点允许，拿到 code 会自动换 Token。浏览器没跳回？点“取消等待”，再把地址栏里的 code 粘贴到下面点“换取 Token”。
-            </div>
-          )}
-          {tokensReady && (
-            <div className="notice-box">
-              已换到 Token，不用再换一次，点“下一步：测试”继续。想换个账号授权就重新点“生成授权链接”。
-            </div>
-          )}
-          <div className="field">
-            <label>授权码（code，浏览器没自动跳回时才需要手动粘贴）</label>
-            <input className="input" placeholder="粘贴 code= 后面的值" autoComplete="off" value={code} disabled={manualDisabled} onChange={(e) => setCode(e.target.value)} />
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-            <button className="btn" disabled={manualDisabled} onClick={exchangeCode}>
-              {oauthBusy ? '换取中…' : waiting ? '等浏览器跳回…' : tokensReady ? '已换到 Token' : '换取 Token'}
-            </button>
-          </div>
-        </>
+      {popupBlocked && authUrl && (
+        <div className="notice-box" style={{ marginBottom: 12 }}>
+          浏览器拦截了弹出窗口：请点“在浏览器里打开”，或复制下面的链接到浏览器里打开。
+          <textarea className="textarea" readOnly rows={3} value={authUrl} onFocus={(e) => e.target.select()} style={{ marginTop: 8 }} />
+        </div>
+      )}
+      {linkAt && (
+        <p className="muted" style={{ margin: '0 0 12px' }}>
+          链接生成于 {new Date(linkAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}，10 分钟内有效；授权码只能用一次，换过就作废了。
+        </p>
+      )}
+      {waiting && (
+        <div className="notice-box">
+          已打开授权页：等你在浏览器里点允许，拿到 code 会自动换 Token、自动测试连接。
+        </div>
       )}
       {oauthMsg && <div className="notice-box">{oauthMsg}</div>}
+      {exchangeRetryable && (
+        <div style={{ display: 'flex', gap: 8, margin: '12px 0' }}>
+          <button className="btn-primary" disabled={oauthBusy} onClick={onRetryExchange}>
+            重新换取（不用重新授权）
+          </button>
+        </div>
+      )}
+      {authTest !== 'idle' && (
+        <div className={authTest === 'passed' ? 'notice-box' : authTest === 'failed' ? 'error-box' : 'notice-box'}>
+          {authTest === 'testing' ? '正在测试连接…' : authTestMsg}
+          {authTest !== 'testing' && (
+            <div style={{ marginTop: 8 }}>
+              <button className="btn btn-sm" onClick={onRetest}>
+                重新测试
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </>
   )
 }
@@ -262,10 +271,31 @@ export default function AddMountDialog({
   const [accessToken, setAccessToken] = useState('')
   const [refreshToken, setRefreshToken] = useState('')
   const [authUrl, setAuthUrl] = useState('')
-  const [oauthState, setOauthState] = useState('')
   const [code, setCode] = useState('')
   const [oauthBusy, setOauthBusy] = useState(false)
   const [oauthMsg, setOauthMsg] = useState<string | null>(null)
+  // In-component connection test (2026-11-25 redesign): after the
+  // token lands, the auth component itself probes the root listing
+  // and shows the result here. Next is only enabled when the test
+  // passed for the CURRENT credentials AND the name is filled.
+  const [authTest, setAuthTest] = useState<'idle' | 'testing' | 'passed' | 'failed'>('idle')
+  const [authTestMsg, setAuthTestMsg] = useState<string | null>(null)
+  const [testedCredKey, setTestedCredKey] = useState<string | null>(null)
+  // Network-kind exchange failure: the code is still good, so the
+  // main flow offers one "重新换取（不用重新授权）" retry.
+  const [exchangeRetryable, setExchangeRetryable] = useState(false)
+  // Manual fallback entry (collapsed by default): the code box,
+  // exchange button and token paste live here, never in the main
+  // flow — the normal path is one click + auto return.
+  const [showManual, setShowManual] = useState(false)
+  // The auto-opened browser tab was blocked: show the link + a
+  // manual "在浏览器里打开" button instead of failing silently.
+  const [popupBlocked, setPopupBlocked] = useState(false)
+  // Own-app secret: desktop apps are public clients and need no
+  // secret — the field only appears when the toggle says so.
+  const [needSecret, setNeedSecret] = useState(false)
+  // "保存为我的应用" checkbox: save the own app when the link is generated.
+  const [saveCustomAppChecked, setSaveCustomAppChecked] = useState(true)
   // When the current authorize link was minted (ms epoch): the
   // code is only good for 10 minutes, and a code is single-use,
   // so the UI shows the time and never lets a dead code be
@@ -298,6 +328,12 @@ export default function AddMountDialog({
   const pollTimer = useRef<number | null>(null)
   const pollCount = useRef(0)
   const oauthStateRef = useRef('')
+  // The step the dialog was on before this render: the step-2
+  // reset effect below must NOT run when the user comes back
+  // from step 3 (confirm) — they only went back to fix the
+  // name/group, and wiping the authorization + passed test there
+  // would force a full re-authorize for a typo (2026-11-25).
+  const prevStepRef = useRef(step)
   // Local
   const [localPath, setLocalPath] = useState('')
   // Drime
@@ -348,11 +384,25 @@ export default function AddMountDialog({
   // source is the official app; when no builtin is configured
   // it flips to "自己的应用" so the step is never a dead end.
   useEffect(() => {
+    const fromStep = prevStepRef.current
+    prevStepRef.current = step
     if (step !== 2 || !isOAuthProvider(provider)) return
+    // Coming back from step 3 (confirm) keeps the authorization
+    // and the passed test: the user only went back to fix the
+    // name/group. The reset below runs only when entering step 2
+    // fresh (from step 1, or after picking another provider).
+    if (fromStep === 3) return
     stopWaiting(false)
     setAuthUrl('')
     setCode('')
     setOauthMsg(null)
+    setAuthTest('idle')
+    setAuthTestMsg(null)
+    setTestedCredKey(null)
+    setExchangeRetryable(false)
+    setShowManual(false)
+    setPopupBlocked(false)
+    setNeedSecret(false)
     setLinkAt(null)
     setBuiltinClientId(null)
     setCustomApp(null)
@@ -371,7 +421,12 @@ export default function AddMountDialog({
       })
     void api
       .getCustomOAuthApp(provider)
-      .then((c) => setCustomApp(c ?? null))
+      .then((c) => {
+        setCustomApp(c ?? null)
+        // A saved app that carries a secret is a Web-type app:
+        // show its Secret field so the exchange still sends it.
+        if (c?.hasSecret) setNeedSecret(true)
+      })
       .catch(() => setCustomApp(null))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step, provider])
@@ -435,16 +490,85 @@ export default function AddMountDialog({
       setFormError(err)
       return
     }
+    if (!canGoStep3) {
+      setFormError(nextHint ?? '请先完成授权并通过连接测试。')
+      return
+    }
     setFormError(null)
     setError(null)
     setStep(3)
+  }
+
+  // The credential identity the last passed in-component test ran
+  // against: the TOKENS only (provider + access/refresh token).
+  // The probe (TestMountConfig) connects with the tokens — the
+  // Client ID/Secret only matter for the exchange, not for the
+  // connection — so switching the app source (builtin ↔ own app)
+  // after a pass must NOT void it: the tokens are unchanged and
+  // the probe result is still valid. Editing a token does void
+  // it: the test result belongs to the old tokens.
+  const currentCredKey = JSON.stringify({
+    provider,
+    accessToken: accessToken.trim(),
+    refreshToken: refreshToken.trim(),
+  })
+  const testFresh = authTest === 'passed' && testedCredKey !== null && testedCredKey === currentCredKey
+  // Next is only enabled when the in-component test passed for the
+  // current credentials AND the name is filled (group optional).
+  // When it is not, the hint names exactly what is missing.
+  const nextHint: string | null = !displayName.trim()
+    ? '还差一步：请填写名字。'
+    : !testFresh
+      ? authTest === 'failed'
+        ? '还差一步：连接测试未通过，请看上面的原因，修好后点“重新测试”。'
+        : authTest === 'testing'
+          ? '正在测试连接，请稍候…'
+          : authTest === 'idle'
+            ? accessToken.trim() || refreshToken.trim()
+              ? '还差一步：已有 Token，展开下面的“手动粘贴”点“测试连接”，通过后就能下一步。'
+              : '还差一步：请先完成授权，拿到 Token 后会自动测试连接。'
+            : '还差一步：凭证改了，请点“重新测试”。'
+      : null
+  const canGoStep3 = testFresh && displayName.trim() !== ''
+
+  // In-component connection test: probe the root listing with the
+  // current credentials and show the result inside the auth
+  // component. overrideTokens is for the exchange path, where the
+  // tokens were just set and the state has not re-rendered yet.
+  const runAuthTest = async (overrideTokens?: { accessToken: string; refreshToken: string }) => {
+    if (!provider || !isOAuthProvider(provider)) return
+    const at = (overrideTokens?.accessToken ?? accessToken).trim()
+    const rt = (overrideTokens?.refreshToken ?? refreshToken).trim()
+    if (!at && !rt) {
+      setAuthTest('failed')
+      setTestedCredKey(null)
+      setAuthTestMsg('还没有 Token：请先完成授权，或在下面“手动粘贴”里粘贴 Access Token 后点“测试连接”。')
+      return
+    }
+    setAuthTest('testing')
+    setAuthTestMsg(null)
+    try {
+      await api.testMountConfig({ ...buildInput(), accessToken: at || undefined, refreshToken: rt || undefined })
+      setAuthTest('passed')
+      // Tokens only (see currentCredKey): the app source may
+      // change after a pass without voiding it.
+      setTestedCredKey(JSON.stringify({ provider, accessToken: at, refreshToken: rt }))
+      setAuthTestMsg('连接测试通过：根目录能列出来，可以继续了。')
+    } catch (e) {
+      setAuthTest('failed')
+      setTestedCredKey(null)
+      setAuthTestMsg(friendlyError(e))
+    }
   }
 
   const testAndSave = async () => {
     setTesting(true)
     setError(null)
     try {
-      const m = await api.addMount(buildInput())
+      // No second probe here: the connection was already tested
+      // in-component (step 2) and the backend remembers the pass
+      // for this exact config — skipProbe saves it Verified.
+      const m = await api.addMount({ ...buildInput(), skipProbe: true })
       if (!m) throw new Error('添加失败：后端没有返回网盘信息。')
       onAdded(m)
     } catch (e) {
@@ -518,7 +642,7 @@ export default function AddMountDialog({
         // misleading "链接已失效" (Dropbox one-click fix,
         // 2026-11-25). Full cancel only happens on dialog close.
         stopWaiting(false)
-        setOauthMsg('等了 5 分钟，浏览器还没有跳回（可能本机回调端口被挡住了）：请复制地址栏里的 code 粘贴到下面，点“换取 Token”。')
+        setOauthMsg('等了 5 分钟，浏览器还没有跳回（可能本机回调端口被挡住了）：请点下面的“手动粘贴”，复制地址栏里的 code 粘贴回来，点“换取 Token”。')
         return
       }
       void api
@@ -528,7 +652,12 @@ export default function AddMountDialog({
           if (res.status === 'done' && res.code) {
             stopWaiting(false)
             setCode(res.code)
-            void exchangeCode(res.code)
+            // Pass the state explicitly: the poll callback was
+            // created in the render before setOauthState took
+            // effect, so the `oauthState` state variable here is
+            // STALE ('' on the first flow) and the auto-exchange
+            // would die with "链接已失效" (2026-11-25).
+            void exchangeCode(res.code, state)
           } else if (res.status === 'error' || res.status === 'expired') {
             stopWaiting(false)
             setOauthMsg(res.message || '浏览器没有跳回，请复制地址栏里的 code 粘贴到下面，点“换取 Token”。')
@@ -554,8 +683,26 @@ export default function AddMountDialog({
       void api.cancelOAuth(oauthStateRef.current).catch(() => undefined)
       oauthStateRef.current = ''
     }
+    // Own app: remember it when asked, before authorizing — the
+    // next add of this provider then fills the Client ID itself.
+    // A save failure never blocks the authorization.
+    if (appSource === 'custom' && saveCustomAppChecked && clientId.trim()) {
+      try {
+        await api.saveCustomOAuthApp(provider, clientId.trim(), needSecret ? clientSecret : '')
+        setCustomApp({ clientId: clientId.trim(), clientSecret: needSecret ? clientSecret : '', hasSecret: needSecret && clientSecret.trim() !== '' })
+        setCustomSavedMsg('已保存为“我的应用”，下次添加这个网盘时直接用，不用重填。')
+      } catch {
+        // Best-effort only: the authorization still proceeds.
+      }
+    }
     setOauthBusy(true)
     setOauthMsg(null)
+    setAuthTest('idle')
+    setAuthTestMsg(null)
+    setTestedCredKey(null)
+    setExchangeRetryable(false)
+    setShowManual(false)
+    setPopupBlocked(false)
     try {
       const start = await api.beginOAuth(provider, id.trim())
       if (!start) throw new Error('生成授权链接失败。')
@@ -569,13 +716,20 @@ export default function AddMountDialog({
       setAccessToken('')
       setRefreshToken('')
       setAuthUrl(start.authUrl)
-      setOauthState(start.state)
       oauthStateRef.current = start.state
       setLinkClientId(id.trim())
       setLinkClientSecret(secret)
       setLinkAt(Date.now())
-      setOauthMsg('链接已生成：在浏览器里打开它，授权后会自动跳回 ZyDrive，code 会自己换成 Token；如果浏览器没跳回，再把地址栏里的 code 粘贴回来。')
+      setOauthMsg('已在浏览器里打开授权页：点允许后会自动跳回、自动换 Token、自动测试连接。')
       startWaiting(start.state)
+      // One click is the whole flow: open the browser now. If the
+      // popup is blocked, show the link + a manual open button
+      // instead of leaving the user staring at a dead page.
+      const win = window.open(start.authUrl, '_blank', 'noopener')
+      if (!win) {
+        setPopupBlocked(true)
+        setOauthMsg('浏览器拦截了弹出窗口：请点下面的“在浏览器里打开”，授权后会自动跳回。')
+      }
     } catch (e) {
       setOauthMsg(friendlyError(e))
     } finally {
@@ -583,7 +737,7 @@ export default function AddMountDialog({
     }
   }
 
-  const exchangeCode = async (autoCode?: string) => {
+  const exchangeCode = async (autoCode?: string, stateOverride?: string) => {
     if (!provider || !isOAuthProvider(provider)) return
     const useCode = (autoCode ?? code).trim()
     if (!useCode) {
@@ -592,20 +746,40 @@ export default function AddMountDialog({
     }
     setOauthBusy(true)
     setOauthMsg(null)
+    setExchangeRetryable(false)
     try {
       // The exchange uses the Client ID / Secret the link was
       // built with — the one-click flow never fills the form
       // fields, so reading them here would exchange with "".
       const useClientId = linkClientId || clientId.trim()
       const useSecret = linkClientId ? linkClientSecret : clientSecret
-      const tokens = await api.exchangeOAuthCode(provider, useClientId, useSecret, useCode, oauthState, '')
+      // The state comes from the caller (the poll passes the
+      // flow's own state) or the ref — NEVER from the
+      // `oauthState` state variable: the poll callback was created
+      // in the render before setOauthState took effect, so that
+      // variable is stale ('' on the first flow, the previous
+      // flow's cancelled state on a retry) and the backend
+      // answers "链接已失效" for a perfectly good code
+      // (2026-11-25, user report on 0.8.4).
+      const useState = stateOverride ?? oauthStateRef.current
+      const tokens = await api.exchangeOAuthCode(provider, useClientId, useSecret, useCode, useState, '')
       if (!tokens) throw new Error('换取 Token 失败。')
       setAccessToken(tokens.accessToken)
       if (tokens.refreshToken) setRefreshToken(tokens.refreshToken)
       setOauthMsg(tokens.refreshToken ? 'Token 已换取成功（拿到 Refresh Token，长期有效）。' : 'Token 已换取成功（只拿到 Access Token，过期后需重新授权）。')
+      // Auto-test inside the auth component: the exchange just
+      // filled the tokens — probe the root listing now, with the
+      // fresh tokens, so the result shows here (step 2) and step
+      // 3 never tests again.
+      await runAuthTest({ accessToken: tokens.accessToken, refreshToken: tokens.refreshToken ?? '' })
     } catch (e) {
       const msg = friendlyError(e)
       setOauthMsg(msg)
+      // A network-kind failure leaves the code usable: offer one
+      // retry in the main flow ("重新换取，不用重新授权"). A dead
+      // code (used / expired / mismatched) or a bad client gets
+      // no retry — the only fix is a new link.
+      setExchangeRetryable(!/已用过|已过期|不匹配|重新生成链接|重新点“生成授权链接”/.test(msg))
       // A dead code must not linger in the box: if the provider
       // says the code is used / expired / mismatched, the same
       // code can never succeed — clear it so the next attempt
@@ -618,24 +792,32 @@ export default function AddMountDialog({
 
   // Switching the authorization source: drop any half-built
   // authorize link (its Client ID belongs to the other source),
-  // then fill the form from the chosen source — builtin needs no
-  // form fields, custom prefills from the saved own app. The
-  // builtin is never written to by this switch.
+  // but NEVER clear the typed Client ID / Secret — switching back
+  // to "官方应用" must keep what the user typed for their own
+  // app, so they can switch back and continue (2026-11-25
+  // redesign). The builtin official app is untouched by this
+  // switch either way. The in-component test is NOT reset here
+  // either: it belongs to the tokens, and the tokens survive the
+  // switch — voiding the pass on every switch would force a
+  // re-authorize for just looking at the other card.
   const pickAppSource = (src: 'builtin' | 'custom') => {
     stopWaiting(false)
     setAuthUrl('')
     setCode('')
     setOauthMsg(null)
+    setExchangeRetryable(false)
     setLinkAt(null)
     setCustomSavedMsg(null)
     setConfirmDeleteCustom(false)
     setAppSource(src)
     if (src === 'custom') {
-      setClientId(customApp?.clientId ?? '')
-      setClientSecret(customApp?.clientSecret ?? '')
-    } else {
-      setClientId('')
-      setClientSecret('')
+      // Prefill from the saved own app only when the fields are
+      // empty — a typed value the user entered beats the saved one.
+      if (!clientId.trim() && customApp) {
+        setClientId(customApp.clientId)
+        setClientSecret(customApp.clientSecret ?? '')
+        if (customApp.hasSecret) setNeedSecret(true)
+      }
     }
   }
 
@@ -697,6 +879,50 @@ export default function AddMountDialog({
     </>
   )
 
+  // Manual fallback (collapsed by default): the code box, the
+  // manual exchange button and the token paste. Only for when the
+  // browser did not jump back — the normal flow never needs it.
+  // A plain button toggles the div; no <details> triangles.
+  // While the poll is waiting for the browser to jump back, the
+  // code will exchange itself the moment it lands — a manual
+  // paste + click in that window would race it and exchange the
+  // same single-use code twice (Dropbox one-click fix,
+  // 2026-11-25). Manual exchange is only live once waiting stops
+  // (cancelled, timed out, or the jump-back never happened), and
+  // once a token was obtained the code is spent anyway.
+  const manualDisabled = oauthBusy || waiting || accessToken !== ''
+  const manualFallback = (
+    <div style={{ marginTop: 12 }}>
+      <button className="btn" onClick={() => setShowManual((v) => !v)}>
+        {showManual ? '收起手动粘贴' : '手动粘贴（自动跳回失败时用）'}
+      </button>
+      {showManual && (
+        <div style={{ marginTop: 12 }}>
+          <div className="field">
+            <label>授权码（code，浏览器没自动跳回时才需要手动粘贴）</label>
+            <input className="input" placeholder="粘贴 code= 后面的值" autoComplete="off" value={code} disabled={manualDisabled} onChange={(e) => setCode(e.target.value)} />
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+            <button className="btn" disabled={manualDisabled} onClick={() => void exchangeCode()}>
+              {oauthBusy ? '换取中…' : waiting ? '等浏览器跳回…' : accessToken !== '' ? '已换到 Token' : '换取 Token'}
+            </button>
+            <button
+              className="btn"
+              disabled={authTest === 'testing' || (!accessToken.trim() && !refreshToken.trim())}
+              onClick={() => void runAuthTest()}
+            >
+              {authTest === 'testing' ? '测试中…' : '测试连接'}
+            </button>
+          </div>
+          {tokenFields}
+          <p className="muted">
+            直接粘贴也可以：已有 Access Token / Refresh Token 的话，粘贴后点“测试连接”，通过后就能下一步。
+          </p>
+        </div>
+      )}
+    </div>
+  )
+
   // The self-built app form (B, "自己的应用"): per-provider fields,
   // guide, scopes and paste hints — the same JSX whether it is
   // shown directly (no builtin client configured) or inside the
@@ -721,30 +947,43 @@ export default function AddMountDialog({
                 </li>
               ))}
             </ol>
+            <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={() => window.open('https://github.com/luckzk/zy-drive/blob/main/docs/oauth-apps/dropbox.md', '_blank', 'noopener')}>
+              查看完整注册指南
+            </button>
           </div>
           <div className="field">
-            <label>App key（就是 Client ID）</label>
+            <label>App key（就是 Client ID，必填）</label>
             <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
           </div>
-          <div className="field">
-            <label>App secret（Client Secret）</label>
-            <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
-          </div>
-          <p className="muted">本次授权请求的权限：files.metadata.read、files.content.read、files.content.write、files.metadata.write（在应用的 Permissions 页勾选）。</p>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <input type="checkbox" checked={needSecret} onChange={(e) => setNeedSecret(e.target.checked)} />
+            这个应用需要 Client Secret（仅 Web 应用类型才需要）
+          </label>
+          {needSecret && (
+            <div className="field">
+              <label>App secret（Client Secret，加密存在本机）</label>
+              <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+            </div>
+          )}
+          <p className="muted">桌面应用是公开客户端，不需要填 Secret：建应用时打开“允许公共客户端”即可。</p>
+          <p className="muted">本次授权请求的权限：files.metadata.read、files.content.read、files.content.write、files.metadata.write、account_info.read（最后一项是容量显示要的，在应用的 Permissions 页勾选）。</p>
           <OAuthCodeFlow
             authUrl={authUrl}
-            code={code}
-            setCode={setCode}
+            popupBlocked={popupBlocked}
+            onOpenAuthUrl={() => window.open(authUrl, '_blank', 'noopener')}
             oauthBusy={oauthBusy}
             oauthMsg={oauthMsg}
             waiting={waiting}
             onCancelWait={() => stopWaiting(false)}
-            genAuthLink={() => void genAuthLink(clientId, clientSecret)}
-            exchangeCode={() => void exchangeCode()}
-                  tokensReady={accessToken !== ''}
-                  linkAt={linkAt}
+            genAuthLink={() => void genAuthLink(clientId, needSecret ? clientSecret : '')}
+            linkAt={linkAt}
+            authTest={authTest}
+            authTestMsg={authTestMsg}
+            onRetest={() => void runAuthTest()}
+            exchangeRetryable={exchangeRetryable}
+            onRetryExchange={() => void exchangeCode()}
           />
-          {tokenFields}
+          {manualFallback}
           <p className="muted">
             直接粘贴也可以：Dropbox App Console → 应用 → Settings → 生成的访问令牌（短期，几小时过期）；要长期有效请走上面的授权码流程拿 Refresh Token。
           </p>
@@ -765,30 +1004,43 @@ export default function AddMountDialog({
                 </li>
               ))}
             </ol>
+            <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={() => window.open('https://github.com/luckzk/zy-drive/blob/main/docs/oauth-apps/google-drive.md', '_blank', 'noopener')}>
+              查看完整注册指南
+            </button>
           </div>
           <div className="field">
-            <label>OAuth 客户端 ID</label>
+            <label>OAuth 客户端 ID（必填）</label>
             <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
           </div>
-          <div className="field">
-            <label>客户端密钥（Client Secret）</label>
-            <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
-          </div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <input type="checkbox" checked={needSecret} onChange={(e) => setNeedSecret(e.target.checked)} />
+            这个应用需要 Client Secret（仅 Web 应用类型才需要）
+          </label>
+          {needSecret && (
+            <div className="field">
+              <label>客户端密钥（Client Secret，加密存在本机）</label>
+              <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+            </div>
+          )}
+          <p className="muted">桌面应用是公开客户端，不需要填 Secret：建 OAuth 客户端时选“桌面应用”类型即可。</p>
           <p className="muted">本次授权请求的权限：https://www.googleapis.com/auth/drive（完整访问 Drive；需先在“API 和服务”里启用 Google Drive API）。</p>
           <OAuthCodeFlow
             authUrl={authUrl}
-            code={code}
-            setCode={setCode}
+            popupBlocked={popupBlocked}
+            onOpenAuthUrl={() => window.open(authUrl, '_blank', 'noopener')}
             oauthBusy={oauthBusy}
             oauthMsg={oauthMsg}
             waiting={waiting}
             onCancelWait={() => stopWaiting(false)}
-            genAuthLink={() => void genAuthLink(clientId, clientSecret)}
-            exchangeCode={() => void exchangeCode()}
-                  tokensReady={accessToken !== ''}
-                  linkAt={linkAt}
+            genAuthLink={() => void genAuthLink(clientId, needSecret ? clientSecret : '')}
+            linkAt={linkAt}
+            authTest={authTest}
+            authTestMsg={authTestMsg}
+            onRetest={() => void runAuthTest()}
+            exchangeRetryable={exchangeRetryable}
+            onRetryExchange={() => void exchangeCode()}
           />
-          {tokenFields}
+          {manualFallback}
           <p className="muted">
             直接粘贴也可以：Refresh Token 可在 Google OAuth Playground（需选 Drive 权限、勾选 offline）里拿到；只有 Access Token 的话过期后需重新授权。
           </p>
@@ -810,30 +1062,43 @@ export default function AddMountDialog({
                 </li>
               ))}
             </ol>
+            <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={() => window.open('https://github.com/luckzk/zy-drive/blob/main/docs/oauth-apps/onedrive.md', '_blank', 'noopener')}>
+              查看完整注册指南
+            </button>
           </div>
           <div className="field">
-            <label>应用程序（客户端）ID</label>
+            <label>应用程序（客户端）ID（必填）</label>
             <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
           </div>
-          <div className="field">
-            <label>Client Secret（可选：桌面应用是公开客户端，不用填；网页应用才需要）</label>
-            <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
-          </div>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <input type="checkbox" checked={needSecret} onChange={(e) => setNeedSecret(e.target.checked)} />
+            这个应用需要 Client Secret（仅 Web 应用类型才需要）
+          </label>
+          {needSecret && (
+            <div className="field">
+              <label>Client Secret（加密存在本机）</label>
+              <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+            </div>
+          )}
+          <p className="muted">桌面应用是公开客户端，不需要填 Secret：建应用时选“移动和桌面应用程序”平台即可。</p>
           <p className="muted">本次授权请求的权限：Files.ReadWrite.All、offline_access（没有 offline_access 拿不到 Refresh Token）。</p>
           <OAuthCodeFlow
             authUrl={authUrl}
-            code={code}
-            setCode={setCode}
+            popupBlocked={popupBlocked}
+            onOpenAuthUrl={() => window.open(authUrl, '_blank', 'noopener')}
             oauthBusy={oauthBusy}
             oauthMsg={oauthMsg}
             waiting={waiting}
             onCancelWait={() => stopWaiting(false)}
-            genAuthLink={() => void genAuthLink(clientId, clientSecret)}
-            exchangeCode={() => void exchangeCode()}
-                  tokensReady={accessToken !== ''}
-                  linkAt={linkAt}
+            genAuthLink={() => void genAuthLink(clientId, needSecret ? clientSecret : '')}
+            linkAt={linkAt}
+            authTest={authTest}
+            authTestMsg={authTestMsg}
+            onRetest={() => void runAuthTest()}
+            exchangeRetryable={exchangeRetryable}
+            onRetryExchange={() => void exchangeCode()}
           />
-          {tokenFields}
+          {manualFallback}
           <p className="muted">
             直接粘贴也可以：Refresh Token 可在 Microsoft 的 OAuth 授权流程里拿到（权限须含 offline_access）；只有 Access Token 的话过期后需重新授权。
           </p>
@@ -1070,24 +1335,27 @@ export default function AddMountDialog({
               <div className="notice-box" style={{ borderColor: 'var(--brand)' }}>
                 <div style={{ marginBottom: 4 }}>一键授权（ZyDrive 官方应用）</div>
                 <p className="muted" style={{ margin: '0 0 8px' }}>
-                  不用自己建应用：点授权，在浏览器里登录点允许，code 会自动跳回、自动换 Token。
+                  不用自己建应用：点授权，在浏览器里登录点允许，code 会自动跳回、自动换 Token、自动测试连接。
                 </p>
                 <OAuthCodeFlow
                   authUrl={authUrl}
-                  code={code}
-                  setCode={setCode}
+                  popupBlocked={popupBlocked}
+                  onOpenAuthUrl={() => window.open(authUrl, '_blank', 'noopener')}
                   oauthBusy={oauthBusy}
                   oauthMsg={oauthMsg}
                   waiting={waiting}
                   onCancelWait={() => stopWaiting(false)}
                   genAuthLink={() => void genAuthLink(builtinClientId, '')}
-                  exchangeCode={() => void exchangeCode()}
-                  tokensReady={accessToken !== ''}
                   linkAt={linkAt}
+                  authTest={authTest}
+                  authTestMsg={authTestMsg}
+                  onRetest={() => void runAuthTest()}
+                  exchangeRetryable={exchangeRetryable}
+                  onRetryExchange={() => void exchangeCode()}
                   generateLabel="打开浏览器授权"
                   generatePrimary
                 />
-                {tokenFields}
+                {manualFallback}
                 <p className="muted" style={{ margin: '8px 0 0' }}>
                   用的是 ZyDrive 官方共享应用（公开客户端，PKCE，不带 Secret）。共享应用有被限流或停用的风险（rclone
                   的共享客户端正在被逐步停用），想完全自己掌控就用“自己的应用”。
@@ -1109,6 +1377,10 @@ export default function AddMountDialog({
                   </div>
                 )}
                 {selfBuiltForm}
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+                  <input type="checkbox" checked={saveCustomAppChecked} onChange={(e) => setSaveCustomAppChecked(e.target.checked)} />
+                  生成授权链接时自动保存为我的应用（下次添加这个网盘时直接用，不用重填）
+                </label>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                   <button className="btn" onClick={() => void saveCustomApp()}>
                     保存为我的应用
@@ -1124,6 +1396,7 @@ export default function AddMountDialog({
             )}
 
             {formError && <div className="error-box">{formError}</div>}
+            {nextHint && <p className="muted">{nextHint}</p>}
             <div className="notice-box">凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。</div>
             </div>
             <div className="dialog-actions">
@@ -1133,8 +1406,8 @@ export default function AddMountDialog({
               <button className="btn" onClick={requestClose}>
                 取消
               </button>
-              <button className="btn-primary" onClick={goStep3}>
-                下一步：测试
+              <button className="btn-primary" disabled={!canGoStep3} onClick={goStep3}>
+                下一步
               </button>
             </div>
           </>
@@ -1152,10 +1425,10 @@ export default function AddMountDialog({
                 将挂载：OneDrive（Microsoft 账号，个人 / 工作 / 学校账号均可）。
               </p>
             )}
-            <p className="muted">点“测试并保存”后会先连一次网盘根目录，通了才保存；不通不会保存，也不会留下坏网盘。</p>
+            <p className="muted">连接已在上一步测通过，点“保存”直接保存，不再重复测。</p>
             {testing && (
               <div className="notice-box">
-                正在连接测试网盘，请稍候…
+                正在保存网盘，请稍候…
               </div>
             )}
             {error && (
@@ -1163,10 +1436,10 @@ export default function AddMountDialog({
                 <div className="error-box">{error}</div>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
                   <button className="btn-primary" disabled={testing} onClick={() => void testAndSave()}>
-                    重试
+                    重试保存
                   </button>
                   <button className="btn" disabled={testing} onClick={() => setStep(2)}>
-                    返回修改凭证
+                    返回修改
                   </button>
                 </div>
               </>
@@ -1181,7 +1454,7 @@ export default function AddMountDialog({
               </button>
               {!error && (
                 <button className="btn-primary" disabled={testing} onClick={() => void testAndSave()}>
-                  {testing ? '测试中…' : '测试并保存'}
+                  {testing ? '保存中…' : '保存'}
                 </button>
               )}
             </div>

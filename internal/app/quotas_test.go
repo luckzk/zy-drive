@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,5 +71,48 @@ func TestMountQuotasIsolatesFailures(t *testing.T) {
 	gq := byID["m-gone"]
 	if gq == nil || gq.Error == "" {
 		t.Fatalf("broken mount quota must carry an error: %+v", gq)
+	}
+}
+
+// TestFriendlyQuotaError: the reason shown next to "容量暂不可用"
+// must name the cause and the one next action — a missing scope
+// is a re-authorize, an expired token is a re-authorize, a network
+// failure is a network/proxy check. Anything else passes through.
+func TestFriendlyQuotaError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{
+			name: "dropbox missing_scope",
+			err:  fmt.Errorf("storage: dropbox Quota: dropbox api 403: missing_scope/"),
+			want: []string{"account_info.read", "重新授权"},
+		},
+		{
+			name: "expired token",
+			err:  fmt.Errorf("storage: dropbox Quota: dropbox api 401: expired_access_token/"),
+			want: []string{"重新授权"},
+		},
+		{
+			name: "network failure",
+			err:  fmt.Errorf("storage: drime Quota: Get \"https://app.drime.cloud/api/v1/user/space-usage\": dial tcp: connection refused"),
+			want: []string{"网络问题", "设置 → 网络"},
+		},
+		{
+			name: "unknown error passes through",
+			err:  fmt.Errorf("storage: local Quota: something odd happened"),
+			want: []string{"something odd happened"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := friendlyQuotaError(tc.err)
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Fatalf("want %q in %q", w, got)
+				}
+			}
+		})
 	}
 }

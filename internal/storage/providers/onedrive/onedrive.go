@@ -96,6 +96,7 @@ import (
 	"time"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/netproxy"
 	"github.com/luckzk/zy-drive/internal/storage"
 	shttp "github.com/luckzk/zy-drive/internal/storage/http"
 	"github.com/luckzk/zy-drive/internal/storage/oauth"
@@ -198,7 +199,7 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 	// still has that flaw.)
 	p.client.HTTP = &http.Client{
 		Timeout:   120 * time.Second,
-		Transport: authTransport{base: http.DefaultTransport, tokens: ts},
+		Transport: authTransport{base: netproxy.Transport(), tokens: ts},
 	}
 	if refresher != nil {
 		p.client.OnAuthExpired = func(ctx context.Context) error {

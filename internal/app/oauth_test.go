@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -407,5 +408,119 @@ func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
 	}
 	if tokens.AccessToken != "dbx-access-2" {
 		t.Fatalf("tokens: %+v", tokens)
+	}
+}
+
+// TestExchangeWithStaleStateReproducesExpiredMessage (2026-11-25,
+// user report on 0.8.4): the browser jump-back lands, the poll
+// returns the code, the code IS filled into the box — and the UI
+// still shows "授权链接已失效或已被用过". The trigger is the
+// frontend's stale React closure: the poll callback was created in
+// the render where `oauthState` was still the OLD value ('' on the
+// first flow, the previous flow's cancelled state on a retry),
+// so the automatic exchange presents the wrong state and the
+// backend answers "unknown state" — before any network call to
+// the token endpoint. The fix (frontend) passes the state
+// explicitly from startWaiting; this test pins the backend half:
+// the same code exchanged with '' fails with exactly that
+// message, and with the flow's own state it succeeds against a
+// mock token endpoint.
+func TestExchangeWithStaleStateReproducesExpiredMessage(t *testing.T) {
+	a := newTestApp(t)
+	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	if err != nil {
+		t.Fatalf("BeginOAuth(dropbox): %v", err)
+	}
+	u, _ := url.Parse(start.AuthURL)
+	redirectURI := u.Query().Get("redirect_uri")
+
+	// Browser jump-back (simulated with a plain GET, as in
+	// TestOAuthCallbackAutoFlow).
+	resp, err := http.Get(redirectURI + "/?code=repro-code-1&state=" + url.QueryEscape(start.State))
+	if err != nil {
+		t.Fatalf("GET callback: %v", err)
+	}
+	_ = resp.Body.Close()
+	res, err := a.PollOAuthCallback(start.State)
+	if err != nil || res.Status != "done" || res.Code != "repro-code-1" {
+		t.Fatalf("poll after callback: %+v, err %v", res, err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "dbx-access", "refresh_token": "dbx-refresh",
+			"expires_in": 3600, "token_type": "Bearer",
+		})
+	}))
+	defer srv.Close()
+
+	// The stale closure's exchange: state '' on the first flow.
+	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", res.Code, "", srv.URL)
+	if err == nil {
+		t.Fatal("exchange with an empty (stale) state must fail")
+	}
+	if !strings.Contains(err.Error(), "已失效或已被用过") {
+		t.Fatalf("stale-state exchange must report the expired link, got: %v", err)
+	}
+	// The failed exchange must NOT have consumed the code: the
+	// same code with the flow's own state still succeeds.
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", res.Code, start.State, srv.URL)
+	if err != nil {
+		t.Fatalf("exchange with the correct state must succeed after the stale attempt: %v", err)
+	}
+	if tokens.AccessToken != "dbx-access" {
+		t.Fatalf("tokens: %+v", tokens)
+	}
+}
+
+// TestHumanExchangeErrorProxyKinds (2026-11-25): the three network
+// failures must read differently — the user must be able to tell
+// "my proxy is not running" from "the proxy cannot reach Dropbox"
+// from "direct is blocked", each with its one next action. None
+// of them may ask for a re-authorization (the code is still good).
+func TestHumanExchangeErrorProxyKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want []string
+		not  []string
+	}{
+		{
+			name: "proxy-down names the proxy address",
+			err:  fmt.Errorf("auth: token exchange request [proxy-kind=proxy-down proxy=127.0.0.1:7890]: dial tcp 127.0.0.1:7890: connect: connection refused"),
+			want: []string{"连不上本机代理（127.0.0.1:7890）", "检查代理软件是否在运行", "重新换取", "不用重新授权"},
+		},
+		{
+			name: "proxy-target blames the proxy route, not the code",
+			err:  fmt.Errorf("auth: token exchange request [proxy-kind=proxy-target proxy=127.0.0.1:8001]: context deadline exceeded"),
+			want: []string{"代理已连上", "连不上对方的换取接口", "重新换取", "不用重新授权"},
+		},
+		{
+			name: "direct points at Settings Network",
+			err:  fmt.Errorf("auth: token exchange request [proxy-kind=direct proxy=]: dial tcp: i/o timeout"),
+			want: []string{"直连", "设置 → 网络", "重新换取", "不用重新授权"},
+		},
+		{
+			name: "invalid_grant still asks for a new link",
+			err:  fmt.Errorf("auth: token exchange failed: invalid_grant: code has expired"),
+			want: []string{"重新点“生成授权链接”"},
+			not:  []string{"重新换取"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := humanExchangeError(tc.err).Error()
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Fatalf("want %q in %q", w, got)
+				}
+			}
+			for _, w := range tc.not {
+				if strings.Contains(got, w) {
+					t.Fatalf("want no %q in %q", w, got)
+				}
+			}
+		})
 	}
 }

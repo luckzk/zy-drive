@@ -226,6 +226,13 @@ func (s *DesktopService) DeleteSyncJob(id string) error { return s.app.DeleteSyn
 // AgentStatus summarises the Agent list for the sidebar card.
 func (s *DesktopService) AgentStatus() domain.AgentStatus { return s.app.AgentStatus() }
 
+// GetSystemProxy reports the OS-configured proxy (Settings -> Network).
+func (s *DesktopService) GetSystemProxy() SystemProxyInfo { return s.app.GetSystemProxy() }
+
+// TestProxy sends one request through the current proxy setup and
+// reports pass/fail with the reason.
+func (s *DesktopService) TestProxy() ProxyTestResult { return s.app.TestProxy() }
+
 // GetSettings loads the persisted user settings (defaults for keys
 // never saved). The frontend applies theme/language immediately.
 func (s *DesktopService) GetSettings() (Settings, error) { return s.app.GetSettings() }

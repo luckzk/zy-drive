@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -86,7 +87,17 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 	domain.ProviderDropbox: {
 		authEndpoint: "https://www.dropbox.com/oauth2/authorize",
 		tokenURL:     "https://api.dropboxapi.com/oauth2/token",
-		scopes:       []string{"files.metadata.read", "files.content.read", "files.content.write", "files.metadata.write"},
+		// account_info.read is NOT a file scope — but
+		// /2/users/get_space_usage requires it (Dropbox docs:
+		// "Get account and space usage | account_info.read").
+		// Without it the token lists files fine and capacity
+		// fails with 403 missing_scope, which is exactly the
+		// "容量暂不可用" the user saw on 0.8.4 (the scope was
+		// missing both here and in the App Console's
+		// Permissions). Adding it here only affects NEW
+		// authorizations: an existing token never gains a scope,
+		// so the user must re-authorize after this lands.
+		scopes:       []string{"files.metadata.read", "files.content.read", "files.content.write", "files.metadata.write", "account_info.read"},
 		extra:        map[string]string{"token_access_type": "offline"},
 		pkce:         true,
 	},
@@ -434,6 +445,12 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 	return &OAuthTokens{AccessToken: access, RefreshToken: refresh}, nil
 }
 
+// proxyKindRe matches the [proxy-kind=... proxy=...] marker the
+// token-exchange request error carries (see internal/auth/oauth.go
+// ExchangeCode): it is what lets the UI tell the three network
+// failures apart instead of one vague "网络问题".
+var proxyKindRe = regexp.MustCompile(`\[proxy-kind=([a-z-]+) proxy=([^\]]*)\]`)
+
 // humanExchangeError turns a token-endpoint failure into plain
 // language. The raw error carries the provider's own code
 // (invalid_grant, redirect_uri_mismatch, ...); the user gets the
@@ -445,6 +462,26 @@ func humanExchangeError(err error) error {
 	// "auth: token exchange failed: ..." verbatim.
 	msg = strings.TrimPrefix(msg, "auth: token exchange failed: ")
 	msg = strings.TrimPrefix(msg, "auth: ")
+	// Three-way network distinction first (the marker survives
+	// the prefix strip above): proxy-down = the proxy itself is
+	// not listening (2026-11-25: the user's 7890 proxy was not
+	// running at all — curl proved it); proxy-target = the proxy
+	// is up but cannot reach the provider; direct = no proxy was
+	// used and the direct connection was blocked. Each names the
+	// one next action; none of them asks for a re-authorization.
+	if m := proxyKindRe.FindStringSubmatch(msg); m != nil {
+		switch kind, addr := m[1], m[2]; kind {
+		case "proxy-down":
+			if addr != "" {
+				return fmt.Errorf("app: 连不上本机代理（%s）：请检查代理软件是否在运行、端口是否正确；代理恢复后点“重新换取”，不用重新授权", addr)
+			}
+			return fmt.Errorf("app: 连不上本机代理：请检查代理软件是否在运行、端口是否正确；代理恢复后点“重新换取”，不用重新授权")
+		case "proxy-target":
+			return fmt.Errorf("app: 代理已连上，但通过代理连不上对方的换取接口：请检查代理节点或规则，之后点“重新换取”，不用重新授权")
+		case "direct":
+			return fmt.Errorf("app: 直连对方的换取接口被挡：请在设置 → 网络里打开代理（跟随系统代理，或手动填代理地址），保存后点“重新换取”，不用重新授权")
+		}
+	}
 	switch {
 	case strings.Contains(msg, "invalid_grant"):
 		return fmt.Errorf("app: 授权码已用过、已过期，或与本次授权不匹配（换了链接、换了应用都会这样）：请重新点“生成授权链接”，用新链接授权一次")
@@ -455,7 +492,7 @@ func humanExchangeError(err error) error {
 	case strings.Contains(msg, "invalid_request"):
 		return fmt.Errorf("app: 换取请求被对方拒绝了（%s）：请重新点“生成授权链接”再试一次", msg)
 	case strings.Contains(msg, "request: "), strings.Contains(msg, "timeout"), strings.Contains(msg, "connection"), strings.Contains(msg, "network"):
-		return fmt.Errorf("app: 连不上对方的换取接口（网络问题），授权码还没用掉：请检查网络后点“换取 Token”再试一次，不用重新授权")
+		return fmt.Errorf("app: 连不上对方的换取接口（网络问题），授权码还没用掉：请检查网络或代理设置（设置 → 网络）后点“重新换取”再试一次，不用重新授权")
 	default:
 		return fmt.Errorf("app: 换取 Token 失败：%s（授权码还没用掉，可以点“换取 Token”再试一次；不行就重新点“生成授权链接”）", msg)
 	}
