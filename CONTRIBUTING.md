@@ -18,6 +18,32 @@
 
 是否签署正式的 CLA（贡献者许可协议），以后再定；在此之前，以本条款为准。
 
+## 免费 / Pro 分界线（代码放哪）
+
+Pro 功能的实现代码一律放私有仓库
+[`luckzk/zy-drive-pro`](https://github.com/luckzk/zy-drive-pro)，不进公开
+仓库。公开仓库只留接口、免费版行为和 Pro 入口 UI（点进去显示升级提示
+的那种）。
+
+| 放公开仓库 `zy-drive` | 放私有仓库 `zy-drive-pro` |
+|---|---|
+| 接口定义（Pro 功能长什么样） | Pro 功能的真正实现 |
+| 免费功能本身 | License 激活验证（离线激活码、设备绑定、Pro 开关） |
+| Pro 入口 UI 与升级提示 | |
+| 调用接口的接线代码、License 校验的调用点（不含校验实现） | |
+
+Pro 功能清单（按 `docs/monetization.md` 第 6 节）：Mirror / 双向同步、
+定时调度跑、并发与限速放开、批量传输 / 断点续传 / 冲突可视化、Agent
+定时跑。
+
+构建方式：Go build tag `pro`。公开版不带 pro 模块也能编译出来，就是免
+费版；发 Pro 版时把 pro 模块编进去。两边版本要对上（core vX.Y.Z 对应
+pro vX.Y.Z）。
+
+已知例外：v0.9.0 的调度器（`internal/agentrun`）目前还在公开仓库里，是
+先跑通的底座；上付费墙时把执行部分移到 pro 接口后面，任务模型与 UI 留
+在公开仓库。
+
 ## 新文件记得加 SPDX 标识
 
 - 后端 Go 文件首行：`// SPDX-License-Identifier: MPL-2.0`
