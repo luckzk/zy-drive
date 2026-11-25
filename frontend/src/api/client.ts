@@ -7,9 +7,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, VersionInfo } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
 
-export type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, VersionInfo }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -56,6 +56,11 @@ export const api = {
   previewSync: (job: SyncJob) => DesktopService.previewSync(job),
   runSync: (job: SyncJob, plan: Plan) => DesktopService.runSync(job, plan),
   transfers: async () => nonNull(await DesktopService.transfers()),
+  uploadFiles: async (mountID: string, ref: string, paths: string[]): Promise<{ transfers: Transfer[]; skipped: UploadSkipped[] }> => {
+    const r = await DesktopService.uploadFiles(mountID, ref, paths)
+    if (!r) return { transfers: [], skipped: [] }
+    return { transfers: nonNull(r.transfers), skipped: nonNull(r.skipped) }
+  },
   listAgents: async () => nonNull(await DesktopService.listAgents()),
   agentStatus: () => DesktopService.agentStatus(),
   validateJob: (job: SyncJob) => DesktopService.validateJob(job),

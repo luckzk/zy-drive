@@ -206,6 +206,77 @@ try {
   await page.waitForTimeout(600)
   await page.screenshot({ path: path.join(SHOTS, '04-settings.png') })
 
+  // 4b2. 设置页分组卡片 + 选择框断言：每节一张卡（背景 --card、
+  // 圆角 16px、节间距 16px），选择框统一样式（自定义箭头、
+  // 固定高度 40px、圆角 8px）。
+  const settingsCards = await page.evaluate(() => {
+    const cards = [...document.querySelectorAll('.settings-card')]
+    const selects = [...document.querySelectorAll('.settings-card select')]
+    const cardInfo = cards.map((c) => {
+      const cs = getComputedStyle(c)
+      const r = c.getBoundingClientRect()
+      return {
+        bg: cs.backgroundColor,
+        radius: cs.borderTopLeftRadius,
+        marginBottom: cs.marginBottom,
+        w: Math.round(r.width),
+      }
+    })
+    const selectInfo = selects.map((s) => {
+      const cs = getComputedStyle(s)
+      const r = s.getBoundingClientRect()
+      return {
+        h: Math.round(r.height),
+        radius: cs.borderTopLeftRadius,
+        appearance: cs.appearance,
+        hasArrow: cs.backgroundImage.includes('svg'),
+        disabled: s.disabled,
+      }
+    })
+    return { cardCount: cards.length, cardInfo, selectCount: selects.length, selectInfo }
+  })
+  console.log('settings cards:', JSON.stringify(settingsCards))
+  if (settingsCards.cardCount < 5) failures.push(`设置页分组卡片应至少 5 张（通用/网盘/同步默认/Agent/关于），实测 ${settingsCards.cardCount} 张`)
+  for (const c of settingsCards.cardInfo) {
+    if (c.bg !== 'rgb(245, 245, 245)') failures.push(`设置卡片背景应为 --card #F5F5F5，实测 ${c.bg}`)
+    if (c.radius !== '16px') failures.push(`设置卡片圆角应为 16px，实测 ${c.radius}`)
+    if (c.marginBottom !== '16px') failures.push(`设置卡片节间距应为 16px，实测 ${c.marginBottom}`)
+  }
+  if (settingsCards.selectCount === 0) failures.push('设置页里找不到选择框（.settings-card select）')
+  for (const s of settingsCards.selectInfo) {
+    if (s.h < 38 || s.h > 42) failures.push(`选择框高度应为 40px 左右，实测 ${s.h}px`)
+    if (s.radius !== '8px') failures.push(`选择框圆角应为 8px，实测 ${s.radius}`)
+    if (s.appearance !== 'none') failures.push(`选择框应去掉浏览器默认外观（appearance: none），实测 ${s.appearance}`)
+    if (!s.hasArrow) failures.push('选择框没有自定义下拉箭头（background-image 应含 SVG）')
+  }
+
+  // 4b3. 字体审计（2026-11-25 去加粗试验）：Schibsted Grotesk 400
+  // 必须本地加载成功，全站字重统一 400，不得残留 550/500。
+  const fontAudit = await page.evaluate(async () => {
+    try {
+      await document.fonts.load('400 16px "Schibsted Grotesk"', 'ZyDrive')
+    } catch {
+      // 加载失败时 document.fonts.check 会报出来，不在这里吞掉
+    }
+    const loaded = document.fonts.check('400 16px "Schibsted Grotesk"')
+    const h1 = document.querySelector('h1')
+    const btn = document.querySelector('.btn-primary')
+    const res = await fetch('/fonts/schibsted-grotesk-latin-400.woff2')
+    return {
+      loaded,
+      fontFileOk: res.ok,
+      h1Weight: h1 ? getComputedStyle(h1).fontWeight : null,
+      h1Family: h1 ? getComputedStyle(h1).fontFamily : null,
+      btnWeight: btn ? getComputedStyle(btn).fontWeight : null,
+    }
+  })
+  console.log('font audit:', JSON.stringify(fontAudit))
+  if (!fontAudit.fontFileOk) failures.push('字体文件 /fonts/schibsted-grotesk-latin-400.woff2 打不开（应随 dist 一起发布）')
+  if (!fontAudit.loaded) failures.push('Schibsted Grotesk 400 没有加载成功（document.fonts.check 为 false），页面仍在用 fallback 字体')
+  if (fontAudit.h1Weight !== '400') failures.push(`h1 字重应为 400，实测 ${fontAudit.h1Weight}`)
+  if (fontAudit.btnWeight !== '400') failures.push(`主按钮字重应为 400，实测 ${fontAudit.btnWeight}`)
+  if (fontAudit.h1Family && !fontAudit.h1Family.includes('Schibsted Grotesk')) failures.push(`h1 字体族应以 Schibsted Grotesk 开头，实测 ${fontAudit.h1Family}`)
+
   // 4c. 深色主题：data-theme="dark" 后底色必须真的变深。
   await page.evaluate(() => {
     document.documentElement.dataset.theme = 'dark'

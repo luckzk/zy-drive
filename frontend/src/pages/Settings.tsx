@@ -286,7 +286,7 @@ export default function SettingsPage({
   }
 
   return (
-    <div>
+    <div className="settings-page">
       <h1 style={{ marginTop: 0 }}>{t(lang, 'settings')}</h1>
       {(settingsError || agentsError) && <div className="error-box">{settingsError ?? agentsError}</div>}
       {savedMsg && (
@@ -297,7 +297,11 @@ export default function SettingsPage({
 
       {/* ---- 通用 ---- */}
       <Reveal>
-        <h2>{t(lang, 'general')}</h2>
+        <section className="settings-card">
+        <div className="settings-card-head">
+          <h2>{t(lang, 'general')}</h2>
+          <p className="settings-card-desc">外观、语言、下载文件夹与开机启动。</p>
+        </div>
         {settingsLoading || !draft ? (
           <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载设置">
             <Skeleton height={36} width="60%" />
@@ -357,18 +361,23 @@ export default function SettingsPage({
               )}
               {loginNote && openAtLogin !== null && <div className="hint">{loginNote}</div>}
             </div>
-            <div style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 0 }}>
               <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
                 {t(lang, 'save')}
               </button>
             </div>
           </>
         )}
+        </section>
       </Reveal>
 
       {/* ---- 网盘 ---- */}
       <Reveal>
-        <h2>{t(lang, 'drives')}</h2>
+        <section className="settings-card">
+        <div className="settings-card-head">
+          <h2>{t(lang, 'drives')}</h2>
+          <p className="settings-card-desc">已添加的网盘：查看状态、重新授权或移除。</p>
+        </div>
         {mountsLoading ? (
           <div style={{ display: 'grid', gap: 8 }} aria-label="正在加载网盘">
             {[0, 1].map((i) => (
@@ -456,18 +465,20 @@ export default function SettingsPage({
           ))
         )}
         {mounts.length > 0 && (
-          <p className="muted" style={{ fontSize: 13 }}>
+          <p className="muted" style={{ fontSize: 13, margin: '12px 0 0' }}>
             删除网盘只删本机的记录和保存的凭证，不会删除云端 / 本地文件夹里的文件。
           </p>
         )}
+        </section>
       </Reveal>
 
       {/* ---- 同步默认 ---- */}
       <Reveal>
-        <h2>{t(lang, 'syncDefaults')}</h2>
-        <p className="muted" style={{ fontSize: 13 }}>
-          新建同步任务时用这些默认值；已经建好的任务不受影响，各自保留原来的设置。
-        </p>
+        <section className="settings-card">
+        <div className="settings-card-head">
+          <h2>{t(lang, 'syncDefaults')}</h2>
+          <p className="settings-card-desc">新建同步任务时用这些默认值；已经建好的任务不受影响，各自保留原来的设置。</p>
+        </div>
         {settingsLoading || !draft ? (
           <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载同步默认设置">
             <Skeleton height={36} width="60%" />
@@ -528,27 +539,31 @@ export default function SettingsPage({
               </select>
               <div className="hint">V0.1 引擎的冲突规则是固定的（新版占原名、另一份保留为冲突副本），其他策略后续版本再提供。</div>
             </div>
-            <div style={{ marginBottom: 16 }}>
+            <div style={{ marginBottom: 0 }}>
               <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
                 {t(lang, 'save')}
               </button>
             </div>
           </>
         )}
+        </section>
       </Reveal>
 
       {/* ---- Agent（V0.1 原样保留） ---- */}
       <Reveal>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <h2 style={{ margin: 0 }}>{t(lang, 'agent')}</h2>
-          <span style={{ flex: 1 }} />
-          <button className="btn-primary" onClick={startAdd}>
-            添加 Agent
-          </button>
+        <section className="settings-card">
+        <div className="settings-card-head">
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <h2 style={{ margin: 0 }}>{t(lang, 'agent')}</h2>
+            <span style={{ flex: 1 }} />
+            <button className="btn-primary" onClick={startAdd}>
+              添加 Agent
+            </button>
+          </div>
+          <p className="settings-card-desc" style={{ marginTop: 4 }}>
+            Agent 是跑在服务器上的执行端：桌面配好同步任务后，Agent 在服务器上跑，文件不经过这台电脑。本地文件夹的任务只能在本机跑。
+          </p>
         </div>
-        <p className="muted" style={{ fontSize: 13 }}>
-          Agent 是跑在服务器上的执行端：桌面配好同步任务后，Agent 在服务器上跑，文件不经过这台电脑。本地文件夹的任务只能在本机跑。
-        </p>
 
         {agentsLoading ? (
           <div style={{ display: 'grid', gap: 8 }} aria-label="正在加载 Agent">
@@ -624,11 +639,16 @@ export default function SettingsPage({
             </div>
           ))
         )}
+        </section>
       </Reveal>
 
       {/* ---- 关于 ---- */}
       <Reveal>
-        <h2>{t(lang, 'about')}</h2>
+        <section className="settings-card">
+        <div className="settings-card-head">
+          <h2>{t(lang, 'about')}</h2>
+          <p className="settings-card-desc">版本信息。</p>
+        </div>
         <p style={{ margin: '4px 0' }}>
           后端版本：<strong>{versions?.backend ?? '—'}</strong>
         </p>
@@ -639,7 +659,8 @@ export default function SettingsPage({
           协议版本：<strong>{versions?.protocol ?? '—'}</strong>
           {versions?.engine ? ` · 同步引擎 ${versions.engine}` : ''}
         </p>
-        <div className="notice-box">暂未接入检查更新：还没有配置更新源（mygo Updater 需要打包时配置更新 feed），所以这里不假装检查过。当前版本见上方。</div>
+        <div className="notice-box" style={{ marginBottom: 0 }}>暂未接入检查更新：还没有配置更新源（mygo Updater 需要打包时配置更新 feed），所以这里不假装检查过。当前版本见上方。</div>
+        </section>
       </Reveal>
 
       {editing && (

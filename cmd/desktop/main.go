@@ -9,7 +9,6 @@ import (
 	"context"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"os/signal"
@@ -90,30 +89,10 @@ func main() {
 		log.Printf("desktop: restore mounts: %v", err)
 	}
 
-	// Transfer worker: executes queued copies by streaming source to
-	// target through io.Pipe — never staged on local disk.
-	worker := transfer.NewWorker(queue, func(ctx context.Context, t *domain.Transfer, report func(done, speedBps int64)) error {
-		src, err := application.ProviderFor(t.SrcMount)
-		if err != nil {
-			return err
-		}
-		dst, err := application.ProviderFor(t.DstMount)
-		if err != nil {
-			return err
-		}
-		rc, err := src.OpenRead(ctx, t.SrcRef)
-		if err != nil {
-			return err
-		}
-		defer rc.Close()
-		pr, pw := io.Pipe()
-		go func() {
-			_, err := io.Copy(pw, rc)
-			_ = pw.CloseWithError(err)
-		}()
-		_, err = dst.Upload(ctx, t.DstRef, pr, t.Size)
-		return err
-	}, 2, nil)
+	// Transfer worker: executes queued moves (cross-cloud copies and
+	// drag-drop uploads) via app.ExecuteTransfer — streaming, never
+	// staged on local disk.
+	worker := transfer.NewWorker(queue, application.ExecuteTransfer, 2, nil)
 	application.Worker = worker
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

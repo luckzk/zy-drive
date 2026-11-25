@@ -2,7 +2,37 @@
    品牌绿 #56E16C 是主按钮填充（白字）；次要文字是深绿 #00261D
    60% 透明度，不是灰色。页面底 #FFFFFF，内层容器 rounded-2xl 16px。
    未实测项（卡片标题 h3、环形图中心数字、卡片背景、边框、危险红）
-   目前用截图估算值，已在注释中标明，实测后替换。 */
+   目前用截图估算值，已在注释中标明，实测后替换。
+   字重试验（2026-11-25，用户要求去掉加粗试试）：全站字重统一为
+   400（常规），之前到处是 550（semibold）/ 500（medium）。如果看
+   着层次不够，再按需把个别标题调回去，不要全局加粗。
+   字体加载：Schibsted Grotesk 只在 font-family 里写了名字、但
+   根本没加载过（无 Google Fonts 链接、无 @font-face、无字体文件），
+   Mac 上实际渲染的是 fallback 的 system-ui / PingFang SC，再配
+   550 字重，看着又粗又不对。现把 400 字重的 woff2（latin +
+   latin-ext）以 base64 文本存在 frontend/fonts-src/（快照推送只
+   接受 UTF-8 文本，二进制推不上去），构建前由 npm prebuild
+   （frontend/scripts/decode-fonts.mjs）解码成本地 woff2，用
+   @font-face 本地加载，不依赖 Google Fonts 在线链接，桌面窗口
+   离线也能用。注意：
+   Schibsted Grotesk 没有中文字形，中文仍走 fallback 的 PingFang SC；
+   只加载 400 一个字重，不加载全家桶。 */
+@font-face {
+  font-family: 'Schibsted Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/schibsted-grotesk-latin-400.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Schibsted Grotesk';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/schibsted-grotesk-latin-ext-400.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 :root {
   --brand: #56e16c;
   --brand-dark: #3ecf57;
@@ -31,17 +61,17 @@ body {
 
 h1 {
   font-size: 20px;
-  font-weight: 550;
+  font-weight: 400;
   line-height: 28px;
 }
 h2 {
   font-size: 16px;
-  font-weight: 550;
+  font-weight: 400;
   line-height: 24px;
 }
 h3 {
   font-size: 14px;
-  font-weight: 550;
+  font-weight: 400;
   line-height: 20px;
 }
 p,
@@ -51,12 +81,12 @@ td {
 }
 thead th {
   font-size: 11px;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--ink-secondary);
 }
 button {
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 400;
   /* 按钮文字永不竖排：flex 容器里按钮被挤压时宁可溢出也不换行，
      2026-11-25 Mac 实测：新建分组的“确定”曾被压成竖排两字。 */
   white-space: nowrap;
@@ -101,7 +131,7 @@ button {
   cursor: pointer;
 }
 .btn-sm { padding: 4px 8px; font-size: 13px; }
-.input, .select, .textarea {
+.input, .textarea {
   font-family: var(--font-sans);
   font-size: 14px;
   color: var(--ink);
@@ -112,23 +142,74 @@ button {
   width: 100%;
   min-width: 0;
 }
-.input:focus, .select:focus, .textarea:focus {
+.input:focus, .textarea:focus {
   outline: 2px solid var(--brand);
   outline-offset: 0;
   border-color: var(--brand);
 }
+/* 选择框统一样式：固定高度 40px（8px 垂直内边距 + 14px 字 + 行高）、
+   圆角 8px、右侧自定义下拉箭头（SVG，不用浏览器默认箭头）、
+   hover 加深边框、焦点 2px 品牌绿环、disabled 置灰。深色主题下
+   箭头颜色单独覆盖（见 [data-theme='dark'] .select）。 */
+.select {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  color: var(--ink);
+  background-color: var(--paper);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 36px 8px 12px;
+  min-height: 40px;
+  width: 100%;
+  min-width: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23111111' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px 16px;
+  cursor: pointer;
+  transition: border-color 300ms var(--ease), box-shadow 300ms var(--ease), background-color 300ms var(--ease);
+}
+.select:hover { border-color: var(--ink-secondary); }
+.select:focus {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+  border-color: var(--brand);
+}
+.select:disabled { opacity: 0.45; cursor: not-allowed; background-color: var(--card); }
 .textarea { resize: vertical; min-height: 64px; }
 .field { margin-bottom: 12px; }
-.field > label { display: block; font-size: 13px; font-weight: 550; margin-bottom: 4px; }
+.field > label { display: block; font-size: 13px; font-weight: 400; margin-bottom: 4px; }
 .field .hint { font-size: 12px; color: var(--ink-secondary); margin-top: 4px; }
 .radio-row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0; font-size: 14px; cursor: pointer; }
 .radio-row input { margin-top: 3px; }
+
+/* ---- 设置页分组卡片 ----
+   每一节是一张独立的卡：圆角 16px、背景 --card（浅色 #F5F5F5）、
+   整圈边框、内边距 16px、节间距 16px。卡内是节标题 + 一句话说明
+   + 控件，同一组功能放同一张卡里，边界、标题层级、间距一眼分清。 */
+.settings-page { max-width: 780px; }
+.settings-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.settings-card-head { margin-bottom: 12px; }
+.settings-card-head h2 { margin: 0 0 4px; }
+.settings-card-desc { margin: 0; font-size: 13px; color: var(--ink-secondary); }
+.settings-card .field { margin-bottom: 16px; }
+.settings-card .field:last-child { margin-bottom: 0; }
+.settings-card .empty { background: var(--paper); }
+.settings-card .agent-row { background: var(--paper); }
 
 /* ---- 徽章 / 状态 ---- */
 .badge {
   display: inline-block;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 18px;
   padding: 2px 8px;
   border-radius: 999px;
@@ -162,18 +243,18 @@ button {
 .nav-item {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 12px; border-radius: 8px; cursor: pointer;
-  font-size: 14px; font-weight: 500; border: none; background: none;
+  font-size: 14px; font-weight: 400; border: none; background: none;
   color: var(--ink); text-align: left; width: 100%;
 }
 .nav-item:hover { background: var(--card); }
 .nav-item.active { background: #dcfce7; }
-.nav-section { font-size: 11px; font-weight: 500; color: var(--ink-secondary); margin: 12px 4px 4px; }
+.nav-section { font-size: 11px; font-weight: 400; color: var(--ink-secondary); margin: 12px 4px 4px; }
 .group-row {
   display: flex; align-items: center; gap: 6px;
   padding: 8px 4px; cursor: pointer; border-radius: 8px;
 }
 .group-row:hover { background: var(--card); }
-.group-row .group-name { font-size: 14px; font-weight: 550; }
+.group-row .group-name { font-size: 14px; font-weight: 400; }
 .group-row .group-actions { margin-left: auto; display: none; gap: 2px; }
 .group-row:hover .group-actions, .group-row:focus-within .group-actions { display: flex; }
 @media (hover: none) { .group-row .group-actions { display: flex; } }
@@ -189,7 +270,7 @@ button {
 }
 .mount-card:hover { background: var(--card); }
 .mount-card.active { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
-.mount-card .mount-name { font-size: 14px; font-weight: 550; }
+.mount-card .mount-name { font-size: 14px; font-weight: 400; }
 .mount-card .mount-meta { font-size: 12px; color: var(--ink-secondary); margin-top: 2px; }
 
 /* ---- 文件表 ---- */
@@ -244,7 +325,7 @@ button {
   padding: 16px; margin-bottom: 12px; background: var(--paper);
 }
 .job-card.highlight { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
-.job-card .job-title { font-size: 15px; font-weight: 550; }
+.job-card .job-title { font-size: 15px; font-weight: 400; }
 .job-card .job-meta { font-size: 13px; color: var(--ink-secondary); margin-top: 4px; }
 .job-card .job-actions { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
 .dual-box { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; background: var(--paper); }
@@ -275,7 +356,7 @@ button {
   display: flex; align-items: center; gap: 8px;
   background: var(--ink); color: #fff;
   border: none; border-radius: 999px; padding: 10px 16px;
-  font-size: 14px; font-weight: 500; cursor: pointer;
+  font-size: 14px; font-weight: 400; cursor: pointer;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
 }
 .dock-capsule .unread-dot {
@@ -293,7 +374,7 @@ button {
 .dock-panel .dock-body { padding: 12px 16px 16px; overflow-y: auto; }
 .tab {
   border: none; background: none; cursor: pointer;
-  font-size: 14px; font-weight: 500; padding: 8px 12px;
+  font-size: 14px; font-weight: 400; padding: 8px 12px;
   border-bottom: 2px solid transparent; color: var(--ink-secondary);
 }
 .tab.active { color: var(--ink); border-bottom-color: var(--brand); }
@@ -309,7 +390,7 @@ button {
   flex-wrap: wrap;
 }
 .agent-row .agent-main { flex: 1; min-width: 200px; }
-.agent-row .agent-name { font-size: 14px; font-weight: 550; }
+.agent-row .agent-name { font-size: 14px; font-weight: 400; }
 .agent-row .agent-meta { font-size: 12px; color: var(--ink-secondary); margin-top: 2px; }
 
 /* ---- 命令面板 ---- */
@@ -342,6 +423,9 @@ button {
 [data-theme='dark'] .error-box { background: #2a1a1a; border-color: #5b2323; color: #fca5a5; }
 [data-theme='dark'] .dialog-backdrop { background: rgba(0, 0, 0, 0.55); }
 [data-theme='dark'] .dock-capsule { background: var(--card); color: var(--ink); border: 1px solid var(--border); }
+[data-theme='dark'] .select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M4 6l4 4 4-4' stroke='%23f2f4f2' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
 
 /* ---- 动效系统（ai-design-skills landing-page-design，B7/B9） ----
    基础曲线 cubic-bezier(0.22,1,0.36,1)，绝不用 ease/linear/ease-in-out。

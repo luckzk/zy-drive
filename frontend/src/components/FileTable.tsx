@@ -25,7 +25,7 @@ export default function FileTable({
     return (
       <div className="empty">
         <h2>这个文件夹是空的</h2>
-        <p>把文件拖进来，或点右上角上传。</p>
+        <p>把文件拖进来上传。</p>
       </div>
     )
   }

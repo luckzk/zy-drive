@@ -2,9 +2,20 @@
 // default: the Inspector only mounts after the user clicks a file or
 // folder, and hides on blank click / re-click / close. Double-click
 // enters a folder without opening the Inspector.
+//
+// Drag-drop upload: the whole browse area is a drop zone. Real paths
+// come from mygo-runtime onFileDrop (DOM File objects carry no path);
+// the DOM drop handler only prevents the browser from navigating to
+// the file, and in a plain browser it says honestly that drag upload
+// needs the ZyDrive desktop window. Highlight + text use only the
+// Drime tokens in tokens.css (pale green #f0fdf4 = the .file-table
+// selected-row background, var(--brand) dashed border); progress
+// lives in the TransferDock capsule (brand-green bar), which polls
+// transfers() every 5s.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Mount, Node } from '../mygo'
-import { api, friendlyError } from '../api/client'
+import { isMyGo, onFileDrop } from 'mygo-runtime'
+import type { Mount, Node, Transfer } from '../mygo'
+import { api, friendlyError, type UploadSkipped } from '../api/client'
 import { Skeleton } from './motion'
 import FileTable from './FileTable'
 import Inspector from './Inspector'
@@ -72,8 +83,167 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
 
   const nodeKey = (n: Node) => n.ref || n.path
 
+  // ---- Drag-drop upload ----
+  const zoneRef = useRef<HTMLDivElement>(null)
+  const dragCount = useRef(0)
+  const pollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const [uploadInfo, setUploadInfo] = useState<string | null>(null)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [skipped, setSkipped] = useState<UploadSkipped[]>([])
+  const [failedPaths, setFailedPaths] = useState<string[]>([])
+
+  useEffect(
+    () => () => {
+      if (pollTimer.current) clearTimeout(pollTimer.current)
+    },
+    [],
+  )
+
+  // Uploads one batch of local paths into the current directory and
+  // polls transfers() until the batch is terminal, then refreshes
+  // the listing. Skipped paths (too big, unreadable) are shown
+  // inline; failed ones can be retried on their own.
+  const handleUpload = useCallback(
+    async (paths: string[]) => {
+      if (paths.length === 0) return
+      if (pollTimer.current) clearTimeout(pollTimer.current)
+      setUploadError(null)
+      setFailedPaths([])
+      setSkipped([])
+      setUploadInfo(`正在上传 ${paths.length} 个文件…进度见右下角传输胶囊。`)
+      let res
+      try {
+        res = await api.uploadFiles(mount.id, ref, paths)
+      } catch (e) {
+        setUploadInfo(null)
+        setUploadError(friendlyError(e))
+        return
+      }
+      if (res.skipped.length > 0) setSkipped(res.skipped)
+      const ids = new Set(res.transfers.map((t) => t.id))
+      if (ids.size === 0) {
+        setUploadInfo(null)
+        return
+      }
+      const started = Date.now()
+      const tick = async () => {
+        let all: Transfer[]
+        try {
+          all = await api.transfers()
+        } catch {
+          // Best-effort poll: the App-level 5s poll still updates
+          // the dock; retry this check shortly.
+          pollTimer.current = setTimeout(() => void tick(), 2000)
+          return
+        }
+        const mine = all.filter((t) => ids.has(t.id))
+        const terminal = mine.filter(
+          (t) => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled',
+        )
+        const failed = mine.filter((t) => t.status === 'failed')
+        if (mine.length > 0 && terminal.length >= mine.length) {
+          setUploadInfo(null)
+          if (failed.length > 0) {
+            setFailedPaths(failed.map((t) => t.srcRef))
+            setUploadError(`${failed.length} 个文件上传失败，可以只重试失败的文件。`)
+          }
+          void load()
+          return
+        }
+        if (Date.now() - started > 30 * 60 * 1000) {
+          // Give up watching (very large batch); the dock still
+          // shows the transfers, and the user can refresh manually.
+          setUploadInfo(null)
+          void load()
+          return
+        }
+        pollTimer.current = setTimeout(() => void tick(), 2000)
+      }
+      pollTimer.current = setTimeout(() => void tick(), 2000)
+    },
+    [mount.id, ref, load],
+  )
+
+  // mygo gives real local paths via onFileDrop; register only inside
+  // the desktop window (guarded by isMyGo, registration failure
+  // never breaks the page). The drop is accepted only when it lands
+  // inside this browser area.
+  useEffect(() => {
+    if (!isMyGo()) return
+    let unsubscribe: (() => void) | undefined
+    try {
+      unsubscribe = onFileDrop(({ paths, x, y }) => {
+        const zone = zoneRef.current
+        const el = document.elementFromPoint(x, y)
+        if (!zone || !el || !zone.contains(el)) return
+        void handleUpload(paths)
+      })
+    } catch {
+      unsubscribe = undefined
+    }
+    return () => {
+      unsubscribe?.()
+    }
+  }, [handleUpload])
+
   return (
-    <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
+    <div
+      ref={zoneRef}
+      style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}
+      onDragEnter={(e) => {
+        e.preventDefault()
+        dragCount.current += 1
+        setDragOver(true)
+      }}
+      onDragOver={(e) => {
+        e.preventDefault()
+        e.dataTransfer.dropEffect = isMyGo() ? 'copy' : 'none'
+      }}
+      onDragLeave={() => {
+        dragCount.current = Math.max(0, dragCount.current - 1)
+        if (dragCount.current === 0) setDragOver(false)
+      }}
+      onDrop={(e) => {
+        e.preventDefault()
+        dragCount.current = 0
+        setDragOver(false)
+        if (!isMyGo()) {
+          // Plain browser: DOM File objects carry no local path, so
+          // say so instead of pretending the drop worked.
+          setUploadError('拖拽上传仅在 ZyDrive 桌面窗口中可用。在浏览器里打开时，请用桌面窗口拖拽上传。')
+          return
+        }
+        // In the desktop window the real paths arrive via onFileDrop;
+        // nothing to do here besides stopping the navigation.
+      }}
+    >
+      {/* Drop highlight: transform/opacity only, no layout change.
+          Pale green #f0fdf4 + brand-green dashed border are the
+          existing .file-table selected-row / brand tokens. */}
+      <div
+        aria-hidden
+        style={{
+          position: 'absolute',
+          inset: 8,
+          zIndex: 5,
+          pointerEvents: 'none',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#f0fdf4',
+          border: '2px dashed var(--brand)',
+          borderRadius: 'var(--radius)',
+          opacity: dragOver ? 1 : 0,
+          transform: dragOver ? 'scale(1)' : 'scale(0.98)',
+          transition:
+            'opacity 500ms cubic-bezier(0.22,1,0.36,1), transform 500ms cubic-bezier(0.22,1,0.36,1)',
+        }}
+      >
+        <span style={{ fontSize: 14, fontWeight: 400, lineHeight: '20px', color: 'var(--ink)' }}>
+          {isMyGo() ? '松开以上传到当前文件夹' : '拖拽上传仅在 ZyDrive 桌面窗口中可用'}
+        </span>
+      </div>
       <div
         style={{ flex: 1, minWidth: 0, padding: 16, overflowY: 'auto' }}
         onClick={(e) => {
@@ -82,7 +252,7 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
         }}
       >
         <div className="crumbs">
-          <button onClick={() => setCrumbs([])} style={{ fontWeight: crumbs.length === 0 ? 550 : 400 }}>
+          <button onClick={() => setCrumbs([])} style={{ fontWeight: 400 }}>
             {mount.displayName}
           </button>
           {crumbs.map((c, i) => (
@@ -96,6 +266,30 @@ export default function FileBrowser({ mount }: { mount: Mount }) {
             刷新
           </button>
         </div>
+
+        {uploadInfo && <div className="notice-box">{uploadInfo}</div>}
+        {skipped.length > 0 && (
+          <div className="error-box">
+            以下文件没有上传：
+            {skipped.map((s) => (
+              <div key={s.path} style={{ wordBreak: 'break-all', marginTop: 4 }}>
+                {s.path}：{s.reason}
+              </div>
+            ))}
+          </div>
+        )}
+        {uploadError && (
+          <div className="error-box">
+            {uploadError}
+            {failedPaths.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <button className="btn btn-sm" onClick={() => void handleUpload(failedPaths)}>
+                  重试失败的 {failedPaths.length} 个文件
+                </button>
+              </div>
+            )}
+          </div>
+        )}
 
         {error ? (
           <div className="error-box">

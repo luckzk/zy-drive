@@ -67,6 +67,16 @@ func (s *DesktopService) RunSync(ctx context.Context, job *domain.SyncJob, plan 
 // Transfers lists transfers for the bottom queue panel.
 func (s *DesktopService) Transfers() []*domain.Transfer { return s.app.Transfers() }
 
+// UploadFiles enqueues files dropped on the window for upload into
+// the current directory. The worker executes them asynchronously;
+// the returned Transfers are visible in Transfers() from enqueue
+// time, so the dock's 5s poll shows live progress. Skipped lists
+// paths that never entered the queue (too big, unreadable) with the
+// reason, so no dropped file disappears silently.
+func (s *DesktopService) UploadFiles(ctx context.Context, mountID, ref string, paths []string) (*UploadResult, error) {
+	return s.app.UploadFiles(ctx, mountID, ref, paths)
+}
+
 // ListAgents returns the configured server Agents.
 func (s *DesktopService) ListAgents() []*domain.Agent { return s.app.ListAgents() }
 

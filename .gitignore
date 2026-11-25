@@ -20,6 +20,9 @@ secrets/
 # Frontend
 frontend/node_modules/
 frontend/dist/
+# 解出的字体文件是构建产物（仓库里只存 .woff2.b64 文本，构建时
+# 由 frontend/scripts/decode-fonts.mjs 解码，见该文件注释）
+frontend/public/fonts/*.woff2
 *.tsbuildinfo
 
 # Visual check (scripts/visual-check): harness deps, browser, shots — never commit

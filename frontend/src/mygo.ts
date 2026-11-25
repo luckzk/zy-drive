@@ -410,6 +410,28 @@ export type TransferKind = "upload" | "download" | "copy";
 export type TransferStatus = "queued" | "running" | "paused" | "completed" | "failed" | "cancelled" | "interrupted";
 
 /**
+ * UploadResult is the single return value of UploadFiles: mygo.Bind
+ * allows at most one value plus an error, so the transfers and the
+ * skipped list travel together. Transfers are queued, not finished:
+ * the worker executes them asynchronously and Transfers() shows live
+ * progress (the dock polls it every 5s).
+ */
+export interface UploadResult {
+  transfers: (Transfer | null)[];
+  skipped: UploadSkipped[];
+}
+
+/**
+ * UploadSkipped is one dropped path that never entered the transfer
+ * queue (unreadable, too big, ...), with a human reason. The UI shows
+ * these inline instead of silently dropping files.
+ */
+export interface UploadSkipped {
+  path: string;
+  reason: string;
+}
+
+/**
  * VersionInfo is the About section: backend + protocol versions
  * from the Go build. The frontend version is a frontend constant
  * (frontend/src/version.ts); the two are displayed side by side.
@@ -500,6 +522,15 @@ export const DesktopService = {
   transfers: bind<[], (Transfer | null)[]>("DesktopService.Transfers", () => []),
   /** UpdateMountGroup changes a mount's sidebar group. */
   updateMountGroup: bind<[string, string], void>("DesktopService.UpdateMountGroup", (id: string, group: string) => [id, group]),
+  /**
+   * UploadFiles enqueues files dropped on the window for upload into
+   * the current directory. The worker executes them asynchronously;
+   * the returned Transfers are visible in Transfers() from enqueue
+   * time, so the dock's 5s poll shows live progress. Skipped lists
+   * paths that never entered the queue (too big, unreadable) with the
+   * reason, so no dropped file disappears silently.
+   */
+  uploadFiles: bind<[string, string, string[]], UploadResult | null>("DesktopService.UploadFiles", (mountID: string, ref: string, paths: string[]) => [mountID, ref, paths]),
   /** ValidateJob checks a sync job configuration before it is saved. */
   validateJob: bind<[SyncJob | null], void>("DesktopService.ValidateJob", (job: SyncJob | null) => [job]),
 } as const;
