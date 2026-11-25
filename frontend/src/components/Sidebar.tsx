@@ -15,6 +15,7 @@ import type { AgentStatus, Mount } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { t, type Lang } from '../lib/i18n'
 import { Skeleton, staggerStyle } from '../components/motion'
+import { BrandLogo, IconPencil, IconTrash, NavIcon } from './icons'
 import { mountStatusLabel } from '../lib/format'
 
 export type Page = 'browse' | 'sync' | 'settings'
@@ -141,13 +142,7 @@ export default function Sidebar({
   return (
     <aside className="sidebar">
       <nav>
-        {(
-          [
-            ['browse', '📁', t(lang, 'browse')],
-            ['sync', '🔄', t(lang, 'sync')],
-            ['settings', '⚙️', t(lang, 'settings')],
-          ] as const
-        ).map(([p, icon, label], i) => (
+        {(['browse', 'sync', 'settings'] as const).map((p, i) => (
           <button
             key={p}
             className={`nav-item nav-enter${page === p ? ' active' : ''}`}
@@ -155,7 +150,7 @@ export default function Sidebar({
             onClick={() => onNavigate(p)}
             aria-current={page === p ? 'page' : undefined}
           >
-            {icon} {label}
+            <NavIcon page={p} /> {t(lang, p)}
           </button>
         ))}
       </nav>
@@ -247,15 +242,16 @@ export default function Sidebar({
                 <button
                   className="icon-btn"
                   title="改名"
+                  aria-label="改名"
                   onClick={() => {
                     setRenaming(g)
                     setRenameValue(g)
                   }}
                 >
-                  ✎
+                  <IconPencil />
                 </button>
-                <button className="icon-btn" title="删除分组" onClick={() => setDeleting(g)}>
-                  🗑
+                <button className="icon-btn" title="删除分组" aria-label="删除分组" onClick={() => setDeleting(g)}>
+                  <IconTrash />
                 </button>
               </span>
             </div>
@@ -318,6 +314,7 @@ export default function Sidebar({
                     style={staggerStyle(mi)}
                     onClick={() => onSelectMount(m)}
                   >
+                    <BrandLogo provider={m.provider} endpointHost={m.endpointHost} />
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div className="mount-name">{m.displayName}</div>
                       <div className="mount-meta">
@@ -326,14 +323,15 @@ export default function Sidebar({
                       </div>
                     </div>
                     <button
-                      className="icon-btn"
+                      className="icon-btn mount-remove"
                       title="移除网盘"
+                      aria-label="移除网盘"
                       onClick={(e) => {
                         e.stopPropagation()
                         setRemovingMount(m.id)
                       }}
                     >
-                      🗑
+                      <IconTrash />
                     </button>
                   </div>
                   {removingMount === m.id && (

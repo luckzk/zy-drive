@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Transfer } from '../mygo'
 import { formatSize, formatSpeed, formatTime, transferStatusLabel } from '../lib/format'
 import { staggerStyle, useClosing } from './motion'
+import { IconClose, IconRefresh } from './icons'
 
 export default function TransferDock({ transfers }: { transfers: Transfer[] }) {
   const [open, setOpen] = useState(false)
@@ -49,7 +50,7 @@ export default function TransferDock({ transfers }: { transfers: Transfer[] }) {
             </button>
             <span style={{ flex: 1 }} />
             <button className="icon-btn" onClick={requestPanelClose} aria-label="收起">
-              ✕
+              <IconClose />
             </button>
           </header>
           <div className="dock-body">
@@ -108,7 +109,9 @@ export default function TransferDock({ transfers }: { transfers: Transfer[] }) {
       )}
       <button className="dock-capsule" onClick={togglePanel} aria-label="传输队列">
         {unread && <span className="unread-dot" />}
-        <span aria-hidden>⇅</span>
+        <span aria-hidden style={{ display: 'inline-flex' }}>
+          <IconRefresh />
+        </span>
         <span>{running.length > 0 ? `传输中 ${running.length}` : '传输'}</span>
       </button>
     </>

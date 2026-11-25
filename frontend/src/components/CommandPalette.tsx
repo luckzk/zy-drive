@@ -5,6 +5,7 @@ import { useState } from 'react'
 import type { Mount } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { useClosing } from './motion'
+import { FileTypeIcon } from './icons'
 
 export default function CommandPalette({
   activeMount,
@@ -68,7 +69,11 @@ export default function CommandPalette({
                 requestClose()
               }}
             >
-              {r.isDir ? '📁' : '📄'} {r.name} <span className="muted">· {r.path}</span>
+              <span className="file-icon" aria-hidden>
+                <FileTypeIcon name={r.name} isDir={r.isDir} />
+              </span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</span>
+              <span className="muted">· {r.path}</span>
             </div>
           ))}
           {activeMount && query.trim() && !searching && !error && results.length === 0 && <p className="muted">没有找到“{query.trim()}”。</p>}

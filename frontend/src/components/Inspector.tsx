@@ -11,6 +11,7 @@ import { useState } from 'react'
 import type { Caps, Mount, Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
 import { Accordion } from './motion'
+import { IconChevronDown, IconClose } from './icons'
 
 function capsList(caps: Caps): string[] {
   const out: string[] = []
@@ -38,7 +39,7 @@ export default function Inspector({ node, mount, closing, onClose }: { node: Nod
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <h2 style={{ margin: 0 }}>详情</h2>
         <button className="icon-btn" onClick={onClose} aria-label="关闭详情">
-          ✕
+          <IconClose />
         </button>
       </div>
       <p style={{ marginTop: 12 }}>
@@ -59,8 +60,8 @@ export default function Inspector({ node, mount, closing, onClose }: { node: Nod
       {node.mime && <p className="muted">类型：{node.mime}</p>}
 
       <div style={{ marginTop: 16 }}>
-        <button className="btn btn-sm" onClick={() => setAdvancedOpen((v) => !v)}>
-          高级 {advancedOpen ? '▾' : '▸'}
+        <button className="btn btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={() => setAdvancedOpen((v) => !v)}>
+          高级 <IconChevronDown open={advancedOpen} />
         </button>
         <Accordion open={advancedOpen}>
           <div style={{ marginTop: 8 }}>

@@ -55,6 +55,12 @@ type Mount struct {
 	// Dropbox/Drive). Display only: no browse/sync/upload code may
 	// use it as a ref.
 	RootLabel string `json:"rootLabel,omitempty"`
+	// EndpointHost is the host of the S3-compatible endpoint
+	// (e.g. "<account>.r2.cloudflarestorage.com"), derived from the
+	// stored non-secret config. Display only: the sidebar uses it
+	// to pick the R2 (Cloudflare) or AWS S3 brand mark. It is the
+	// public endpoint URL, never a credential.
+	EndpointHost string `json:"endpointHost,omitempty"`
 	// Group is the sidebar group this mount belongs to (2026-11-24
 	// decision). "" means "未分组". Groups are display-only: they
 	// never affect tokens, caches or sync.

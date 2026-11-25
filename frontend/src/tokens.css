@@ -261,6 +261,7 @@ button {
 .icon-btn {
   border: none; background: none; cursor: pointer;
   color: var(--ink-secondary); padding: 2px 8px; border-radius: 6px; font-size: 13px;
+  display: inline-flex; align-items: center; justify-content: center;
 }
 .icon-btn:hover { background: var(--card); color: var(--ink); }
 .mount-card {
@@ -269,6 +270,16 @@ button {
   border: 1px solid var(--border); border-radius: 12px; background: var(--paper);
 }
 .mount-card:hover { background: var(--card); }
+/* The per-mount remove button only appears on hover (or keyboard
+   focus inside the card): a trash can on every row is visual noise.
+   The button is a flat-color-icons trash glyph, never an emoji;
+   colourful icons keep their own fills, so hover feedback is the
+   background only. Touch devices have no hover, so the button stays
+   visible there. */
+.mount-card .mount-remove { display: none; align-items: center; justify-content: center; }
+.mount-card:hover .mount-remove, .mount-card:focus-within .mount-remove { display: flex; }
+.mount-card .mount-remove:hover { background: none; }
+@media (hover: none) { .mount-card .mount-remove { display: flex; } }
 .mount-card.active { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
 .mount-card .mount-name { font-size: 14px; font-weight: 400; }
 .mount-card .mount-meta { font-size: 12px; color: var(--ink-secondary); margin-top: 2px; }
@@ -310,6 +321,10 @@ button {
 .file-table tbody tr:hover { background: var(--card); }
 .file-table tbody tr.selected { background: #f0fdf4; }
 .file-table .row-name { display: flex; align-items: center; gap: 8px; }
+/* File-type / folder glyphs: flat-color-icons, colourful by design —
+   they carry their own fills and do not follow currentColor. The
+   wrapper only keeps the icon from stretching the row. */
+.file-icon { display: inline-flex; flex-shrink: 0; }
 .crumbs { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 12px; font-size: 14px; }
 .crumbs button { border: none; background: none; cursor: pointer; color: var(--ink); font-size: 14px; padding: 2px 4px; border-radius: 6px; }
 .crumbs button:hover { background: var(--card); }
@@ -427,7 +442,7 @@ button {
   border-radius: var(--radius); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
   padding: 16px;
 }
-.palette-row { padding: 8px; border-radius: 8px; cursor: pointer; font-size: 14px; }
+.palette-row { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 14px; }
 .palette-row:hover { background: var(--card); }
 
 /* ---- 深色主题：data-theme="dark"，由设置页切换，全站跟随 ----

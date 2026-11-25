@@ -5,6 +5,7 @@
 import type { Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
 import { staggerStyle } from './motion'
+import { FileTypeIcon } from './icons'
 
 export default function FileTable({
   nodes,
@@ -63,7 +64,9 @@ export default function FileTable({
               </td>
               <td>
                 <span className="row-name">
-                  <span aria-hidden>{n.isDir ? '📁' : '📄'}</span>
+                  <span className="file-icon" aria-hidden>
+                    <FileTypeIcon name={n.name} isDir={n.isDir} />
+                  </span>
                   <span>{n.name}</span>
                   {n.isDir && <span className="muted">›</span>}
                 </span>

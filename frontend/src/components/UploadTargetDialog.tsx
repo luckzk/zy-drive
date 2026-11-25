@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Mount, Node } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { Skeleton, useClosing } from './motion'
+import { FileTypeIcon } from './icons'
 
 interface Crumb {
   name: string
@@ -142,7 +143,10 @@ export default function UploadTargetDialog({
                 style={{ border: 'none', background: 'none', textAlign: 'left', width: '100%' }}
                 onClick={() => setCrumbs([...crumbs, { name: d.name, ref: d.ref || d.path }])}
               >
-                📁 {d.name}
+                <span className="file-icon" aria-hidden>
+                  <FileTypeIcon name={d.name} isDir />
+                </span>
+                {d.name}
               </button>
             ))}
           </div>

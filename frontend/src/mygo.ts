@@ -167,6 +167,13 @@ export interface Mount {
    */
   rootLabel?: string;
   /**
+   * EndpointHost is the host of the S3-compatible endpoint
+   * (e.g. "<account>.r2.cloudflarestorage.com"), display only:
+   * the sidebar picks the R2 (Cloudflare) or AWS S3 brand mark
+   * from it. Public endpoint URL, never a credential.
+   */
+  endpointHost?: string;
+  /**
    * Group is the sidebar group this mount belongs to (2026-11-24
    * decision). "" means "未分组". Groups are display-only: they
    * never affect tokens, caches or sync.

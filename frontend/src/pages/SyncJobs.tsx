@@ -245,7 +245,7 @@ function SyncJobEditor({
 
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 16 }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 550, marginBottom: 4 }}>方向</div>
+          <div style={{ fontSize: 13, fontWeight: 400, marginBottom: 4 }}>方向</div>
           {(
             [
               ['copy', '单向复制：只加不删，最安全'],

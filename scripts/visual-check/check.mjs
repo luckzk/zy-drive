@@ -39,9 +39,32 @@ const CAPS = {
 const MOCK_MOUNTS = [
   // S3 根是 ""（provider root），桶名只活在 rootLabel 里作显示；
   // 旧数据 rootRef "test-bucket" 会让浏览列出桶内同名文件夹。
-  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', group: '工作', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  // endpointHost 决定侧栏品牌 logo：R2 域名 → Cloudflare 标，
+  // 其他 → AWS S3 标（display-only，后端从非敏感配置派生）。
+  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', endpointHost: 'abc123.r2.cloudflarestorage.com', group: '工作', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-s3aws', displayName: 'AWS 备份', provider: 's3', accountId: 'a4', rootRef: '', rootLabel: 'backup-bucket', endpointHost: 's3.ap-northeast-1.amazonaws.com', group: '存储 / 备份', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
   { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
   { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', createdAt: '', updatedAt: '' },
+  { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', caps: { ...CAPS, idBased: true }, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+  { id: 'm-local', displayName: '本地照片', provider: 'local', accountId: 'a7', rootRef: '/Users/zy/照片', rootLabel: '/Users/zy/照片', group: '存储 / 备份', caps: CAPS, status: 'ok', createdAt: '', updatedAt: '' },
+]
+// 多类型文件列表（仅检查脚本里有，不进前端代码）：文件夹、文档、
+// 表格、演示、图片、视频、音频、压缩包、代码、未知类型各至少一个，
+// 用来看文件管理器图标是否按类型区分、是否对齐。
+const STUB_NODES = [
+  { ref: '照片', path: '/照片', name: '照片', isDir: true, size: 0, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '行程.pdf', path: '/行程.pdf', name: '行程.pdf', isDir: false, size: 123456, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '预算.xlsx', path: '/预算.xlsx', name: '预算.xlsx', isDir: false, size: 23456, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '分享.pptx', path: '/分享.pptx', name: '分享.pptx', isDir: false, size: 345678, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '封面.png', path: '/封面.png', name: '封面.png', isDir: false, size: 456789, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '旅行.mp4', path: '/旅行.mp4', name: '旅行.mp4', isDir: false, size: 12345678, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '录音.m4a', path: '/录音.m4a', name: '录音.m4a', isDir: false, size: 567890, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '备份.zip', path: '/备份.zip', name: '备份.zip', isDir: false, size: 9876543, modTime: '2026-11-20T10:00:00Z' },
+  { ref: 'main.go', path: '/main.go', name: 'main.go', isDir: false, size: 1234, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '笔记.txt', path: '/笔记.txt', name: '笔记.txt', isDir: false, size: 567, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '未知.xyz', path: '/未知.xyz', name: '未知.xyz', isDir: false, size: 890, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '合同.docx', path: '/合同.docx', name: '合同.docx', isDir: false, size: 67890, modTime: '2026-11-20T10:00:00Z' },
 ]
 const STUB_MOUNTS = process.env.VISUAL_MOUNTS ? JSON.stringify(MOCK_MOUNTS) : '[]'
 const STUB = `(() => {
@@ -54,7 +77,7 @@ const STUB = `(() => {
     call: async (method, ...args) => {
       if (method === 'DesktopService.AgentStatus') return { total: 0, online: 0 }
       if (method === 'DesktopService.ValidateJob') return null
-      if (method === 'DesktopService.Browse') return []
+      if (method === 'DesktopService.Browse') return ${JSON.stringify(STUB_NODES)}
       if (method === 'DesktopService.PreviewSync') return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
       if (method === 'DesktopService.SaveSyncJob') return args[0]
       if (method === 'DesktopService.Mkdir') return null
@@ -149,10 +172,10 @@ try {
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
 
-    // 1c. Drime 向导（V0.5.0）：Drime 必须可选（不再标 V0.2），
-    // 第 2 步以个人访问令牌为主——提示“令牌只显示一次”且没有
-    // Client Secret 字段（Drime 公共客户端不收 secret），另有
-    // 可选的工作区 ID 字段。
+    // 1c. Drime 向导（V0.6.0 起 PAT-only）：Drime 必须可选（不再
+    // 标 V0.2），第 2 步只有两样——个人访问令牌（提示“令牌只
+    // 显示一次”）和可选的工作区 ID；OAuth 相关字段（Client ID、
+    // 生成授权链接、授权码、Refresh Token）必须一个都不出现。
     await page.getByRole('button', { name: '添加网盘', exact: true }).click()
     await page.waitForTimeout(400)
     const drimeCard = page.locator('.agent-row', { hasText: 'Drime' }).first()
@@ -167,9 +190,35 @@ try {
     console.log('drime step2:', JSON.stringify(drimeStep2?.slice(0, 400)))
     if (!drimeStep2?.includes('个人访问令牌')) failures.push('Drime 向导第 2 步没有“个人访问令牌”主入口提示')
     if (!drimeStep2?.includes('令牌只显示一次')) failures.push('Drime 向导第 2 步没有“令牌只显示一次”的提示')
-    if (drimeStep2?.includes('Client Secret')) failures.push('Drime 向导第 2 步出现了 Client Secret 字段（公共客户端不收 secret，应隐藏）')
+    if (drimeStep2?.includes('Client ID')) failures.push('Drime 向导第 2 步出现了 Client ID（PAT-only，应隐藏全部 OAuth 字段）')
+    if (drimeStep2?.includes('生成授权链接')) failures.push('Drime 向导第 2 步出现了“生成授权链接”（PAT-only，应隐藏）')
+    if (drimeStep2?.includes('授权码')) failures.push('Drime 向导第 2 步出现了授权码（PAT-only，应隐藏）')
+    if (drimeStep2?.includes('Refresh Token')) failures.push('Drime 向导第 2 步出现了 Refresh Token（PAT-only，应隐藏）')
     if (!drimeStep2?.includes('工作区 ID')) failures.push('Drime 向导第 2 步没有“工作区 ID”字段')
     await page.screenshot({ path: path.join(SHOTS, '01c-wizard-drime.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+
+    // 1d. OneDrive 向导（V0.6.0）：OneDrive 必须可选（不再标
+    // V0.2），第 2 步是 OAuth 授权码流程——有 Client ID、
+    // “生成授权链接”、Azure 门户的建应用指引和 Refresh Token。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    const odCard = page.locator('.agent-row', { hasText: 'OneDrive' }).first()
+    const odCardText = await odCard.textContent()
+    console.log('onedrive card:', JSON.stringify(odCardText))
+    if (odCardText?.includes('V0.2')) failures.push('向导里 OneDrive 还标着 V0.2（应已可选）')
+    await odCard.click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const odStep2 = await page.locator('.dialog').textContent()
+    console.log('onedrive step2:', JSON.stringify(odStep2?.slice(0, 400)))
+    if (!odStep2?.includes('Client ID')) failures.push('OneDrive 向导第 2 步没有 Client ID')
+    if (!odStep2?.includes('生成授权链接')) failures.push('OneDrive 向导第 2 步没有“生成授权链接”按钮')
+    if (!odStep2?.includes('Azure')) failures.push('OneDrive 向导第 2 步没有 Azure 门户建应用的指引')
+    if (!odStep2?.includes('Refresh Token')) failures.push('OneDrive 向导第 2 步没有 Refresh Token 字段')
+    await page.screenshot({ path: path.join(SHOTS, '01d-wizard-onedrive.png') })
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
   }
@@ -247,6 +296,42 @@ try {
     if (groupHover.badgeAdjacent !== null && groupHover.badgeAdjacent > 12) failures.push(`分组数量徽章离组名太远：${groupHover.badgeAdjacent}px`)
     const sidebar2 = await page.$('.sidebar')
     if (sidebar2) await sidebar2.screenshot({ path: path.join(SHOTS, '02c-sidebar-group-hover.png') })
+  }
+
+  // 2e. 网盘卡片的删除按钮（VISUAL_MOUNTS）：平时隐藏，悬停卡片
+  // 才出现；必须是内联 SVG 图标，不是 emoji；hover 变危险红。
+  if (process.env.VISUAL_MOUNTS) {
+    const mountRemove = await page.evaluate(() => {
+      const card = document.querySelector('.mount-card')
+      const btn = card?.querySelector('.mount-remove')
+      if (!card || !btn) return { found: false }
+      const cs = getComputedStyle(btn)
+      return {
+        found: true,
+        displayBefore: cs.display,
+        hasSvg: !!btn.querySelector('svg'),
+        text: btn.textContent.trim(),
+        title: btn.getAttribute('title'),
+      }
+    })
+    console.log('mount remove (before hover):', JSON.stringify(mountRemove))
+    if (!mountRemove.found) failures.push('找不到网盘卡片的删除按钮（.mount-remove）')
+    if (mountRemove.found && mountRemove.displayBefore !== 'none') failures.push(`网盘删除按钮平时应隐藏，实测 display=${mountRemove.displayBefore}`)
+    if (mountRemove.found && !mountRemove.hasSvg) failures.push('网盘删除按钮应是内联 SVG 图标，不是 emoji/文字')
+    if (mountRemove.found && mountRemove.text !== '') failures.push(`网盘删除按钮里不应有文字/emoji，实测 ${JSON.stringify(mountRemove.text)}`)
+    if (mountRemove.found && mountRemove.title !== '移除网盘') failures.push(`网盘删除按钮 title 应为“移除网盘”，实测 ${JSON.stringify(mountRemove.title)}`)
+    await page.hover('.mount-card').catch(() => failures.push('悬停网盘卡片失败'))
+    await page.waitForTimeout(300)
+    const mountRemoveHover = await page.evaluate(() => {
+      const btn = document.querySelector('.mount-card .mount-remove')
+      if (!btn) return { found: false }
+      const cs = getComputedStyle(btn)
+      return { found: true, displayAfter: cs.display }
+    })
+    console.log('mount remove (on hover):', JSON.stringify(mountRemoveHover))
+    if (mountRemoveHover.found && mountRemoveHover.displayAfter === 'none') failures.push('悬停网盘卡片后删除按钮没有出现')
+    const sidebar3 = await page.$('.sidebar')
+    if (sidebar3) await sidebar3.screenshot({ path: path.join(SHOTS, '02e-sidebar-mount-hover.png') })
   }
 
   // 2d. 上传目标文件夹选择（问题 2，VISUAL_MOUNTS）：模拟一次拖放，
@@ -395,7 +480,9 @@ try {
     if (editRoot.found && !editRoot.showsBucketLabel) failures.push('设置页网盘行没有显示桶名 rootLabel（test-bucket）')
     if (editRoot.found && !editRoot.hasEditButton) failures.push('设置页 S3 网盘行没有“修改桶 / 前缀”入口')
     if (editRoot.hasEditButton) {
-      await page.getByRole('button', { name: '修改桶 / 前缀' }).click()
+      // 两个 S3 网盘（我的 R2 + AWS 备份）各有一个同名按钮：只点
+      // 第一个（我的 R2，test-bucket），否则 strict mode 会报 2 个元素。
+      await page.locator('.settings-card', { hasText: '已添加的网盘' }).getByRole('button', { name: '修改桶 / 前缀' }).first().click()
       await page.waitForTimeout(400)
       const rootDialog = await page.evaluate(() => {
         const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('修改桶 / 前缀'))

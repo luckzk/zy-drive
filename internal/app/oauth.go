@@ -13,13 +13,14 @@ import (
 )
 
 // oauth.go — the desktop OAuth Authorization Code flow for Dropbox,
-// Google Drive and Drime.
+// Google Drive, Drime and OneDrive.
 //
 // Why code + manual copy-paste instead of a localhost callback:
 //   - There are no bundled OAuth client credentials: each user creates
 //     their own app (Dropbox App Console / Google Cloud Console /
-//     Drime developer console) and pastes its client id/secret. Shipping
-//     a shared client secret in a public repo would leak it.
+//     Drime developer console / Azure portal app registration) and
+//     pastes its client id/secret. Shipping a shared client secret in
+//     a public repo would leak it.
 //   - A localhost callback needs the user's app to register an exact
 //     redirect URI and the desktop window to catch the redirect; that
 //     path is unverified in mygo here. The copy-paste flow works with
@@ -35,7 +36,9 @@ import (
 // Redirect URI is always http://localhost: the user adds it once to
 // their app (Dropbox: Settings → Redirect URIs; Google: OAuth client
 // → Authorised redirect URIs, client type "Desktop app"; Drime:
-// developer console → application Settings → redirect URLs).
+// developer console → application Settings → redirect URLs; OneDrive:
+// Azure portal → app registration → Authentication → "Mobile and
+// desktop applications" → http://localhost).
 //
 // Drime differs from Dropbox/Google in two ways (docs 2026-11-17):
 //   - PKCE is REQUIRED for desktop apps (public clients, S256 only):
@@ -50,6 +53,18 @@ import (
 //     Applications, and the sync API is unavailable to it. That
 //     choice cannot change once someone has connected, so the
 //     wizard's help text says so up front.
+//
+// OneDrive (Microsoft identity platform) is like Drime, not like
+// Dropbox/Google: desktop apps are public clients ("Mobile and
+// desktop applications" platform), so the flow is authorization
+// code + PKCE S256 with no client secret — the same generic RFC 7636
+// machinery, not Drime-specific code. A confidential (web)
+// registration still works if the user fills in a client secret:
+// ExchangeCode sends it only when non-empty, and refresh does the
+// same. Scopes are Files.ReadWrite.All (the file access itself)
+// plus offline_access (without it Microsoft issues no refresh
+// token). The "common" tenant accepts personal and work/school
+// accounts alike.
 
 const oauthRedirectURI = "http://localhost"
 
@@ -58,7 +73,7 @@ type oauthProvider struct {
 	tokenURL     string
 	scopes       []string
 	extra        map[string]string // extra authorize-query params
-	pkce         bool              // PKCE (RFC 7636, S256) required, Drime only
+	pkce         bool              // PKCE (RFC 7636, S256) required for public clients (Drime, OneDrive)
 }
 
 var oauthProviders = map[domain.ProviderKind]oauthProvider{
@@ -79,6 +94,15 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 		tokenURL:     "https://app.drime.cloud/oauth/token",
 		scopes:       []string{"files.read", "files.write", "folders.read", "folders.write", "sharing.read", "sharing.write"},
 		pkce:         true,
+	},
+	domain.ProviderOneDrive: {
+		authEndpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+		tokenURL:     "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		// Files.ReadWrite.All is the file access; offline_access is
+		// what makes Microsoft issue a refresh token at all.
+		// Personal and work/school accounts both work ("common").
+		scopes: []string{"Files.ReadWrite.All", "offline_access"},
+		pkce:   true,
 	},
 }
 
@@ -135,9 +159,10 @@ func (a *App) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthS
 		q.Set(k, v)
 	}
 	if p.pkce {
-		// Drime desktop apps are public clients: PKCE (S256) is
-		// required and no secret is ever sent. The verifier is
-		// stored with the state and presented at the exchange.
+		// Public clients (Drime, OneDrive desktop apps): PKCE
+		// (S256) is required and no secret is ever sent. The
+		// verifier is stored with the state and presented at the
+		// exchange.
 		v, err := auth.NewPKCEVerifier()
 		if err != nil {
 			return nil, err

@@ -136,6 +136,74 @@ func TestAddDrimeMountMockRoundTrip(t *testing.T) {
 	}
 }
 
+// mockGraphServer speaks just enough Microsoft Graph v1.0 for the
+// probe: GET /me/drive/items/root/children on the root. failList
+// answers 401 (bad token).
+func mockGraphServer(failList bool) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/me/drive/items/root/children" && r.Method == http.MethodGet {
+			if failList || r.Header.Get("Authorization") != "Bearer test-token" {
+				w.WriteHeader(http.StatusUnauthorized)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "InvalidAuthenticationToken", "message": "Access token is empty or invalid."}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"value": []map[string]any{
+					{"id": "id-photos", "name": "照片", "folder": map[string]any{"childCount": 0}, "parentReference": map[string]any{"id": "root", "path": "/drive/root:"}, "lastModifiedDateTime": "2026-11-25T00:00:00Z"},
+					{"id": "id-a", "name": "a.txt", "size": 3, "file": map[string]any{"mimeType": "text/plain", "hashes": map[string]any{"sha1Hash": "a9993e364706816aba3e25717850c26c9cd0d89d"}}, "parentReference": map[string]any{"id": "root", "path": "/drive/root:"}, "lastModifiedDateTime": "2026-11-25T00:00:00Z"},
+				},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+}
+
+func TestAddOneDriveMountMockRoundTrip(t *testing.T) {
+	srv := mockGraphServer(false)
+	defer srv.Close()
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	a := newTestAppWithDB(t, dbPath)
+	ctx := context.Background()
+	// Access token pasted directly (or exchanged from an OAuth code):
+	// no refresh token here, the probe just lists the root.
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "我的 OneDrive", Provider: domain.ProviderOneDrive,
+		Group: "个人", AccessToken: "test-token", APIBase: srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(onedrive): %v", err)
+	}
+	if m.RootRef != "" {
+		t.Fatalf("onedrive root: RootRef=%q, want \"\"", m.RootRef)
+	}
+	nodes, err := a.Browse(ctx, m.ID, "")
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("Browse onedrive: %v, %d nodes", err, len(nodes))
+	}
+	a2 := reopenApp(t, dbPath)
+	mounts := a2.ListMounts()
+	if len(mounts) != 1 || mounts[0].Group != "个人" {
+		t.Fatalf("onedrive mount after restart: %+v", mounts)
+	}
+	nodes, err = a2.Browse(ctx, mounts[0].ID, "")
+	if err != nil || len(nodes) != 2 {
+		t.Fatalf("Browse onedrive after restart: %v, %d nodes", err, len(nodes))
+	}
+	// A bad token must fail the probe and save nothing.
+	a3 := newTestApp(t)
+	if _, err := a3.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "坏 OneDrive", Provider: domain.ProviderOneDrive,
+		AccessToken: "wrong-token", APIBase: srv.URL,
+	}); err == nil {
+		t.Fatalf("AddMountWithCredentials(onedrive, bad token): want an error")
+	}
+	if mounts := a3.ListMounts(); len(mounts) != 0 {
+		t.Fatalf("failed onedrive probe saved %d mount(s)", len(mounts))
+	}
+}
+
 // mockS3Server speaks just enough S3 ListObjectsV2 for the probe.
 // failList answers 403 InvalidAccessKeyId instead.
 func mockS3Server(failList bool) *httptest.Server {
@@ -437,6 +505,49 @@ func TestLoadMountsHealsLegacyS3RootRef(t *testing.T) {
 	}
 }
 
+// TestMountEndpointHost: EndpointHost is the display-only host of the
+// S3 endpoint (the sidebar picks the R2 vs AWS S3 brand mark from
+// it). It is set at add time and recomputed from the stored config
+// on every LoadMounts — it is never a column in the mounts table,
+// so older rows gain it on restart with no migration.
+func TestMountEndpointHost(t *testing.T) {
+	if got := endpointHost("https://abc123.r2.cloudflarestorage.com"); got != "abc123.r2.cloudflarestorage.com" {
+		t.Fatalf("endpointHost(r2) = %q", got)
+	}
+	if got := endpointHost("https://s3.ap-northeast-1.amazonaws.com"); got != "s3.ap-northeast-1.amazonaws.com" {
+		t.Fatalf("endpointHost(aws) = %q", got)
+	}
+	if got := endpointHost(""); got != "" {
+		t.Fatalf("endpointHost(\"\") = %q", got)
+	}
+	if got := endpointHost("://bad url"); got != "" {
+		t.Fatalf("endpointHost(garbage) = %q", got)
+	}
+	srv := mockS3Server(false)
+	defer srv.Close()
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	a := newTestAppWithDB(t, dbPath)
+	ctx := context.Background()
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "R2 备份", Provider: domain.ProviderS3,
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "ak-1", SecretKey: "sk-1", PathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(s3): %v", err)
+	}
+	// The mock server runs on 127.0.0.1:<port>: the host is parsed,
+	// the scheme is dropped, and no credential leaks into the field.
+	if m.EndpointHost == "" || !strings.HasPrefix(m.EndpointHost, "127.0.0.1:") {
+		t.Fatalf("EndpointHost after add = %q, want 127.0.0.1:<port>", m.EndpointHost)
+	}
+	a2 := reopenApp(t, dbPath)
+	mounts := a2.ListMounts()
+	if len(mounts) != 1 || mounts[0].EndpointHost != m.EndpointHost {
+		t.Fatalf("EndpointHost after restart = %q, want %q", mounts[0].EndpointHost, m.EndpointHost)
+	}
+}
+
 func TestUpdateMountRoot(t *testing.T) {
 	srv := mockS3Server(false)
 	defer srv.Close()
@@ -536,11 +647,64 @@ func TestUpdateMountGroupPersists(t *testing.T) {
 
 func TestBeginExchangeOAuth(t *testing.T) {
 	a := newTestApp(t)
-	// OneDrive has no OAuth provider here (V0.2).
-	if _, err := a.BeginOAuth(domain.ProviderOneDrive, "cid"); err == nil {
-		t.Fatalf("OneDrive must not offer OAuth in this version")
+	// OneDrive offers OAuth now (V0.6.0): Microsoft identity
+	// platform, "common" tenant, PKCE S256, no secret for public
+	// clients. The authorize URL must carry the PKCE challenge,
+	// the Files.ReadWrite.All + offline_access scopes, and no
+	// client secret anywhere.
+	start, err := a.BeginOAuth(domain.ProviderOneDrive, "cid-od")
+	if err != nil {
+		t.Fatalf("BeginOAuth(onedrive): %v", err)
 	}
-	start, err := a.BeginOAuth(domain.ProviderDropbox, "cid-1")
+	for _, want := range []string{
+		"login.microsoftonline.com/common/oauth2/v2.0/authorize",
+		"client_id=cid-od", "response_type=code", "state=",
+		"code_challenge=", "code_challenge_method=S256",
+		"Files.ReadWrite.All", "offline_access",
+	} {
+		if !strings.Contains(start.AuthURL, want) {
+			t.Fatalf("onedrive auth URL %q missing %q", start.AuthURL, want)
+		}
+	}
+	if strings.Contains(start.AuthURL, "client_secret") {
+		t.Fatalf("onedrive auth URL must not carry a client secret: %q", start.AuthURL)
+	}
+	// Mock token endpoint: the exchange is a plain form POST and
+	// must present the PKCE verifier, not a secret.
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.Form.Get("code") != "code-od" || r.Form.Get("redirect_uri") != "http://localhost" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("code_verifier") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"missing code_verifier"}`))
+			return
+		}
+		if r.Form.Get("client_secret") != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"public client must not send a secret"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "acc-od", "refresh_token": "ref-od",
+		})
+	}))
+	defer tokenSrv.Close()
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderOneDrive, "cid-od", "", "code-od", start.State, tokenSrv.URL)
+	if err != nil {
+		t.Fatalf("ExchangeOAuthCode(onedrive): %v", err)
+	}
+	if tokens.AccessToken != "acc-od" || tokens.RefreshToken != "ref-od" {
+		t.Fatalf("onedrive tokens: %+v", tokens)
+	}
+	// State is single-use: replaying it must fail.
+	if _, err := a.ExchangeOAuthCode(domain.ProviderOneDrive, "cid-od", "", "code-od", start.State, tokenSrv.URL); err == nil {
+		t.Fatalf("replayed onedrive state must be rejected")
+	}
+	start, err = a.BeginOAuth(domain.ProviderDropbox, "cid-1")
 	if err != nil {
 		t.Fatalf("BeginOAuth: %v", err)
 	}
@@ -556,7 +720,7 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		t.Fatalf("empty state")
 	}
 	// Mock token endpoint: the exchange is a plain form POST.
-	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tokenSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
 		if r.Form.Get("code") != "code-1" || r.Form.Get("redirect_uri") != "http://localhost" {
 			w.WriteHeader(http.StatusBadRequest)
@@ -568,7 +732,7 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		})
 	}))
 	defer tokenSrv.Close()
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", start.State, tokenSrv.URL)
+	tokens, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", start.State, tokenSrv.URL)
 	if err != nil {
 		t.Fatalf("ExchangeOAuthCode: %v", err)
 	}

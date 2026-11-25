@@ -1,5 +1,7 @@
 {
   "dependencies": {
+    "@iconify-icons/flat-color-icons": "^2.0.0",
+    "@iconify/react": "^6.0.4",
     "mygo-runtime": "^0.10.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -23,5 +25,5 @@
     "prebuild": "node scripts/decode-fonts.mjs"
   },
   "type": "module",
-  "version": "0.5.0"
+  "version": "0.6.0"
 }

@@ -9,6 +9,7 @@ import type { Mount, Node } from '../mygo'
 import { api, friendlyError, type SideSel } from '../api/client'
 import { formatSize } from '../lib/format'
 import { Skeleton, staggerStyle } from './motion'
+import { FileTypeIcon, OpenedFolderIcon } from './icons'
 
 interface Crumb {
   name: string
@@ -133,7 +134,7 @@ export default function DualPane({
           <button
             onClick={() => setCrumbs([])}
             disabled={crumbs.length === 0}
-            style={{ fontWeight: crumbs.length === 0 ? 550 : 400 }}
+            style={{ fontWeight: 400 }}
           >
             {mount?.displayName ?? '根目录'}
           </button>
@@ -173,7 +174,10 @@ export default function DualPane({
         <div className="pane-list">
           {endpoint === 'local' && parentAbs !== null && (
             <div className="pane-row" onClick={() => setLocalAbs(parentAbs)}>
-              📁 ..
+              <span className="file-icon" aria-hidden>
+                <OpenedFolderIcon />
+              </span>
+              ..
             </div>
           )}
           {nodes.length === 0 && <p className="muted">这个文件夹是空的。</p>}
@@ -199,7 +203,9 @@ export default function DualPane({
                 }
               }}
             >
-              <span>{n.isDir ? '📁' : '📄'}</span>
+              <span className="file-icon" aria-hidden>
+                <FileTypeIcon name={n.name} isDir={n.isDir} />
+              </span>
               <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.name}</span>
               {!n.isDir && <span className="muted" style={{ fontSize: 12 }}>{formatSize(n.size)}</span>}
               {n.isDir && <span className="muted">›</span>}

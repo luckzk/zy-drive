@@ -32,7 +32,7 @@ UI 只调应用层，应用层只认 Provider 接口，驱动只管一家云的�
 | Google Drive | 真实现 | Drive API v3 HTTP；ID 制，path→ID 映射在驱动内内存缓存；Docs 类导出 docx/xlsx/pptx；mock 契约测试通过 |
 | 本地文件夹 | 真实现 | `local://` 端，只在本机跑 |
 | Drime | 真实现（V0.5.0） | API v1 HTTP；ID 制，path→ID 映射在驱动内内存缓存；个人访问令牌为主、OAuth PKCE 为辅；简单上传 <5 MiB，分片 5 MiB（create→sign→PUT R2→complete→register）；429 等 60 秒只重试一次；mock 契约测试通过，真机未测 |
-| OneDrive | 未实现 | V0.2 |
+| OneDrive | 真实现（Graph API v1.0，OAuth 授权码 + PKCE，上传会话分片，delta） | V0.6.0 |
 
 验证方式：无真实账号 Token 时，用 `contracttest` + mock HTTP
 服务器证明接口合规（分页/空目录/上传往返/改名/删除/刷新/

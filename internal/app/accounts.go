@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -110,7 +111,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		return nil, fmt.Errorf("app: 请给网盘起个名字")
 	}
 	switch in.Provider {
-	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderLocal:
+	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderLocal:
 	default:
 		return nil, fmt.Errorf("app: %s 还在 V0.2 接入，现在加不了", in.Provider)
 	}
@@ -143,17 +144,18 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 	}
 	id := "mnt-" + hex.EncodeToString(idBytes[:])
 	m := &domain.Mount{
-		ID:          id,
-		DisplayName: strings.TrimSpace(in.DisplayName),
-		Provider:    in.Provider,
-		AccountID:   secretIDFor(id),
-		RootRef:     rootRefFor(in),
-		RootLabel:   rootLabelFor(in),
-		Group:       strings.TrimSpace(in.Group),
-		Caps:        p.Caps(),
-		Status:      domain.MountOK,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:           id,
+		DisplayName:  strings.TrimSpace(in.DisplayName),
+		Provider:     in.Provider,
+		AccountID:    secretIDFor(id),
+		RootRef:      rootRefFor(in),
+		RootLabel:    rootLabelFor(in),
+		EndpointHost: endpointHost(in.Endpoint),
+		Group:        strings.TrimSpace(in.Group),
+		Caps:         p.Caps(),
+		Status:       domain.MountOK,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	// Persist: mount row first, then the encrypted credential blob.
 	// A mount without its secret can never be rebuilt, so if the
@@ -211,7 +213,7 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 		if in.PathStyle {
 			cfg.Extra["pathStyle"] = "true"
 		}
-	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime:
+	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive:
 		if strings.TrimSpace(in.AccessToken) == "" && strings.TrimSpace(in.RefreshToken) == "" {
 			return cfg, creds, fmt.Errorf("app: 需要填 Access Token 或 Refresh Token（用授权码换取，或直接粘贴）")
 		}
@@ -265,7 +267,7 @@ func nonSecretConfig(in AddMountInput) map[string]string {
 		if in.PathStyle {
 			cfg["pathStyle"] = "true"
 		}
-	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime:
+	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive:
 		cfg["client_id"] = strings.TrimSpace(in.ClientID)
 		if strings.TrimSpace(in.TokenURL) != "" {
 			cfg["token_url"] = strings.TrimSpace(in.TokenURL)
@@ -322,6 +324,18 @@ func rootRefFor(in AddMountInput) string {
 	default:
 		return ""
 	}
+}
+
+// endpointHost returns the host part of an endpoint URL ("" when
+// empty or unparseable). Display only: the sidebar picks the R2
+// (Cloudflare) or AWS S3 brand mark from it. The host is the public
+// endpoint URL, never a credential.
+func endpointHost(endpoint string) string {
+	u, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || u.Host == "" {
+		return ""
+	}
+	return u.Host
 }
 
 // rootLabelFor is the display root shown in Settings: S3 shows the
@@ -390,6 +404,10 @@ func (a *App) LoadMounts() error {
 	}
 	for _, pm := range persisted {
 		m := pm.Mount
+		// Display-only endpoint host, recomputed from the stored
+		// non-secret config on every load (older rows never had
+		// the field; nothing is persisted for it here).
+		m.EndpointHost = endpointHost(pm.Config["endpoint"])
 		// Self-heal (2026-11-25, S3 root fix): mounts saved before
 		// the fix carry RootRef "bucket" or "bucket/prefix", which
 		// the browse/sync/upload code treats as a key prefix — the
@@ -638,11 +656,15 @@ func humanProbeError(provider domain.ProviderKind, err error) error {
 		}
 		return fmt.Errorf("app: 没有权限：请检查账号授权范围是否包含读取文件")
 	case strings.Contains(msg, "404"), strings.Contains(msg, "NoSuchBucket"),
-		strings.Contains(msg, "not_found"), strings.Contains(msg, "path/not_found"):
+		strings.Contains(msg, "not_found"), strings.Contains(msg, "path/not_found"),
+		strings.Contains(msg, "itemNotFound"):
 		if provider == domain.ProviderS3 {
 			return fmt.Errorf("app: 找不到这个桶：检查桶名和区域/Endpoint 是否写对")
 		}
 		return fmt.Errorf("app: 找不到这个位置：检查路径或文件夹是否写对")
+	case strings.Contains(msg, "quotaLimitReached"), strings.Contains(msg, "storageQuotaExceeded"),
+		strings.Contains(msg, "insufficientStorage"), strings.Contains(msg, "QuotaExceeded"):
+		return fmt.Errorf("app: 空间不足：这个网盘的可用空间不够了，请先清理文件或扩容后再试")
 	case strings.Contains(msg, "no such host"), strings.Contains(msg, "no such file or directory"),
 		strings.Contains(msg, "does not exist"):
 		if provider == domain.ProviderLocal {
