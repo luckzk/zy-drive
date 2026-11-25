@@ -1,0 +1,24 @@
+[Unit]
+Description=ZyDrive Agent — scheduled sync runner (self-hosted)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zy-drive-agent
+Group=zy-drive-agent
+# API token: put ZY_DRIVE_AGENT_TOKEN=<token> in this file (0600).
+# The Agent API listens on 127.0.0.1:8080 only; put a reverse proxy
+# (Caddy/Nginx) or Tailscale in front for remote access.
+EnvironmentFile=/etc/zy-drive-agent.env
+ExecStart=/usr/local/bin/zy-drive-agent --addr 127.0.0.1:8080 --config-dir /var/lib/zy-drive-agent
+Restart=on-failure
+RestartSec=5
+# The config dir holds agent.db (jobs + run records) and master.key
+# (encrypts imported credentials). Back it up; losing it loses the
+# imported mounts — re-import the bundle to recover.
+StateDirectory=zy-drive-agent
+StateDirectoryMode=0700
+
+[Install]
+WantedBy=multi-user.target

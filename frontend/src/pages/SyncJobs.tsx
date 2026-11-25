@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // SyncJobs page — scheme A (Air Explorer full-screen dual-pane),
 // as confirmed 2026-11-24. The page first shows the saved jobs list;
 // "创建同步任务" opens the dual-pane box at the top. Clicking a
@@ -13,7 +14,7 @@
 // Jobs are persisted in SQLite via listSyncJobs/saveSyncJob. There is
 // no demo data: an empty list is an honest empty state.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Agent, Mount, Plan, SyncJob } from '../mygo'
+import type { Agent, Mount, Plan, RunResponse, SyncJob } from '../mygo'
 import { api, friendlyError, type SideSel } from '../api/client'
 import { directionLabel, formatSize, formatTime, newId, runOnLabel } from '../lib/format'
 import { Accordion, Skeleton, staggerStyle } from '../components/motion'
@@ -57,6 +58,27 @@ function parseExclude(text: string): string[] {
     .filter((l) => l !== '')
 }
 
+function parseSchedule(s: string | undefined): { kind: 'manual' | 'hourly' | 'daily'; time: string } {
+  if (!s) return { kind: 'manual', time: '02:00' }
+  if (s === 'hourly') return { kind: 'hourly', time: '02:00' }
+  const m = /^daily (\d{1,2}:\d{2})$/.exec(s)
+  if (m) return { kind: 'daily', time: m[1] }
+  return { kind: 'manual', time: '02:00' }
+}
+
+function buildSchedule(kind: 'manual' | 'hourly' | 'daily', time: string): string {
+  if (kind === 'hourly') return 'hourly'
+  if (kind === 'daily') return `daily ${time}`
+  return ''
+}
+
+function scheduleLabel(s: string | undefined): string {
+  const p = parseSchedule(s)
+  if (p.kind === 'hourly') return '每小时'
+  if (p.kind === 'daily') return `每天 ${p.time}`
+  return '手动'
+}
+
 function jobFromEditor(o: {
   id: string
   name: string
@@ -65,6 +87,7 @@ function jobFromEditor(o: {
   direction: SyncJob['direction']
   compare: SyncJob['compare']
   exclude: string[]
+  schedule: string
   runOn: SyncJob['runOn']
   agentId: string
   enabled: boolean
@@ -81,7 +104,7 @@ function jobFromEditor(o: {
     direction: o.direction,
     compare: o.compare,
     exclude: o.exclude,
-    schedule: '',
+    schedule: o.schedule,
     runOn: o.runOn,
     agentId: o.runOn === 'local' ? '' : o.agentId || undefined,
     enabled: o.enabled,
@@ -154,6 +177,9 @@ function SyncJobEditor({
   )
   const [runOn, setRunOn] = useState<'local' | 'agent'>(initial?.runOn === 'agent' || initial?.runOn === 'server' ? 'agent' : 'local')
   const [agentId, setAgentId] = useState(initial?.agentId ?? '')
+  const [scheduleKind, setScheduleKind] = useState<'manual' | 'hourly' | 'daily'>(() => parseSchedule(initial?.schedule).kind)
+  const [dailyTime, setDailyTime] = useState(() => parseSchedule(initial?.schedule).time)
+  const schedule = buildSchedule(scheduleKind, dailyTime)
   const [plan, setPlan] = useState<Plan | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
   const [planError, setPlanError] = useState<string | null>(null)
@@ -175,6 +201,7 @@ function SyncJobEditor({
       direction,
       compare,
       exclude,
+      schedule,
       runOn: effectiveRunOn,
       agentId: effectiveRunOn === 'agent' ? agentId : '',
       enabled: true,
@@ -182,7 +209,7 @@ function SyncJobEditor({
       updatedAt: new Date().toISOString(),
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, name, src, dst, direction, compare, excludeText, effectiveRunOn, agentId])
+  }, [jobId, name, src, dst, direction, compare, excludeText, schedule, effectiveRunOn, agentId])
 
   // Auto re-compare on any input change (debounced). Never clears the
   // plan on navigation; a stale plan is replaced when the new one lands.
@@ -237,7 +264,17 @@ function SyncJobEditor({
         throw new Error('这个计划包含删除操作，请先勾选“确认删除”再开始同步。')
       }
       if (effectiveRunOn !== 'local') {
-        throw new Error('这个任务要在 Agent 上跑，Agent 执行在 V0.2 接入，当前只能在本机跑。先保存任务，等 Agent 执行接好后再跑。')
+        // Agent job: push the latest config, then start it there.
+        // The plan was previewed on the desktop (both sides are
+        // readable from here); execution + run record live on the
+        // Agent. A mirror plan with deletes fails on the Agent by
+        // design — deletions must be confirmed and run by hand.
+        const saved = await save()
+        await api.triggerAgentJob(saved.id)
+        onSaved(saved)
+        onRan()
+        setDoneMsg('已在 Agent 上开始同步。运行记录在任务卡片的“运行记录”里看；桌面关掉也不影响。')
+        return
       }
       const saved = await save()
       const run = await api.runSync(saved, currentPlan)
@@ -305,6 +342,7 @@ function SyncJobEditor({
             direction,
             compare,
             exclude,
+            schedule,
             runOn: effectiveRunOn,
             agentId: effectiveRunOn === 'agent' ? agentId : '',
             enabled: true,
@@ -405,9 +443,38 @@ function SyncJobEditor({
                   </option>
                 ))}
               </select>
-              <div className="hint">Agent 执行在 V0.2 接入：现在只能保存任务，还不能在 Agent 上跑。</div>
+              <div className="hint">推送只传任务配置，不传凭证——凭证只随加密配置包走（设置 → Agent → 导出配置包），Agent 上没导入过包时，跑起来会提示先导包。</div>
             </div>
           )}
+          <div className="field">
+            <label>定时</label>
+            <select
+              className="select"
+              value={scheduleKind}
+              onChange={(e) => setScheduleKind(e.target.value as 'manual' | 'hourly' | 'daily')}
+            >
+              <option value="manual">手动：只在点“立即同步”时跑</option>
+              <option value="hourly">每小时跑一次</option>
+              <option value="daily">每天固定时间跑</option>
+            </select>
+            {scheduleKind === 'daily' && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 }}>
+                <input
+                  className="input"
+                  style={{ width: 96 }}
+                  type="time"
+                  value={dailyTime}
+                  onChange={(e) => setDailyTime(e.target.value)}
+                />
+                <span className="hint" style={{ margin: 0 }}>
+                  {effectiveRunOn === 'agent' ? 'Agent 上按这个时间跑，桌面关掉也跑。' : '本机按这个时间跑（桌面要开着）。'}
+                </span>
+              </div>
+            )}
+            {scheduleKind === 'hourly' && (
+              <div className="hint">{effectiveRunOn === 'agent' ? 'Agent 上每小时跑一次，桌面关掉也跑。' : '本机每小时跑一次（桌面要开着）。'}</div>
+            )}
+          </div>
         </div>
         <div style={{ flex: 1, minWidth: 220 }}>
           <div className="field">
@@ -520,6 +587,48 @@ function SyncJobEditor({
   )
 }
 
+// ---- Run history: real records, newest first. Local jobs read
+// the desktop database; Agent jobs ask the Agent — its database is
+// the source of truth for runs that happened while the desktop
+// was off. ----
+function RunHistory({ runs, loading, error }: { runs: RunResponse[]; loading: boolean; error: string | null }) {
+  if (loading) return <p className="muted">正在拉运行记录…</p>
+  if (error) return <div className="error-box">{error}</div>
+  if (runs.length === 0) return <p className="muted">还没有运行记录。</p>
+  return (
+    <div className="plan-list" style={{ marginTop: 8 }}>
+      {runs.map((r) => {
+        const run = r.run
+        const p = run.plan
+        return (
+          <div key={run.id} className="plan-row" style={{ display: 'block' }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span className={run.status === 'completed' ? 'badge badge-green' : run.status === 'failed' ? 'badge badge-red' : 'badge badge-amber'}>
+                {run.status === 'completed' ? '完成' : run.status === 'failed' ? '失败' : '运行中'}
+              </span>
+              <span style={{ fontSize: 13 }}>{formatTime(run.startedAt)}</span>
+              {run.endedAt && <span className="muted" style={{ fontSize: 12 }}>→ {formatTime(run.endedAt)}</span>}
+              {p && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  上传 {p.toUpload} · 更新 {p.toUpdate} · 删除 {p.toDelete}
+                  {p.conflicts ? ` · 冲突 ${p.conflicts}` : ''}
+                </span>
+              )}
+            </div>
+            {run.error && <div style={{ fontSize: 12, color: 'var(--danger, #c0392b)', marginTop: 4 }}>{run.error}</div>}
+            {r.items && r.items.length > 0 && (
+              <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                {r.items.slice(0, 10).map((it) => `${it.action === 'upload' ? '上传' : it.action === 'update' ? '更新' : it.action === 'delete' ? '删除' : it.action}${it.path}`).join(' · ')}
+                {r.items.length > 10 && ` · …还有 ${r.items.length - 10} 项`}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ---- Page ----
 export default function SyncJobsPage({
   mounts,
@@ -601,6 +710,15 @@ export default function SyncJobsPage({
   const runNow = async (job: SyncJob) => {
     setError(null)
     try {
+      if (job.runOn !== 'local') {
+        // Agent job: push latest config + start it there. The run
+        // record lives on the Agent; refresh the history below.
+        await api.triggerAgentJob(job.id)
+        setInfo(`已在 Agent 上开始同步“${job.name}”。运行记录在下方“运行记录”里看；桌面关掉也不影响。`)
+        await loadRuns(job.id)
+        onRan()
+        return
+      }
       const plan = await previewJob(job)
       if (plan.hasDeletes) {
         // Deletions need explicit confirmation in the editor.
@@ -608,20 +726,39 @@ export default function SyncJobsPage({
         setError('这个计划包含删除操作，请在下方编辑器里勾选确认后再开始同步。')
         return
       }
-      if (job.runOn !== 'local') {
-        setError('这个任务要在 Agent 上跑，Agent 执行在 V0.2 接入，当前只能在本机跑。')
-        return
-      }
       const run = await api.runSync(job, plan)
       if (!run) throw new Error('同步没有返回运行记录')
       const done = { ...job, lastRunAt: new Date().toISOString(), lastRunOk: run.status !== 'failed' }
       await api.saveSyncJob(done)
       setJobs((prev) => prev.map((j) => (j.id === job.id ? done : j)))
+      await loadRuns(job.id)
       onRan()
     } catch (e) {
       setError(friendlyError(e))
     }
   }
+
+  // Run history, per job, loaded on demand (and refreshed after a run).
+  const [runsOpenId, setRunsOpenId] = useState<string | null>(null)
+  const [runsByJob, setRunsByJob] = useState<Record<string, RunResponse[]>>({})
+  const [runsLoadingId, setRunsLoadingId] = useState<string | null>(null)
+  const [runsError, setRunsError] = useState<Record<string, string>>({})
+  const loadRuns = useCallback(async (jobId: string) => {
+    setRunsLoadingId(jobId)
+    try {
+      const runs = await api.listJobRuns(jobId)
+      setRunsByJob((prev) => ({ ...prev, [jobId]: runs }))
+      setRunsError((prev) => {
+        const next = { ...prev }
+        delete next[jobId]
+        return next
+      })
+    } catch (e) {
+      setRunsError((prev) => ({ ...prev, [jobId]: friendlyError(e) }))
+    } finally {
+      setRunsLoadingId(null)
+    }
+  }, [])
 
   const deleteJob = async (job: SyncJob) => {
     try {
@@ -695,7 +832,7 @@ export default function SyncJobsPage({
         <div className="empty">
           <h2>还没有同步任务</h2>
           <p>点右上角“创建同步任务”，左右各选一个文件夹，就能开始同步。</p>
-          <p>同步可以在本机跑，也可以指定一台服务器 Agent 跑（Agent 执行在 V0.2 接入）。</p>
+          <p>同步可以在本机跑，也可以指定一台服务器 Agent 跑（定时、立即执行与运行记录都在 Agent 上，桌面关掉也跑）。</p>
         </div>
       ) : (
         jobs.map((job, ji) => (
@@ -711,6 +848,7 @@ export default function SyncJobsPage({
             <div className="job-meta">
               {srcLabel(job)} → {dstLabel(job)} · {directionLabel(job.direction)} · 比较：{job.compare}
               {job.exclude && job.exclude.length > 0 ? ` · 排除 ${job.exclude.length} 条规则` : ''}
+              {' · '}定时：{scheduleLabel(job.schedule)}
               {' · '}执行：{runOnLabel(job, agents)}
               {job.lastRunAt ? ` · 上次 ${formatTime(job.lastRunAt)}${job.lastRunOk ? '成功' : '失败'}` : ' · 还没跑过'}
             </div>
@@ -729,6 +867,16 @@ export default function SyncJobsPage({
               </button>
               <button className="btn-primary btn-sm" onClick={() => void runNow(job)}>
                 立即同步
+              </button>
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  const open = runsOpenId !== job.id
+                  setRunsOpenId(open ? job.id : null)
+                  if (open && !runsByJob[job.id]) void loadRuns(job.id)
+                }}
+              >
+                {runsOpenId === job.id ? '收起运行记录' : '运行记录'}
               </button>
               {deletingId === job.id ? (
                 <>
@@ -758,6 +906,17 @@ export default function SyncJobsPage({
                   onCancel={() => setExpandedId(null)}
                   onRan={onRan}
                 />
+              </div>
+            </Accordion>
+            <Accordion open={runsOpenId === job.id}>
+              <div className="accordion">
+                <h3 style={{ margin: '4px 0 0' }}>运行记录</h3>
+                <p className="muted" style={{ fontSize: 12, margin: '4px 0 0' }}>
+                  {job.runOn === 'local'
+                    ? '本机运行记录（存在桌面数据库里）。'
+                    : 'Agent 上的运行记录（存在 Agent 的数据库里，桌面关掉时跑的也在里面）。'}
+                </p>
+                <RunHistory runs={runsByJob[job.id] ?? []} loading={runsLoadingId === job.id} error={runsError[job.id] ?? null} />
               </div>
             </Accordion>
           </div>

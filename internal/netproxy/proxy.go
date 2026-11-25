@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package netproxy owns every outbound HTTP proxy decision in ZyDrive.
 //
 // Why it exists (2026-11-25, Dropbox one-click): the browser authorizes

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package domain
 
 // Caps is the capability table. UI and the sync engine decide what to

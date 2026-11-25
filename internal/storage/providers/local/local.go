@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package local implements storage.Provider for a folder on the local
 // filesystem. It is the "local://" endpoint of a sync job: one side of
 // a sync can be a folder on this machine (e.g. ~/图片) instead of a
@@ -64,12 +65,25 @@ func (p *Provider) Caps() domain.Caps {
 
 // resolve turns a ref into an absolute path under the root. Refs may
 // be relative ("photos/a.jpg"), absolute ("/home/u/photos/a.jpg") or
-// carry the "local://" scheme. Paths escaping the root are rejected.
+// carry the "local://" scheme.
+//
+// The sync engine passes display paths ("/photos/a.jpg") to
+// providers, so an absolute ref is only taken literally when it
+// lies under the root. An absolute ref outside the root is treated
+// as relative to the root instead: for a real mount rooted at
+// ~/图片, "/photos/a.jpg" means ~/图片/photos/a.jpg, not the OS
+// root. (For the "local" pseudo-mount the root IS "/", so every
+// absolute path is under the root and nothing changes there.)
+// Paths escaping the root are rejected.
 func (p *Provider) resolve(ref string) (string, error) {
 	ref = strings.TrimPrefix(ref, "local://")
 	ref = strings.TrimPrefix(ref, "local:")
 	if filepath.IsAbs(ref) {
-		return filepath.Clean(ref), nil
+		clean := filepath.Clean(ref)
+		if clean == p.root || strings.HasPrefix(clean, p.root+string(os.PathSeparator)) {
+			return clean, nil
+		}
+		ref = strings.TrimPrefix(clean, string(os.PathSeparator))
 	}
 	full := filepath.Join(p.root, filepath.FromSlash(strings.Trim(ref, "/")))
 	rel, err := filepath.Rel(p.root, full)

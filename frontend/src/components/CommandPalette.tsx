@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // CommandPalette — Ctrl+K. Searches the active mount for real via
 // api.search; when there is no mount or no query it says so. It never
 // shows invented results.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Command zy-drive-desktop: mygo window shell.
 //
 // Wiring (verified against mygo v0.10.0 docs, docs/bindings.md,

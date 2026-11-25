@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package upload provides the resumable-upload session skeleton shared
 // by all drivers. A session (ID + uploaded parts) is persisted by the
 // transfer engine, so an interrupted upload continues from the last

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package transfer implements the transfer engine: one queue for every
 // move in the system (upload, download, cross-cloud copy). Sync jobs
 // decompose their plans into Transfers, so pause, speed limit, retry and
@@ -6,6 +7,7 @@
 package transfer
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -63,6 +65,37 @@ func (q *Queue) Enqueue(t *domain.Transfer) error {
 	t.UpdatedAt = t.CreatedAt
 	q.items[t.ID] = t
 	return q.persistLocked(t)
+}
+
+// Requeue moves a failed, cancelled or interrupted transfer back to
+// queued, so the worker picks it up again. Completed transfers are
+// never re-queued (a batch retry only re-runs what did not finish —
+// "断网重传后不从头传" at batch level). Done is reset to 0: the file
+// itself restarts from the beginning, because no provider offers
+// ranged reads yet (see executeDownload); Retries counts the
+// attempts so the UI can show "第 N 次重试".
+func (q *Queue) Requeue(id string) (*domain.Transfer, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	t, ok := q.items[id]
+	if !ok {
+		return nil, fmt.Errorf("transfer: unknown transfer %q", id)
+	}
+	switch t.Status {
+	case domain.TransferFailed, domain.TransferCancelled, domain.TransferInterrupted:
+	default:
+		return nil, fmt.Errorf("transfer: %s is %q, only failed/cancelled/interrupted transfers can be retried", id, t.Status)
+	}
+	t.Status = domain.TransferQueued
+	t.Done = 0
+	t.Error = ""
+	t.Retries++
+	t.UpdatedAt = Now()
+	if err := q.persistLocked(t); err != nil {
+		return nil, err
+	}
+	cp := *t
+	return &cp, nil
 }
 
 // Get returns a copy of a transfer by ID.

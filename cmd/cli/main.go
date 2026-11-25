@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Command zy-drive is entry three (optional): the CLI. It shares the
 // accounts, mounts and sync jobs of the desktop app and is the tool
 // for automation and debugging:

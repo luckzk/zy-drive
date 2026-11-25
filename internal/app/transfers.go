@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package app
 
 import (
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/storage"
+	"github.com/luckzk/zy-drive/internal/transfer"
 )
 
 // Download fetches a file to a local path. It writes to
@@ -91,6 +94,183 @@ func (a *App) Copy(ctx context.Context, srcMount, srcRef, dstMount, dstRef strin
 		return nil, err
 	}
 	return t, nil
+}
+
+// BatchResult is the single return value of BatchDownload/BatchCopy:
+// the queued transfers plus the selections that never entered the
+// queue, with a human reason each. mygo.Bind allows at most one
+// value plus an error, so both travel together.
+type BatchResult struct {
+	Transfers []*domain.Transfer `json:"transfers"`
+	Skipped   []UploadSkipped    `json:"skipped"`
+}
+
+// batchEntry is one file resolved from the user's selection: the
+// provider ref to read, the path relative to the selection root
+// (so a folder keeps its structure at the destination), and the
+// size when the driver knows it (-1 becomes 0 at enqueue time).
+type batchEntry struct {
+	srcRef string
+	rel    string
+	size   int64
+}
+
+// BatchDownload enqueues one download transfer per selected file
+// into destDir (folders keep their structure: downloading folder
+// "photos" creates destDir/photos/...). Files already downloaded
+// are never re-queued by a retry — only failed/interrupted ones
+// are (see Queue.Requeue). A single file still restarts from the
+// beginning on retry: no provider offers ranged reads yet, so a
+// mid-file resume is not possible in this version.
+func (a *App) BatchDownload(ctx context.Context, mountID string, refs []string, destDir string) (*BatchResult, error) {
+	if len(refs) == 0 {
+		return nil, fmt.Errorf("app: 请先选要下载的文件或文件夹")
+	}
+	if err := checkDownloadDir(destDir); err != nil {
+		return nil, err
+	}
+	src, err := a.ProviderFor(mountID)
+	if err != nil {
+		return nil, err
+	}
+	entries, skipped := a.expandBatchRefs(ctx, src, refs)
+	res := &BatchResult{Transfers: []*domain.Transfer{}, Skipped: skipped}
+	used := map[string]bool{}
+	for _, e := range entries {
+		dstPath := filepath.Join(destDir, filepath.FromSlash(e.rel))
+		if used[dstPath] {
+			res.Skipped = append(res.Skipped, UploadSkipped{Path: e.srcRef, Reason: "这次批量里已有同名目标，会互相覆盖，已跳过"})
+			continue
+		}
+		used[dstPath] = true
+		t := &domain.Transfer{
+			Kind:     domain.TransferDownload,
+			SrcMount: mountID, SrcRef: e.srcRef,
+			DstMount: domain.LocalMountID, DstRef: dstPath,
+			Size: max(int64(0), e.size),
+		}
+		if err := a.Queue.Enqueue(t); err != nil {
+			res.Skipped = append(res.Skipped, UploadSkipped{Path: e.srcRef, Reason: fmt.Sprintf("加入传输队列失败：%s", err)})
+			continue
+		}
+		res.Transfers = append(res.Transfers, t)
+	}
+	return res, nil
+}
+
+// BatchCopy enqueues one cross-cloud copy per selected file into
+// dstRef on dstMount (folders keep their structure). Copies stream
+// through io.Pipe and never touch local disk (see executeCopy). A
+// selection whose destination is the file itself is skipped:
+// copying a file onto itself would truncate the source while it
+// is being read.
+func (a *App) BatchCopy(ctx context.Context, srcMount string, refs []string, dstMount, dstRef string) (*BatchResult, error) {
+	if len(refs) == 0 {
+		return nil, fmt.Errorf("app: 请先选要复制的文件或文件夹")
+	}
+	src, err := a.ProviderFor(srcMount)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := a.ProviderFor(dstMount); err != nil {
+		return nil, err
+	}
+	entries, skipped := a.expandBatchRefs(ctx, src, refs)
+	res := &BatchResult{Transfers: []*domain.Transfer{}, Skipped: skipped}
+	used := map[string]bool{}
+	for _, e := range entries {
+		dst := joinRef(dstRef, e.rel)
+		if srcMount == dstMount && dst == e.srcRef {
+			res.Skipped = append(res.Skipped, UploadSkipped{Path: e.srcRef, Reason: "源和目标是同一个文件，不能复制到自己身上"})
+			continue
+		}
+		if used[dst] {
+			res.Skipped = append(res.Skipped, UploadSkipped{Path: e.srcRef, Reason: "这次批量里已有同名目标，会互相覆盖，已跳过"})
+			continue
+		}
+		used[dst] = true
+		t := &domain.Transfer{
+			Kind:     domain.TransferCopy,
+			SrcMount: srcMount, SrcRef: e.srcRef,
+			DstMount: dstMount, DstRef: dst,
+			Size: max(int64(0), e.size),
+		}
+		if err := a.Queue.Enqueue(t); err != nil {
+			res.Skipped = append(res.Skipped, UploadSkipped{Path: e.srcRef, Reason: fmt.Sprintf("加入传输队列失败：%s", err)})
+			continue
+		}
+		res.Transfers = append(res.Transfers, t)
+	}
+	return res, nil
+}
+
+// RetryTransfer re-queues one failed/cancelled/interrupted transfer.
+// Completed transfers are never re-run: a batch retry only moves
+// what did not finish.
+func (a *App) RetryTransfer(ctx context.Context, id string) (*domain.Transfer, error) {
+	return a.Queue.Requeue(id)
+}
+
+// RetryFailedTransfers re-queues every failed/cancelled/interrupted
+// transfer and returns how many were re-queued.
+func (a *App) RetryFailedTransfers() (int, error) {
+	n := 0
+	for _, t := range a.Queue.List() {
+		switch t.Status {
+		case domain.TransferFailed, domain.TransferCancelled, domain.TransferInterrupted:
+			if _, err := a.Queue.Requeue(t.ID); err == nil {
+				n++
+			}
+		}
+	}
+	return n, nil
+}
+
+// expandBatchRefs resolves the user's selection (files and folders)
+// into individual files. Folders are walked recursively; a folder
+// keeps its name as the top of the relative path, so downloading
+// "photos" yields "photos/a.jpg", not a flattened "a.jpg". A ref
+// that cannot be read is skipped with a reason instead of failing
+// the whole batch.
+func (a *App) expandBatchRefs(ctx context.Context, src storage.Provider, refs []string) ([]batchEntry, []UploadSkipped) {
+	var entries []batchEntry
+	var skipped []UploadSkipped
+	for _, ref := range refs {
+		node, err := src.Stat(ctx, ref)
+		if err != nil {
+			skipped = append(skipped, UploadSkipped{Path: ref, Reason: fmt.Sprintf("读不到这个文件或文件夹：%s", err)})
+			continue
+		}
+		if !node.IsDir {
+			entries = append(entries, batchEntry{srcRef: node.Ref, rel: node.Name, size: node.Size})
+			continue
+		}
+		prefix := node.Name
+		if ref == "" || ref == "/" {
+			prefix = ""
+		}
+		a.expandBatchDir(ctx, src, node, prefix, &entries, &skipped)
+	}
+	return entries, skipped
+}
+
+func (a *App) expandBatchDir(ctx context.Context, src storage.Provider, dir domain.Node, prefix string, entries *[]batchEntry, skipped *[]UploadSkipped) {
+	children, err := src.List(ctx, dir.Ref)
+	if err != nil {
+		*skipped = append(*skipped, UploadSkipped{Path: dir.Ref, Reason: fmt.Sprintf("列不出文件夹：%s", err)})
+		return
+	}
+	for _, ch := range children {
+		rel := ch.Name
+		if prefix != "" {
+			rel = prefix + "/" + ch.Name
+		}
+		if ch.IsDir {
+			a.expandBatchDir(ctx, src, ch, rel, entries, skipped)
+			continue
+		}
+		*entries = append(*entries, batchEntry{srcRef: ch.Ref, rel: rel, size: ch.Size})
+	}
 }
 
 // TransferQueue exposes the queue for the UI (list, pause, cancel).
@@ -247,9 +427,58 @@ func (a *App) ExecuteTransfer(ctx context.Context, t *domain.Transfer, report fu
 		return a.executeUpload(ctx, t, report)
 	case domain.TransferCopy:
 		return a.executeCopy(ctx, t, report)
+	case domain.TransferDownload:
+		return a.executeDownload(ctx, t, report)
 	default:
 		return fmt.Errorf("app: 不支持的传输类型 %q", t.Kind)
 	}
+}
+
+// executeDownload streams one file to a local path, through
+// "<path>.part" with an atomic rename (same discipline as the
+// blocking Download). A retry of an interrupted download removes
+// the stale .part and restarts that file: no provider offers ranged
+// reads yet, so a mid-file resume is not possible in this version
+// — the batch as a whole still never re-downloads files that
+// already finished (see Queue.Requeue).
+func (a *App) executeDownload(ctx context.Context, t *domain.Transfer, report func(done, speedBps int64)) error {
+	if t.DstMount != domain.LocalMountID {
+		return fmt.Errorf("app: 下载目标必须是本机文件夹")
+	}
+	src, err := a.ProviderFor(t.SrcMount)
+	if err != nil {
+		return err
+	}
+	rc, err := src.OpenRead(ctx, t.SrcRef)
+	if err != nil {
+		return fmt.Errorf("app: download %s: %w", t.SrcRef, err)
+	}
+	defer rc.Close()
+	if err := os.MkdirAll(filepath.Dir(t.DstRef), 0o755); err != nil {
+		return err
+	}
+	partPath := t.DstRef + ".part"
+	_ = os.Remove(partPath)
+	f, err := os.Create(partPath)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(f, newProgressReader(rc, report, a.transferLimiter))
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(partPath)
+		return fmt.Errorf("app: download %s: %w", t.SrcRef, copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(partPath)
+		return closeErr
+	}
+	if err := os.Rename(partPath, t.DstRef); err != nil {
+		_ = os.Remove(partPath)
+		return err
+	}
+	report(t.Size, 0)
+	return nil
 }
 
 func (a *App) executeUpload(ctx context.Context, t *domain.Transfer, report func(done, speedBps int64)) error {
@@ -273,7 +502,7 @@ func (a *App) executeUpload(ctx context.Context, t *domain.Transfer, report func
 	if parent := path.Dir(t.DstRef); parent != "" && parent != "." && parent != "/" {
 		_ = dst.Mkdir(ctx, parent)
 	}
-	pr := newProgressReader(rc, report)
+	pr := newProgressReader(rc, report, a.transferLimiter)
 	if _, err := dst.Upload(ctx, t.DstRef, pr, t.Size); err != nil {
 		return fmt.Errorf("app: upload %s: %w", t.SrcRef, err)
 	}
@@ -297,7 +526,7 @@ func (a *App) executeCopy(ctx context.Context, t *domain.Transfer, report func(d
 	defer rc.Close()
 	pr, pw := io.Pipe()
 	go func() {
-		_, err := io.Copy(pw, newProgressReader(rc, report))
+		_, err := io.Copy(pw, newProgressReader(rc, report, a.transferLimiter))
 		_ = pw.CloseWithError(err)
 	}()
 	if _, err := dst.Upload(ctx, t.DstRef, pr, t.Size); err != nil {
@@ -309,23 +538,29 @@ func (a *App) executeCopy(ctx context.Context, t *domain.Transfer, report func(d
 
 // progressReader counts bytes through to report, throttled to one
 // callback per 200ms so the queue (and the dock's 5s poll) is not
-// flooded by 32KB reads.
+// flooded by 32KB reads. When limiter is non-nil it also paces the
+// stream: the read already happened at full speed, but the next
+// read waits, so the average throughput follows the cap.
 type progressReader struct {
-	r      io.Reader
-	report func(done, speedBps int64)
-	start  time.Time
-	last   time.Time
-	done   int64
+	r       io.Reader
+	report  func(done, speedBps int64)
+	limiter *transfer.Limiter
+	start   time.Time
+	last    time.Time
+	done    int64
 }
 
-func newProgressReader(r io.Reader, report func(done, speedBps int64)) *progressReader {
+func newProgressReader(r io.Reader, report func(done, speedBps int64), limiter *transfer.Limiter) *progressReader {
 	now := time.Now()
-	return &progressReader{r: r, report: report, start: now, last: now}
+	return &progressReader{r: r, report: report, limiter: limiter, start: now, last: now}
 }
 
 func (p *progressReader) Read(b []byte) (int, error) {
 	n, err := p.r.Read(b)
 	if n > 0 {
+		if p.limiter != nil {
+			p.limiter.Wait(int64(n))
+		}
 		p.done += int64(n)
 		now := time.Now()
 		if now.Sub(p.last) >= 200*time.Millisecond {

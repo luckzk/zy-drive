@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // UploadTargetDialog — 拖拽上传的目标文件夹选择框。
 // 拖文件进窗口后先弹这个框，不立即上传：默认当前文件夹；框里
 // 列出当前目录下的子文件夹（api.browse，只取 IsDir），可以点进
@@ -25,12 +26,24 @@ export default function UploadTargetDialog({
   fileCount,
   onConfirm,
   onCancel,
+  title,
+  confirmLabel,
+  mounts,
+  onMountChange,
 }: {
   mount: Mount
   initialRef: string
   fileCount: number
   onConfirm: (targetRef: string) => void
   onCancel: () => void
+  // Copy flow reuses this picker with different wording; the
+  // upload flow keeps the defaults.
+  title?: string
+  confirmLabel?: string
+  // Copy flow: let the user switch the target mount inside the
+  // dialog (upload flow passes none and the mount is fixed).
+  mounts?: Mount[]
+  onMountChange?: (m: Mount) => void
 }) {
   const [closing, requestClose] = useClosing(onCancel)
   const [crumbs, setCrumbs] = useState<Crumb[]>([])
@@ -60,6 +73,12 @@ export default function UploadTargetDialog({
   useEffect(() => {
     void load()
   }, [load])
+
+  // Switching the target mount (copy flow) resets the folder
+  // navigation — the crumbs belong to the previous mount.
+  useEffect(() => {
+    setCrumbs([])
+  }, [mount.id])
 
   // Esc 关闭。
   useEffect(() => {
@@ -95,10 +114,30 @@ export default function UploadTargetDialog({
   return (
     <div className={`dialog-backdrop${closing ? ' closing' : ''}`} onClick={requestClose}>
       <div className={`dialog${closing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
-        <h1>上传到哪里？</h1>
+        <h1>{title ?? '上传到哪里？'}</h1>
         <p className="muted" style={{ margin: '0 0 12px' }}>
-          {fileCount} 个文件将上传到下面选中的文件夹，点“上传到这里”才开始传。
+          {fileCount} 个文件将{confirmLabel ? '复制' : '上传'}到下面选中的文件夹，点“{confirmLabel ?? '上传到这里'}”才开始。
         </p>
+
+        {mounts && mounts.length > 0 && (
+          <div className="field">
+            <label>目标网盘</label>
+            <select
+              className="select"
+              value={mount.id}
+              onChange={(e) => {
+                const next = mounts.find((m) => m.id === e.target.value)
+                if (next) onMountChange?.(next)
+              }}
+            >
+              {mounts.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.displayName}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <div className="notice-box" style={{ wordBreak: 'break-all' }}>
           目标：{fullPath}
@@ -176,7 +215,7 @@ export default function UploadTargetDialog({
             取消
           </button>
           <button className="btn-primary" onClick={() => onConfirm(ref)}>
-            上传到这里
+            {confirmLabel ?? '上传到这里'}
           </button>
         </div>
       </div>

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package cache owns SQLite storage: node cache, path-ref mapping,
 // delta cursors, transfers, sync jobs, baselines, runs and secrets
 // references. It only stores and retrieves — business rules live in

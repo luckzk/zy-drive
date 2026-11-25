@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package contracttest is the driver consistency suite. Every new
 // driver must pass it before shipping: it exercises the Provider
 // interface (pagination, empty directory, same-name files, resume,

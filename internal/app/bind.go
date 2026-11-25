@@ -1,8 +1,10 @@
+// SPDX-License-Identifier: MPL-2.0
 package app
 
 import (
 	"context"
 
+	"github.com/luckzk/zy-drive/internal/agentapi"
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/sync"
 )
@@ -265,4 +267,96 @@ func (s *DesktopService) GetVersions() VersionInfo { return s.app.GetVersions() 
 // ValidateJob checks a sync job configuration before it is saved.
 func (s *DesktopService) ValidateJob(job *domain.SyncJob) error {
 	return ValidateJob(job)
+}
+
+// UpdateMountCredentials re-authorizes a mount in place (V0.9.0):
+// new credentials on the SAME mount — jobs, groups and cache stay.
+// The probe must pass (or SkipProbe + a recent test) before the old
+// credentials are swapped out.
+func (s *DesktopService) UpdateMountCredentials(ctx context.Context, id string, in AddMountInput) (*domain.Mount, error) {
+	return s.app.UpdateMountCredentials(ctx, id, in)
+}
+
+// ListDrimeWorkspaces lists the workspaces a Drime token can see
+// (GET /me/workspaces), personal workspace first. The add-mount
+// wizard shows this as a picker instead of asking for a number.
+func (s *DesktopService) ListDrimeWorkspaces(ctx context.Context, accessToken string) ([]drimeWorkspace, error) {
+	ws, err := s.app.ListDrimeWorkspaces(ctx, accessToken)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]drimeWorkspace, 0, len(ws))
+	for _, w := range ws {
+		out = append(out, drimeWorkspace{ID: w.ID, Name: w.Name, Role: w.Role})
+	}
+	return out, nil
+}
+
+// drimeWorkspace is the JSON shape of one Drime workspace for the
+// picker (kept local so bind.go does not import the drime driver
+// package for its type).
+type drimeWorkspace struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Role string `json:"role,omitempty"`
+}
+
+// BatchDownload enqueues a multi-select download (V0.9.0): files
+// and folders from one mount into a local directory, keeping folder
+// structure. Unreadable selections are skipped with a reason.
+func (s *DesktopService) BatchDownload(ctx context.Context, mountID string, refs []string, destDir string) (*BatchResult, error) {
+	return s.app.BatchDownload(ctx, mountID, refs, destDir)
+}
+
+// BatchCopy enqueues a multi-select cross-cloud copy (V0.9.0):
+// files and folders from one mount to another, streamed through a
+// pipe — never staged on local disk. Unreadable selections and
+// self-copies are skipped with a reason.
+func (s *DesktopService) BatchCopy(ctx context.Context, srcMount string, refs []string, dstMount, dstRef string) (*BatchResult, error) {
+	return s.app.BatchCopy(ctx, srcMount, refs, dstMount, dstRef)
+}
+
+// RetryTransfer re-queues one failed/cancelled transfer; finished
+// files are never re-done (batch-level resume, V0.9.0).
+func (s *DesktopService) RetryTransfer(ctx context.Context, id string) (*domain.Transfer, error) {
+	return s.app.RetryTransfer(ctx, id)
+}
+
+// RetryFailedTransfers re-queues every failed/cancelled transfer
+// and returns how many were re-queued.
+func (s *DesktopService) RetryFailedTransfers() (int, error) {
+	return s.app.RetryFailedTransfers()
+}
+
+// PushJobToAgent sends a job's latest config to its Agent (health
+// check + push; credentials are NOT pushed — those travel only in
+// the encrypted bundle the user imports by hand).
+func (s *DesktopService) PushJobToAgent(ctx context.Context, jobID string) error {
+	return s.app.PushJobToAgent(ctx, jobID)
+}
+
+// TriggerAgentJob pushes a job's latest config to its Agent and
+// starts it there immediately.
+func (s *DesktopService) TriggerAgentJob(ctx context.Context, jobID string) error {
+	return s.app.TriggerAgentJob(ctx, jobID)
+}
+
+// ListJobRuns returns a job's run history. Local jobs read the
+// desktop database; Agent jobs ask the Agent — its database is the
+// source of truth for runs that happened while the desktop was off.
+func (s *DesktopService) ListJobRuns(ctx context.Context, jobID string) ([]agentapi.RunResponse, error) {
+	return s.app.ListJobRuns(ctx, jobID)
+}
+
+// ExportAgentBundle writes the encrypted config bundle for one
+// Agent (its jobs + the mounts they touch) and returns the file
+// path plus the jobs it had to skip (local-folder jobs).
+func (s *DesktopService) ExportAgentBundle(ctx context.Context, agentID, passphrase string) (*ExportResult, error) {
+	return s.app.ExportAgentBundle(ctx, agentID, passphrase)
+}
+
+// SaveAgentToken stores an Agent's API token, encrypted with the
+// master key. An empty token clears the saved one.
+func (s *DesktopService) SaveAgentToken(agentID, token string) error {
+	return s.app.SaveAgentToken(agentID, token)
 }

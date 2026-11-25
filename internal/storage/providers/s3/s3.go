@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package s3 implements storage.Provider for S3-compatible storage
 // (Amazon S3, Cloudflare R2, MinIO, Wasabi, VersityGW) using the
 // official aws-sdk-go-v2. It is the first driver: the one that validates

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package app
 
 import (
@@ -47,16 +48,38 @@ func (a *App) PreviewJob(ctx context.Context, job *domain.SyncJob) (*sync.Plan, 
 // responsible for having shown the plan to the user when the plan
 // contains deletions.
 //
-// Agent execution is not wired yet (V0.2): a job whose RunOn is not
-// local is rejected here instead of silently running on the desktop,
-// because the files would then move through the wrong machine.
+// A job whose RunOn is not local is rejected here instead of
+// silently running on the desktop, because the files would then
+// move through the wrong machine. The Agent process runs such jobs
+// through RunJobAsAgent instead.
 func (a *App) RunJob(ctx context.Context, job *domain.SyncJob, plan *sync.Plan) (*domain.Run, error) {
 	if err := ValidateJob(job); err != nil {
 		return nil, err
 	}
 	if job.RunOn != domain.RunOnLocal {
-		return nil, fmt.Errorf("app: job %q runs on an Agent; agent execution lands in V0.2", job.Name)
+		return nil, fmt.Errorf("app: job %q runs on an Agent; run it from the Agent (or push it there first)", job.Name)
 	}
+	return a.runJob(ctx, job, plan, true)
+}
+
+// RunJobAsAgent is the Agent process's entry point for a job stored
+// in the Agent's own database. It is the same execution as RunJob
+// except it accepts agent/server jobs and refuses local ones (a
+// local-folder job can never run on a server: ValidateJob rejects
+// it, and the Agent has no access to the desktop's disk anyway).
+// The runner (internal/agentrun) persists the run record itself,
+// so persist=false here — one writer per run, no duplicate rows.
+func (a *App) RunJobAsAgent(ctx context.Context, job *domain.SyncJob, plan *sync.Plan) (*domain.Run, error) {
+	if err := ValidateJob(job); err != nil {
+		return nil, err
+	}
+	if job.RunOn == domain.RunOnLocal {
+		return nil, fmt.Errorf("app: job %q runs locally; it cannot run on this Agent", job.Name)
+	}
+	return a.runJob(ctx, job, plan, false)
+}
+
+func (a *App) runJob(ctx context.Context, job *domain.SyncJob, plan *sync.Plan, persist bool) (*domain.Run, error) {
 	src, err := a.ProviderFor(job.SrcMount)
 	if err != nil {
 		return nil, err
@@ -65,14 +88,50 @@ func (a *App) RunJob(ctx context.Context, job *domain.SyncJob, plan *sync.Plan) 
 	if err != nil {
 		return nil, err
 	}
-	runner := sync.NewRunner(a.Queue)
+	conc, lim := a.transferEngineSettings()
+	// Plan item paths are relative to each side's sync root (see
+	// sync.Scan); re-attach the roots so execution touches the
+	// right folders — a job syncing /photos -> /backup reads
+	// "/photos/a.txt" and writes "/backup/a.txt".
+	src = sync.PrefixedProvider(src, job.SrcRef)
+	dst = sync.PrefixedProvider(dst, job.DstRef)
+	runner := sync.NewRunner(a.Queue, conc, lim)
 	run, err := runner.Execute(ctx, plan, src, dst, job.SrcMount, job.DstMount)
+	if persist {
+		a.recordRun(job, plan, run)
+	}
 	if err != nil {
 		a.Events().Publish(Event{Type: EventJobFailed, JobID: job.ID, Message: err.Error()})
 		return run, err
 	}
 	a.Events().Publish(Event{Type: EventJobDone, JobID: job.ID})
 	return run, nil
+}
+
+// recordRun persists a finished desktop run (run row + plan items)
+// and updates the job's LastRunAt/LastRunOK, so the run history the
+// UI shows is real data, not a live-only event. A run that is still
+// executing has no row yet — the transfer queue shows its progress
+// until it finishes.
+func (a *App) recordRun(job *domain.SyncJob, plan *sync.Plan, run *domain.Run) {
+	if a.DB == nil || run == nil {
+		return
+	}
+	summary := plan.Summary()
+	run.Plan = &summary
+	_ = a.DB.SaveRun(run)
+	items := make([]domain.RunItem, 0, len(plan.Items))
+	for _, it := range plan.Items {
+		items = append(items, domain.RunItem{
+			RunID: run.ID, Path: it.Path, Action: it.Action,
+			Size: it.Size, Note: it.Note, Done: run.Status == domain.RunCompleted,
+		})
+	}
+	_ = a.DB.SaveRunItems(run.ID, items)
+	now := time.Now().UTC()
+	job.LastRunAt = &now
+	job.LastRunOK = run.Status == domain.RunCompleted
+	_ = a.DB.SaveSyncJob(job)
 }
 
 // ValidateJob checks a job configuration before it is saved. In

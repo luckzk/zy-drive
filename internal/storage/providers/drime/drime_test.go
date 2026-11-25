@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package drime
 
 import (
@@ -211,6 +212,15 @@ func (m *mockDrime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.writeJSON(w, http.StatusOK, map[string]any{"status": "success"})
 	case p == "/s3/entries" && r.Method == http.MethodPost:
 		m.handleRegister(w, r)
+	case p == "/me/workspaces" && r.Method == http.MethodGet:
+		// The real shape: {"workspaces": [{"id": N, "name": "...",
+		// "currentUser": {"role_name": "..."}}]}. The personal
+		// workspace (0) is never in the list — ListWorkspaces
+		// prepends it client-side.
+		m.writeJSON(w, http.StatusOK, map[string]any{"workspaces": []map[string]any{
+			{"id": 8762, "name": "sese", "currentUser": map[string]any{"role_name": "Workspace Owner"}},
+			{"id": 1234, "name": "设计组", "currentUser": map[string]any{"role_name": "Member"}},
+		}})
 	case p == "/user/space-usage" && r.Method == http.MethodGet:
 		// Workspace-scoped, like the real endpoint: each workspace
 		// reports its own numbers, so a test that asks for 8762
@@ -888,5 +898,54 @@ func TestDrimeQuotaIsWorkspaceScoped(t *testing.T) {
 	mock.mu.Unlock()
 	if len(seen) != 2 || seen[0] != 8762 || seen[1] != 0 {
 		t.Fatalf("space-usage workspaceIds: got %v, want [8762 0]", seen)
+	}
+}
+
+// TestListWorkspaces: GET /me/workspaces returns the team
+// workspaces; the personal workspace (id 0, "个人空间") is
+// prepended client-side because the server never lists it. The
+// shape mirrors the real API (verified 2026-11-19: 8762 "sese",
+// holder is Workspace Owner).
+func TestListWorkspaces(t *testing.T) {
+	mock := newMockDrime()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	ws, err := ListWorkspaces(t.Context(), srv.URL+"/api/v1", "test-token")
+	if err != nil {
+		t.Fatalf("ListWorkspaces: %v", err)
+	}
+	want := []Workspace{
+		{ID: 0, Name: "个人空间"},
+		{ID: 8762, Name: "sese", Role: "Workspace Owner"},
+		{ID: 1234, Name: "设计组", Role: "Member"},
+	}
+	if len(ws) != len(want) {
+		t.Fatalf("workspaces = %+v, want %+v", ws, want)
+	}
+	for i, w := range want {
+		if ws[i] != w {
+			t.Fatalf("workspaces[%d] = %+v, want %+v", i, ws[i], w)
+		}
+	}
+}
+
+// TestListWorkspacesBadToken: a wrong token is a plain-language
+// 401, not a raw dump — and the wizard shows it next to the token
+// field.
+func TestListWorkspacesBadToken(t *testing.T) {
+	mock := newMockDrime()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	if _, err := ListWorkspaces(t.Context(), srv.URL+"/api/v1", "wrong-token"); err == nil {
+		t.Fatal("wrong token must fail")
+	} else if !strings.Contains(err.Error(), "令牌") {
+		t.Fatalf("bad-token error = %v, want it to mention the token", err)
+	}
+}
+
+// TestListWorkspacesEmptyToken: no token, no request.
+func TestListWorkspacesEmptyToken(t *testing.T) {
+	if _, err := ListWorkspaces(t.Context(), "", ""); err == nil {
+		t.Fatal("empty token must fail before any request")
 	}
 }

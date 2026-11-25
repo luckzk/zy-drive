@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: MPL-2.0
 package transfer
 
 import (
+	"io"
 	"sync"
 	"time"
 )
@@ -18,6 +20,45 @@ type Limiter struct {
 // NewLimiter returns a Limiter. Pass 0 for unlimited.
 func NewLimiter(bytesPerSec int64) *Limiter {
 	return &Limiter{bytesPerSec: bytesPerSec, lastFill: time.Now()}
+}
+
+// SetRate changes the cap live (Settings save applies immediately).
+// Pass 0 for unlimited. Transfers already in flight pace their
+// next reads at the new rate.
+func (l *Limiter) SetRate(bytesPerSec int64) {
+	l.mu.Lock()
+	l.bytesPerSec = bytesPerSec
+	l.mu.Unlock()
+}
+
+// Rate returns the current cap in bytes per second (0 = unlimited).
+func (l *Limiter) Rate() int64 {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.bytesPerSec
+}
+
+// LimitedReader throttles a stream to the limiter's rate. It returns
+// r unchanged when l is nil or unlimited, so callers can wrap
+// unconditionally.
+func NewLimitedReader(r io.Reader, l *Limiter) io.Reader {
+	if l == nil || l.Rate() <= 0 {
+		return r
+	}
+	return &limitedReader{r: r, l: l}
+}
+
+type limitedReader struct {
+	r io.Reader
+	l *Limiter
+}
+
+func (lr *limitedReader) Read(b []byte) (int, error) {
+	n, err := lr.r.Read(b)
+	if n > 0 {
+		lr.l.Wait(int64(n))
+	}
+	return n, err
 }
 
 // Wait blocks until n bytes may be sent. It returns immediately when

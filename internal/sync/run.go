@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: MPL-2.0
 package sync
 
 import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
+	"strings"
+	"sync"
 
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
@@ -16,15 +20,28 @@ import (
 // the user (the plan's HasDeletes flag is re-checked here as a guard).
 type Runner struct {
 	Transfers *transfer.Queue
+	// Concurrency is the parallel-copy cap from Settings (V0.9.0:
+	// the engine used to copy strictly one file at a time). Deletes
+	// are still sequential and last.
+	concurrency int
+	limiter     *transfer.Limiter
 }
 
 // NewRunner returns a Runner backed by the given transfer queue.
-func NewRunner(q *transfer.Queue) *Runner { return &Runner{Transfers: q} }
+// concurrency <= 0 defaults to 2; limiter may be nil (unlimited).
+func NewRunner(q *transfer.Queue, concurrency int, limiter *transfer.Limiter) *Runner {
+	if concurrency <= 0 {
+		concurrency = 2
+	}
+	return &Runner{Transfers: q, concurrency: concurrency, limiter: limiter}
+}
 
-// Execute runs plan items in order, streaming file contents through
-// io.Pipe so cross-cloud copies never touch local disk. Directories are
-// created on the target first (Mkdir), files are copied, deletions are
-// applied last so a failure mid-run leaves the target recoverable.
+// Execute runs plan items, streaming file contents through io.Pipe so
+// cross-cloud copies never touch local disk. Copies run in parallel
+// up to the concurrency cap; deletions are applied last and
+// sequentially so a failure mid-run leaves the target recoverable.
+// The first copy error cancels the remaining copies and fails the
+// run; items already finished stay finished (copies are idempotent).
 func (r *Runner) Execute(ctx context.Context, plan *Plan, src, dst storage.Provider, srcMount, dstMount string) (*domain.Run, error) {
 	run := &domain.Run{
 		ID:        fmt.Sprintf("run-%d", transfer.NowUnixNano()),
@@ -33,18 +50,25 @@ func (r *Runner) Execute(ctx context.Context, plan *Plan, src, dst storage.Provi
 		StartedAt: transfer.Now(),
 	}
 	// Deletes last.
-	var deletes []PlanItem
+	var deletes, copies []PlanItem
 	for _, item := range plan.Items {
 		if item.Action == domain.ActionDelete {
 			deletes = append(deletes, item)
 			continue
 		}
-		if err := r.executeItem(ctx, plan, item, src, dst, srcMount, dstMount, run); err != nil {
-			run.Status = domain.RunFailed
-			run.Error = err.Error()
-			return run, err
-		}
+		copies = append(copies, item)
 	}
+	if err := r.executeCopies(ctx, plan, copies, src, dst, srcMount, dstMount, run); err != nil {
+		run.Status = domain.RunFailed
+		run.Error = err.Error()
+		return run, err
+	}
+	// Deepest first: a directory is deleted only after its
+	// contents, so a RemoveAll-style driver never makes a
+	// later file delete fail with "not found".
+	sort.SliceStable(deletes, func(i, j int) bool {
+		return strings.Count(deletes[i].Path, "/") > strings.Count(deletes[j].Path, "/")
+	})
 	for _, item := range deletes {
 		if err := dst.Delete(ctx, item.Path); err != nil {
 			run.Status = domain.RunFailed
@@ -56,6 +80,40 @@ func (r *Runner) Execute(ctx context.Context, plan *Plan, src, dst storage.Provi
 	now := transfer.Now()
 	run.EndedAt = &now
 	return run, nil
+}
+
+// executeCopies runs the copy items in parallel up to the
+// concurrency cap and returns the first error, if any.
+func (r *Runner) executeCopies(ctx context.Context, plan *Plan, items []PlanItem, src, dst storage.Provider, srcMount, dstMount string, run *domain.Run) error {
+	if len(items) == 0 {
+		return nil
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sem := transfer.NewSemaphore(r.concurrency)
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(items))
+	for _, item := range items {
+		item := item
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if !sem.Acquire(cctx) {
+				return
+			}
+			defer sem.Release()
+			if err := r.executeItem(cctx, plan, item, src, dst, srcMount, dstMount, run); err != nil {
+				errCh <- err
+				cancel()
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		return err
+	}
+	return nil
 }
 
 func (r *Runner) executeItem(ctx context.Context, plan *Plan, item PlanItem, src, dst storage.Provider, srcMount, dstMount string, run *domain.Run) error {
@@ -71,7 +129,9 @@ func (r *Runner) executeItem(ctx context.Context, plan *Plan, item PlanItem, src
 				return
 			}
 			defer rc.Close()
-			_, err = io.Copy(pw, rc)
+			// The limiter paces the source read, so the copy
+			// throughput follows the Settings speed limit.
+			_, err = io.Copy(pw, transfer.NewLimitedReader(rc, r.limiter))
 			_ = pw.CloseWithError(err)
 			errCh <- err
 		}()

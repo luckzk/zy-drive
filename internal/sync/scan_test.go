@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package sync
 
 import (
@@ -116,8 +117,16 @@ func TestCompareDefaultExcludes(t *testing.T) {
 		}
 	}
 	// Re-run without excludes to prove the tree itself is seen.
+	// Directories are not changes of their own (they are created
+	// implicitly by the file uploads), so the count is files only.
 	all := Compare(src, dst, domain.CompareSizeTime, nil)
-	if len(all) != len(src.Nodes) {
-		t.Fatalf("without excludes, plan has %d items, want %d (the whole tree)", len(all), len(src.Nodes))
+	files := 0
+	for _, n := range src.Nodes {
+		if !n.IsDir {
+			files++
+		}
+	}
+	if len(all) != files {
+		t.Fatalf("without excludes, plan has %d items, want %d (all files, no directories)", len(all), files)
 	}
 }

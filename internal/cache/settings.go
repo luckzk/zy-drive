@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package cache — settings are plain key/value rows in the
 // pre-existing `settings` table (created by migration v1). No new
 // table is needed: GetSetting returns ("", false) for a missing key

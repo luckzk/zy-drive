@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package app
 
 import (
@@ -641,6 +642,85 @@ func (a *App) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*
 		return nil, err
 	}
 	return h.Mount, nil
+}
+
+// UpdateMountCredentials re-authorizes an existing mount IN PLACE
+// (V0.9.0, item 3): when a token expires or the user switches
+// accounts, the new credentials are validated and probed first; only
+// on success are the live provider, the encrypted credential blob
+// and the non-secret config swapped — in one SQLite transaction.
+// The mount ID, sync jobs, group, cached baselines and (for the
+// same account) cached listings all survive: the user never has to
+// delete-and-re-add the mount, and no task silently re-points.
+// A failed probe changes nothing: the old provider and the old
+// credentials stay exactly as they were.
+//
+// The wizard prefills name/group from the mount, so a re-auth that
+// only swaps the token round-trips them unchanged; an explicit new
+// name/group in the input is applied. For S3 the bucket/prefix in
+// the input also take effect (re-auth doubles as a root change);
+// for Drime the workspace id in the input takes effect.
+func (a *App) UpdateMountCredentials(ctx context.Context, id string, in AddMountInput) (*domain.Mount, error) {
+	h, ok := a.mounts[id]
+	if !ok {
+		return nil, fmt.Errorf("app: unknown mount %q", id)
+	}
+	if in.Provider != h.Mount.Provider {
+		return nil, fmt.Errorf("app: 这个网盘是 %s，不能用 %s 的凭证重新授权", h.Mount.Provider, in.Provider)
+	}
+	if in.Provider == domain.ProviderLocal {
+		return nil, fmt.Errorf("app: 本地文件夹没有凭证可以更新")
+	}
+	if a.secrets == nil {
+		return nil, fmt.Errorf("app: 凭证存储还没初始化（主密钥缺失），请重启应用再试")
+	}
+	cfg, creds, err := a.mountConfig(in)
+	if err != nil {
+		return nil, err
+	}
+	p, err := a.Registry.New(in.Provider, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("app: 创建驱动失败：%w", err)
+	}
+	verified := false
+	if in.SkipProbe {
+		verified = a.testedRecently(in.Provider, cfg, creds)
+	} else {
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := probeRoot(probeCtx, p); err != nil {
+			return nil, humanProbeError(in.Provider, err)
+		}
+		verified = true
+	}
+	plain, err := json.Marshal(creds)
+	if err != nil {
+		return nil, fmt.Errorf("app: 重新授权：%w", err)
+	}
+	ct, err := a.secrets.Encrypt(plain)
+	if err != nil {
+		return nil, fmt.Errorf("app: 加密凭证失败：%w", err)
+	}
+	m := *h.Mount
+	if name := strings.TrimSpace(in.DisplayName); name != "" {
+		m.DisplayName = name
+	}
+	m.Group = strings.TrimSpace(in.Group)
+	m.RootRef = rootRefFor(in)
+	m.RootLabel = rootLabelFor(in)
+	m.WorkspaceLabel = workspaceLabelFor(in)
+	m.EndpointHost = endpointHost(in.Endpoint)
+	m.Caps = p.Caps()
+	m.Status = domain.MountOK
+	m.Verified = verified
+	m.UpdatedAt = time.Now().UTC()
+	if a.DB != nil {
+		if err := a.DB.SaveMountAndSecret(&m, nonSecretConfig(in), secretIDFor(id), ct); err != nil {
+			return nil, err
+		}
+	}
+	a.mounts[id] = MountHandle{Mount: &m, Provider: p}
+	return &m, nil
 }
 
 // persistedConfig returns the stored non-secret config of one mount.

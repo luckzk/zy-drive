@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // icons — the single place for every UI icon in the app.
 //
 // Two families, kept strictly apart (2026-11-25 decision):

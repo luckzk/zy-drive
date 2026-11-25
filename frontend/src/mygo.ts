@@ -105,6 +105,17 @@ export interface AgentTestResult {
 }
 
 /**
+ * BatchResult is the single return value of BatchDownload/BatchCopy:
+ * the queued transfers plus the selections that never entered the
+ * queue, with a human reason each. mygo.Bind allows at most one
+ * value plus an error, so both travel together.
+ */
+export interface BatchResult {
+  transfers: (Transfer | null)[];
+  skipped: UploadSkipped[];
+}
+
+/**
  * Caps is the capability table. UI and the sync engine decide what to
  * show and what to do by reading Caps only — e.g. a menu item is hidden
  * when the capability is absent, never shown greyed-out and dead.
@@ -157,6 +168,29 @@ export interface CustomOAuthApp {
   /** in-memory only */
   clientSecret?: string;
   hasSecret: boolean;
+}
+
+/**
+ * drimeWorkspace is the JSON shape of one Drime workspace for the
+ * picker (kept local so bind.go does not import the drime driver
+ * package for its type).
+ */
+export interface DrimeWorkspace {
+  id: number;
+  name: string;
+  role?: string;
+}
+
+/**
+ * ExportResult is the single return value of ExportAgentBundle:
+ * the bundle file path, plus the jobs that were NOT exported (with
+ * the reason each) — a job that touches a local folder cannot run
+ * on a server, so it is skipped openly instead of failing the
+ * whole export or silently vanishing.
+ */
+export interface ExportResult {
+  path: string;
+  skipped?: string[];
 }
 
 /**
@@ -385,11 +419,31 @@ export interface Run {
   error?: string;
 }
 
+/**
+ * RunItem is one line of a run's plan/result, kept forever so a mistaken
+ * delete can at least be traced to what was deleted and when.
+ */
+export interface RunItem {
+  runId: string;
+  path: string;
+  action: RunItemAction;
+  size: number;
+  note?: string;
+  done: boolean;
+  error?: string;
+}
+
 /** RunItemAction is what the plan does with one file. */
 export type RunItemAction = "upload" | "update" | "delete" | "conflict" | "skip";
 
 /** RunOn selects where a job executes. Same sync logic, two executors. */
 export type RunOn = "local" | "server" | "agent";
+
+/** RunResponse is one entry of GET /api/jobs/:id/runs. */
+export interface RunResponse {
+  run: Run;
+  items?: RunItem[];
+}
 
 /** RunStatus classifies one execution of a SyncJob. */
 export type RunStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -413,13 +467,13 @@ export interface SearchResult {
  * and the sync defaults all survive.
  *
  * Fields the engine cannot honour yet are still stored, and the UI
- * says so instead of pretending: SyncConcurrency /
- * SyncSpeedLimitKBps are saved now, but the V0.1 transfer worker is
- * fixed at 2-way concurrency with no rate limiter, so they take
- * effect only when the engine supports them. SyncConflict has a
- * single implemented value ("keep-both", the frozen V0.1 rule in
+ * says so instead of pretending: SyncConflict has a single
+ * implemented value ("keep-both", the frozen V0.1 rule in
  * internal/sync/conflict.go: newer keeps the name, the other copy is
  * kept as a conflict copy); anything else is rejected here.
+ * SyncConcurrency / SyncSpeedLimitKBps are wired since V0.9.0:
+ * ApplyTransferSettings pushes them into the transfer worker and
+ * the sync runner live (see settings.go).
  */
 export interface Settings {
   /** light | dark */
@@ -430,9 +484,9 @@ export interface Settings {
   downloadDir: string;
   /** size+time | size | checksum */
   syncCompare: CompareMode;
-  /** 1..16, stored; engine not yet wired */
+  /** 1..16, wired into the sync engine + transfer worker (V0.9.0) */
   syncConcurrency: number;
-  /** 0 = unlimited, stored; engine not yet wired */
+  /** 0 = unlimited; global cap across all transfers (V0.9.0) */
   syncSpeedLimitKBps: number;
   /** keep-both (only implemented value) */
   syncConflict: string;
@@ -596,6 +650,19 @@ export const DesktopService = {
   /** AgentStatus summarises the Agent list for the sidebar card. */
   agentStatus: bind<[], AgentStatus>("DesktopService.AgentStatus", () => []),
   /**
+   * BatchCopy enqueues a multi-select cross-cloud copy (V0.9.0):
+   * files and folders from one mount to another, streamed through a
+   * pipe — never staged on local disk. Unreadable selections and
+   * self-copies are skipped with a reason.
+   */
+  batchCopy: bind<[string, string[], string, string], BatchResult | null>("DesktopService.BatchCopy", (srcMount: string, refs: string[], dstMount: string, dstRef: string) => [srcMount, refs, dstMount, dstRef]),
+  /**
+   * BatchDownload enqueues a multi-select download (V0.9.0): files
+   * and folders from one mount into a local directory, keeping folder
+   * structure. Unreadable selections are skipped with a reason.
+   */
+  batchDownload: bind<[string, string[], string], BatchResult | null>("DesktopService.BatchDownload", (mountID: string, refs: string[], destDir: string) => [mountID, refs, destDir]),
+  /**
    * BeginOAuth builds the authorize URL for Dropbox / Drive / Drime /
    * OneDrive and starts the one-shot loopback listener that catches
    * the code (A). The frontend polls PollOAuthCallback for it.
@@ -631,6 +698,12 @@ export const DesktopService = {
   /** ExchangeOAuthCode swaps a pasted authorization code for tokens. */
   exchangeOAuthCode: bind<[ProviderKind, string, string, string, string, string], OAuthTokens | null>("DesktopService.ExchangeOAuthCode", (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) => [provider, clientID, clientSecret, code, state, tokenURL]),
   /**
+   * ExportAgentBundle writes the encrypted config bundle for one
+   * Agent (its jobs + the mounts they touch) and returns the file
+   * path plus the jobs it had to skip (local-folder jobs).
+   */
+  exportAgentBundle: bind<[string, string], ExportResult | null>("DesktopService.ExportAgentBundle", (agentID: string, passphrase: string) => [agentID, passphrase]),
+  /**
    * GetCustomOAuthApp returns the user's own saved OAuth app for a
    * provider (separate store, never the builtin), or nil when none
    * is saved. The secret, when one is saved, comes back in memory
@@ -659,6 +732,18 @@ export const DesktopService = {
   getVersions: bind<[], VersionInfo>("DesktopService.GetVersions", () => []),
   /** ListAgents returns the configured server Agents. */
   listAgents: bind<[], (Agent | null)[]>("DesktopService.ListAgents", () => []),
+  /**
+   * ListDrimeWorkspaces lists the workspaces a Drime token can see
+   * (GET /me/workspaces), personal workspace first. The add-mount
+   * wizard shows this as a picker instead of asking for a number.
+   */
+  listDrimeWorkspaces: bind<[string], DrimeWorkspace[]>("DesktopService.ListDrimeWorkspaces", (accessToken: string) => [accessToken]),
+  /**
+   * ListJobRuns returns a job's run history. Local jobs read the
+   * desktop database; Agent jobs ask the Agent — its database is the
+   * source of truth for runs that happened while the desktop was off.
+   */
+  listJobRuns: bind<[string], RunResponse[]>("DesktopService.ListJobRuns", (jobID: string) => [jobID]),
   /** ListMounts returns mounts for the sidebar. */
   listMounts: bind<[], (Mount | null)[]>("DesktopService.ListMounts", () => []),
   /** ListSyncJobs returns saved sync jobs (creation order). */
@@ -679,14 +764,35 @@ export const DesktopService = {
   pollOAuthCallback: bind<[string], OAuthCallbackResult | null>("DesktopService.PollOAuthCallback", (state: string) => [state]),
   /** PreviewSync builds a sync plan for confirmation. */
   previewSync: bind<[SyncJob | null], Plan | null>("DesktopService.PreviewSync", (job: SyncJob | null) => [job]),
+  /**
+   * PushJobToAgent sends a job's latest config to its Agent (health
+   * check + push; credentials are NOT pushed — those travel only in
+   * the encrypted bundle the user imports by hand).
+   */
+  pushJobToAgent: bind<[string], void>("DesktopService.PushJobToAgent", (jobID: string) => [jobID]),
   /** RemoveAgent unregisters an Agent. */
   removeAgent: bind<[string], void>("DesktopService.RemoveAgent", (id: string) => [id]),
   /** RemoveMount unregisters a mount. */
   removeMount: bind<[string], void>("DesktopService.RemoveMount", (id: string) => [id]),
+  /**
+   * RetryFailedTransfers re-queues every failed/cancelled transfer
+   * and returns how many were re-queued.
+   */
+  retryFailedTransfers: bind<[], number>("DesktopService.RetryFailedTransfers", () => []),
+  /**
+   * RetryTransfer re-queues one failed/cancelled transfer; finished
+   * files are never re-done (batch-level resume, V0.9.0).
+   */
+  retryTransfer: bind<[string], Transfer | null>("DesktopService.RetryTransfer", (id: string) => [id]),
   /** RunSync executes a confirmed plan. */
   runSync: bind<[SyncJob | null, Plan | null], Run | null>("DesktopService.RunSync", (job: SyncJob | null, plan: Plan | null) => [job, plan]),
   /** SaveAgent adds or edits an Agent (name/address), persisting it. */
   saveAgent: bind<[Agent | null], Agent | null>("DesktopService.SaveAgent", (ag: Agent | null) => [ag]),
+  /**
+   * SaveAgentToken stores an Agent's API token, encrypted with the
+   * master key. An empty token clears the saved one.
+   */
+  saveAgentToken: bind<[string, string], void>("DesktopService.SaveAgentToken", (agentID: string, token: string) => [agentID, token]),
   /**
    * SaveCustomOAuthApp stores the user's own OAuth app for a
    * provider (Client ID in plaintext, Secret encrypted with the
@@ -731,6 +837,18 @@ export const DesktopService = {
   testProxy: bind<[], ProxyTestResult>("DesktopService.TestProxy", () => []),
   /** Transfers lists transfers for the bottom queue panel. */
   transfers: bind<[], (Transfer | null)[]>("DesktopService.Transfers", () => []),
+  /**
+   * TriggerAgentJob pushes a job's latest config to its Agent and
+   * starts it there immediately.
+   */
+  triggerAgentJob: bind<[string], void>("DesktopService.TriggerAgentJob", (jobID: string) => [jobID]),
+  /**
+   * UpdateMountCredentials re-authorizes a mount in place (V0.9.0):
+   * new credentials on the SAME mount — jobs, groups and cache stay.
+   * The probe must pass (or SkipProbe + a recent test) before the old
+   * credentials are swapped out.
+   */
+  updateMountCredentials: bind<[string, AddMountInput], Mount | null>("DesktopService.UpdateMountCredentials", (id: string, in_: AddMountInput) => [id, in_]),
   /** UpdateMountGroup changes a mount's sidebar group. */
   updateMountGroup: bind<[string, string], void>("DesktopService.UpdateMountGroup", (id: string, group: string) => [id, group]),
   /**

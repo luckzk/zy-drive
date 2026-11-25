@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package scheduler provides the in-process cron scheduler shared by
 // desktop and Agent. Jobs are stored in the database; the scheduler only
 // triggers them on time. It never uses the system crontab, so desktop
@@ -6,6 +7,7 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -22,12 +24,47 @@ type Job struct {
 // "daily HH:MM" and "hourly" (plus empty = manual). A full cron parser
 // lands in V0.2; the interface stays the same.
 type Scheduler struct {
-	mu   sync.Mutex
-	jobs map[string]*Job
+	mu       sync.Mutex
+	jobs     map[string]*Job
+	interval time.Duration
 }
 
-// New returns an empty Scheduler.
-func New() *Scheduler { return &Scheduler{jobs: map[string]*Job{}} }
+// New returns an empty Scheduler ticking once a minute.
+func New() *Scheduler { return NewWithInterval(time.Minute) }
+
+// NewWithInterval returns a Scheduler ticking every d. Production
+// uses a minute; tests and the Agent e2e script use a shorter tick
+// so a "daily HH:MM" job set one minute ahead fires promptly.
+func NewWithInterval(d time.Duration) *Scheduler {
+	if d <= 0 {
+		d = time.Minute
+	}
+	return &Scheduler{jobs: map[string]*Job{}, interval: d}
+}
+
+// ValidateSchedule reports whether a schedule string is a supported
+// shape ("" manual, "hourly", "daily HH:MM"). Unknown shapes are
+// rejected at save time instead of silently never running.
+func ValidateSchedule(schedule string) error {
+	if schedule == "" || schedule == "hourly" {
+		return nil
+	}
+	if len(schedule) > 6 && schedule[:6] == "daily " {
+		if _, err := time.Parse("15:04", schedule[6:]); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("scheduler: 不支持的定时格式 %q（只支持留空、hourly、daily HH:MM，例如 daily 02:00）", schedule)
+}
+
+// NextRun returns the next trigger after from, or an error when the
+// schedule shape is unknown. "" (manual) returns the zero time.
+func NextRun(schedule string, from time.Time) (time.Time, error) {
+	if err := ValidateSchedule(schedule); err != nil {
+		return time.Time{}, err
+	}
+	return nextRun(schedule, from), nil
+}
 
 // Add registers a job. Re-adding the same ID replaces it.
 func (s *Scheduler) Add(j *Job) {
@@ -46,7 +83,7 @@ func (s *Scheduler) Remove(id string) {
 
 // Start runs the tick loop until ctx is cancelled.
 func (s *Scheduler) Start(ctx context.Context) {
-	t := time.NewTicker(time.Minute)
+	t := time.NewTicker(s.interval)
 	defer t.Stop()
 	for {
 		select {

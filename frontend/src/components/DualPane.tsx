@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // DualPane — one side of the sync dual-pane picker (Air Explorer
 // style). Each pane is a small file manager: pick an endpoint (a
 // mount, or a local folder), navigate into folders, and the folder

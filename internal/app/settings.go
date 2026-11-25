@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package app
 
 import (
@@ -8,6 +9,7 @@ import (
 
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/netproxy"
+	"github.com/luckzk/zy-drive/internal/transfer"
 	"github.com/luckzk/zy-drive/internal/version"
 )
 
@@ -19,20 +21,20 @@ import (
 // and the sync defaults all survive.
 //
 // Fields the engine cannot honour yet are still stored, and the UI
-// says so instead of pretending: SyncConcurrency /
-// SyncSpeedLimitKBps are saved now, but the V0.1 transfer worker is
-// fixed at 2-way concurrency with no rate limiter, so they take
-// effect only when the engine supports them. SyncConflict has a
-// single implemented value ("keep-both", the frozen V0.1 rule in
+// says so instead of pretending: SyncConflict has a single
+// implemented value ("keep-both", the frozen V0.1 rule in
 // internal/sync/conflict.go: newer keeps the name, the other copy is
 // kept as a conflict copy); anything else is rejected here.
+// SyncConcurrency / SyncSpeedLimitKBps are wired since V0.9.0:
+// ApplyTransferSettings pushes them into the transfer worker and
+// the sync runner live (see settings.go).
 type Settings struct {
 	Theme              string             `json:"theme"`              // light | dark
 	Language           string             `json:"language"`           // zh | en
 	DownloadDir        string             `json:"downloadDir"`        // default download folder, "" = unset
 	SyncCompare        domain.CompareMode `json:"syncCompare"`        // size+time | size | checksum
-	SyncConcurrency    int                `json:"syncConcurrency"`    // 1..16, stored; engine not yet wired
-	SyncSpeedLimitKBps int                `json:"syncSpeedLimitKBps"` // 0 = unlimited, stored; engine not yet wired
+	SyncConcurrency    int                `json:"syncConcurrency"`    // 1..16, wired into the sync engine + transfer worker (V0.9.0)
+	SyncSpeedLimitKBps int                `json:"syncSpeedLimitKBps"` // 0 = unlimited; global cap across all transfers (V0.9.0)
 	SyncConflict       string             `json:"syncConflict"`       // keep-both (only implemented value)
 	// Proxy (Settings -> Network, 2026-11-25): where outbound
 	// traffic goes. system (default) = macOS system proxy when
@@ -203,7 +205,69 @@ func (a *App) SaveSettings(s Settings) error {
 	if err := netproxy.Configure(proxyCfg); err != nil {
 		return err
 	}
+	// And the transfer engine: concurrency + speed limit take
+	// effect for the next transfer / sync run, no restart.
+	a.ApplyTransferSettings()
 	return nil
+}
+
+// ApplyTransferSettings pushes the stored sync concurrency and
+// speed limit into the transfer worker and the shared rate limiter
+// (V0.9.0 — these used to be saved but ignored). It is safe to
+// call before the worker exists (tests, Agent before startup):
+// the limiter is still created, and RunJob reads the same values
+// from Settings each run. The limit is a global cap shared by all
+// concurrent transfers — one setting, one ceiling — so a 1 MB/s
+// limit with 4-way concurrency still totals 1 MB/s, not 4.
+//
+// Drime caution: Drime 429s can cost a ~15-hour penalty ban, so
+// the default concurrency stays 4 (the Settings default) and the
+// UI warns before raising it; the engine itself never retries a
+// 429 in a loop (see the Drime driver).
+func (a *App) ApplyTransferSettings() {
+	s, err := a.GetSettings()
+	if err != nil {
+		return
+	}
+	conc := s.SyncConcurrency
+	if conc < 1 {
+		conc = 1
+	}
+	if conc > 16 {
+		conc = 16
+	}
+	if a.Worker != nil {
+		a.Worker.SetConcurrency(conc)
+	}
+	if a.transferLimiter == nil {
+		a.transferLimiter = transfer.NewLimiter(int64(s.SyncSpeedLimitKBps) * 1024)
+	} else {
+		a.transferLimiter.SetRate(int64(s.SyncSpeedLimitKBps) * 1024)
+	}
+	if a.Worker != nil {
+		a.Worker.SetLimiter(a.transferLimiter)
+	}
+}
+
+// transferEngineSettings returns the concurrency and limiter the
+// sync runner should use for the next run (live Settings values,
+// defaults when nothing was ever saved).
+func (a *App) transferEngineSettings() (int, *transfer.Limiter) {
+	s, err := a.GetSettings()
+	if err != nil {
+		return 4, nil
+	}
+	conc := s.SyncConcurrency
+	if conc < 1 {
+		conc = 1
+	}
+	if conc > 16 {
+		conc = 16
+	}
+	if a.transferLimiter == nil {
+		a.transferLimiter = transfer.NewLimiter(int64(s.SyncSpeedLimitKBps) * 1024)
+	}
+	return conc, a.transferLimiter
 }
 
 // ApplyProxySettings reads the stored proxy settings and applies

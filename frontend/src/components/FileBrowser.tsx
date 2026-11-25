@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // FileBrowser — the browse page. Breadcrumbs + table, full width by
 // default: the Inspector only mounts after the user clicks a file or
 // folder, and hides on blank click / re-click / close. Double-click
@@ -27,13 +28,66 @@ interface Crumb {
   ref: string
 }
 
-export default function FileBrowser({ mount, quota, onRefreshQuota }: { mount: Mount; quota?: MountQuota; onRefreshQuota?: () => void }) {
+export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { mount: Mount; mounts: Mount[]; quota?: MountQuota; onRefreshQuota?: () => void }) {
   const [crumbs, setCrumbs] = useState<Crumb[]>([])
   const [nodes, setNodes] = useState<Node[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Node | null>(null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  // Batch actions (V0.9.0): download / copy for the checked
+  // selection. Upload of local files stays drag-drop (no system
+  // file picker exists); the batch bar says so.
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchMsg, setBatchMsg] = useState<string | null>(null)
+  const [batchError, setBatchError] = useState<string | null>(null)
+  const [copyMount, setCopyMount] = useState<Mount | null>(null)
+
+  const checkedRefs = () => [...checked]
+
+  const handleBatchDownload = async () => {
+    if (checked.size === 0 || batchBusy) return
+    setBatchBusy(true)
+    setBatchMsg(null)
+    setBatchError(null)
+    try {
+      const settings = await api.getSettings()
+      const dir = settings.downloadDir?.trim()
+      if (!dir) {
+        throw new Error('还没有设置默认下载文件夹：先去设置 → 通用里填一个，批量下载会下到那里。')
+      }
+      const res = await api.batchDownload(mount.id, checkedRefs(), dir)
+      if (!res) throw new Error('批量下载没有返回结果。')
+      const skipped = res.skipped?.length ? `；${res.skipped.length} 个没下：${res.skipped.map((s) => `${s.path}（${s.reason}）`).join('、')}` : ''
+      setBatchMsg(`已把 ${res.transfers?.length ?? 0} 个文件加入下载队列，进度见右下角传输胶囊${skipped}。`)
+      setChecked(new Set())
+      void load()
+    } catch (e) {
+      setBatchError(friendlyError(e))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  const handleBatchCopyConfirm = async (targetRef: string) => {
+    if (!copyMount || checked.size === 0 || batchBusy) return
+    const dst = copyMount
+    setCopyMount(null)
+    setBatchBusy(true)
+    setBatchMsg(null)
+    setBatchError(null)
+    try {
+      const res = await api.batchCopy(mount.id, checkedRefs(), dst.id, targetRef)
+      if (!res) throw new Error('批量复制没有返回结果。')
+      const skipped = res.skipped?.length ? `；${res.skipped.length} 个没复制：${res.skipped.map((s) => `${s.path}（${s.reason}）`).join('、')}` : ''
+      setBatchMsg(`已把 ${res.transfers?.length ?? 0} 个文件加入复制队列（${mount.displayName} → ${dst.displayName}），进度见右下角传输胶囊${skipped}。`)
+      setChecked(new Set())
+    } catch (e) {
+      setBatchError(friendlyError(e))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
   // Inspector close animates out (300ms) before unmounting.
   const [inspectorClosing, setInspectorClosing] = useState(false)
   const inspectorTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -363,12 +417,49 @@ export default function FileBrowser({ mount, quota, onRefreshQuota }: { mount: M
           />
         )}
         {checked.size > 0 && (
-          <p className="muted" style={{ marginTop: 8 }}>
-            已选 {checked.size} 个。批量上传 / 下载 / 复制尚未接入。
-          </p>
+          <div className="notice-box" style={{ marginTop: 8 }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 13 }}>已选 {checked.size} 个</span>
+              <button className="btn btn-sm" disabled={batchBusy} onClick={() => void handleBatchDownload()}>
+                {batchBusy ? '处理中…' : '下载到默认文件夹'}
+              </button>
+              <button
+                className="btn btn-sm"
+                disabled={batchBusy || mounts.filter((m) => m.id !== mount.id).length === 0}
+                onClick={() => {
+                  const others = mounts.filter((m) => m.id !== mount.id)
+                  if (others.length > 0) setCopyMount(others[0])
+                }}
+              >
+                复制到…
+              </button>
+              <button className="btn btn-sm" disabled={batchBusy} onClick={() => setChecked(new Set())}>
+                取消选择
+              </button>
+              <span className="muted" style={{ fontSize: 12 }}>批量上传还是拖拽进窗口（选目标文件夹后上传）。</span>
+            </div>
+          </div>
         )}
+        {/* The result lives OUTSIDE the selection bar on purpose:
+            a successful download/copy clears the selection, and a
+            message inside the bar would vanish with it. */}
+        {batchMsg && <div className="notice-box" style={{ marginTop: 8, fontSize: 13 }}>{batchMsg}</div>}
+        {batchError && <div className="error-box" style={{ marginTop: 8, fontSize: 13 }}>{batchError}</div>}
       </div>
       {selected && <Inspector node={selected} mount={mount} quota={quota} closing={inspectorClosing} onClose={closeInspector} />}
+      {copyMount && (
+        <UploadTargetDialog
+          mount={copyMount}
+          mounts={mounts.filter((m) => m.id !== mount.id)}
+          onMountChange={setCopyMount}
+          initialRef={copyMount.rootRef}
+          fileCount={checked.size}
+          title="复制到哪里？"
+          confirmLabel="复制到这里"
+          onConfirm={(targetRef) => void handleBatchCopyConfirm(targetRef)}
+          onCancel={() => setCopyMount(null)}
+        />
+      )}
       {pendingPaths && (
         <UploadTargetDialog
           mount={mount}

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package template is the scaffold for a new cloud driver.
 // To add a cloud, copy this directory, rename it, and work through the
 // seven steps in the README (docs: architecture §6.4):

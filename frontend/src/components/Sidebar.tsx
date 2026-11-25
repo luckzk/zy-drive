@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Sidebar — left navigation, kept on every page (the full-screen
 // dual-pane must never hide it). Sections: pages, mounts grouped by
 // Group, Agent summary card. Group name is followed directly by its

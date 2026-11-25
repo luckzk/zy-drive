@@ -32,8 +32,7 @@
 - S3 + Dropbox 两家；浏览、上传下载、单向复制（Copy 先做，Mirror 带预览）
 - 同步任务表（方向、源/目标、上次成功时间），跑之前出计划预览
 - 双向同步简化版：规则定死，新版占名，另一版留冲突副本
-- 同步任务仅本机执行；Agent（5 个 API + 调度器骨架）先搭好，V0.2 再联调
-- 不做：Facebook / Instagram（后期只读导入）、Docker 网页版、40+ 云全量
+- 同步任务可本机执行，也可 offload 到自部署的服务器 Agent（V0.9.0：定时调度、运行记录、失败重试、加密配置包下发；部署见 `docs/agent-deploy.md`）- 不做：Facebook / Instagram（后期只读导入）、Docker 网页版、40+ 云全量
 
 ## 快速开始
 
@@ -49,8 +48,10 @@ make build
 # 桌面（mygo 窗口壳，失败时回落到本地 HTTP dev 壳）
 ./build/zy-drive-desktop --config-dir ~/.config/zy-drive
 
-# Agent（无界面）
+# Agent（无界面，自部署到你自己的服务器；Docker 与 systemd 部署见 docs/agent-deploy.md）
 ./build/zy-drive-agent --addr 127.0.0.1:8080 --config-dir ~/.config/zy-drive-agent
+# 导入桌面导出的加密配置包（网盘 + 任务），口令交互输入或经 ZY_DRIVE_BUNDLE_PASSPHRASE
+./build/zy-drive-agent import --file zy-drive-agent-bundle-ag-1-20261125-143000.json --config-dir ~/.config/zy-drive-agent
 
 # CLI
 ./build/zy-drive ls s3://my-bucket/photos/
@@ -136,3 +137,15 @@ npm run build --prefix frontend # 产出 frontend/dist，mygo 窗口用它
 项目已定名 ZyDrive，仓库 github.com/luckzk/zy-drive。
 
 对外显示名 ZyDrive；机器标识统一成 `zy-drive`（mygo slug/identifier、配置目录 `~/.config/zy-drive`）；二进制 `zy-drive-desktop` / `zy-drive-agent` / `zy-drive`（2026-11-25 从 `mcm-*` 改名）。
+
+## License（开源协议）
+
+| 部分 | 协议 | 文件 |
+|---|---|---|
+| 核心：后端 Go（驱动、同步、传输引擎、Agent 客户端） | MPL-2.0 | 根目录 `LICENSE`，各源文件头 `SPDX-License-Identifier: MPL-2.0` |
+| 界面：`frontend/`（React + Tailwind） | MIT | `frontend/LICENSE`，各源文件头 `SPDX-License-Identifier: MIT` |
+| Pro 功能模块、License 激活验证、Agent 定时调度服务端 | 专有（不开源） | 私有仓库 `luckzk/zy-drive-pro` |
+
+- Pro 功能不能只是公开仓库里的一个开关：Pro 代码放私有模块，核心通过接口调用它（见 `docs/monetization.md` 第 4 节）。
+- Pro 尚未开售：免费 / Pro 分界线与定价待定，设计见 `docs/monetization.md`。
+- 贡献代码即同意按对应协议开源（后端 MPL-2.0、前端 MIT），见 `CONTRIBUTING.md`。

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Motion helpers (ai-design-skills landing-page-design, B7/B9).
 // No animation library: CSS transition/animation + IntersectionObserver.
 // Rules enforced by tokens.css: base curve cubic-bezier(0.22,1,0.36,1),

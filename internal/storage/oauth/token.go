@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package oauth holds the shared OAuth2 token model and refresh
 // discipline. Drivers use it instead of hand-rolling token handling.
 // The Authorization Code flow itself (browser + local callback) lives in

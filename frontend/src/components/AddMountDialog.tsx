@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // AddMountDialog — the "add a drive" wizard.
 //   1. pick a provider (prototype Demo v8 .pickgrid: two-column
 //      grid of big-logo cards, whole card clickable).
@@ -240,17 +241,20 @@ export default function AddMountDialog({
   initialStep,
   initialName,
   initialGroup,
+  reauthMount,
 }: {
   onClose: () => void
   onAdded: (m: Mount) => void
   // Re-auth entry (from Settings → 网盘 → 重新授权): open straight at
   // the credentials step for that provider, with the old name/group
-  // prefilled. It still creates a new mount — the old one is removed
-  // separately from Settings, never silently.
+  // prefilled. V0.9.0: saving updates the SAME mount in place
+  // (UpdateMountCredentials) — jobs, groups and cache stay; no new
+  // mount is created and the old one is never deleted.
   initialProvider?: ProviderKind
   initialStep?: 1 | 2
   initialName?: string
   initialGroup?: string
+  reauthMount?: Mount
 }) {
   const [closing, requestClose] = useClosing(onClose)
   const [step, setStep] = useState<1 | 2 | 3>(initialStep ?? 1)
@@ -338,6 +342,35 @@ export default function AddMountDialog({
   const [localPath, setLocalPath] = useState('')
   // Drime
   const [workspaceId, setWorkspaceId] = useState('')
+  // Drime workspace picker (V0.9.0): workspaces for the pasted
+  // token, fetched from GET /me/workspaces — pick from the list,
+  // never type a number. Single workspace auto-selects.
+  const [workspaces, setWorkspaces] = useState<import('../mygo').DrimeWorkspace[] | null>(null)
+  const [wsLoading, setWsLoading] = useState(false)
+  const [wsError, setWsError] = useState<string | null>(null)
+  const [wsManual, setWsManual] = useState(false)
+  const fetchWorkspaces = async () => {
+    const token = accessToken.trim()
+    if (!token) {
+      setWsError('请先粘贴个人访问令牌，再获取工作区列表。')
+      return
+    }
+    setWsLoading(true)
+    setWsError(null)
+    try {
+      const list = await api.listDrimeWorkspaces(token)
+      setWorkspaces(list)
+      if (list.length === 1) {
+        setWorkspaceId(String(list[0].id))
+      } else if (list.length === 0) {
+        setWsError('这个令牌下没有工作区。')
+      }
+    } catch (e) {
+      setWsError(friendlyError(e))
+    } finally {
+      setWsLoading(false)
+    }
+  }
   // (C) one-page form test state. testedKey is the exact input the
   // last passed test ran against: editing any field after a pass
   // makes the test stale, and saving then stores unverified.
@@ -561,6 +594,13 @@ export default function AddMountDialog({
     }
   }
 
+  // Save: new mount, or — in re-auth mode — new credentials on the
+  // SAME mount (jobs, groups and cache stay).
+  const saveMount = async (input: AddMountInput): Promise<Mount | null> => {
+    if (reauthMount) return api.updateMountCredentials(reauthMount.id, input)
+    return api.addMount(input)
+  }
+
   const testAndSave = async () => {
     setTesting(true)
     setError(null)
@@ -568,7 +608,7 @@ export default function AddMountDialog({
       // No second probe here: the connection was already tested
       // in-component (step 2) and the backend remembers the pass
       // for this exact config — skipProbe saves it Verified.
-      const m = await api.addMount({ ...buildInput(), skipProbe: true })
+      const m = await saveMount({ ...buildInput(), skipProbe: true })
       if (!m) throw new Error('添加失败：后端没有返回网盘信息。')
       onAdded(m)
     } catch (e) {
@@ -616,7 +656,7 @@ export default function AddMountDialog({
     setSaving(true)
     try {
       const fresh = testedKey !== null && testedKey === JSON.stringify(buildInput())
-      const m = await api.addMount({ ...buildInput(), skipProbe: !fresh })
+      const m = await saveMount({ ...buildInput(), skipProbe: !fresh })
       if (!m) throw new Error('添加失败：后端没有返回网盘信息。')
       onAdded(m)
     } catch (e) {
@@ -1110,9 +1150,11 @@ export default function AddMountDialog({
   return (
     <div className={`dialog-backdrop${closing ? ' closing' : ''}`} onClick={requestClose}>
       <div className={`dialog dialog-wide dialog-flex${closing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
-        <h1>添加网盘</h1>
+        <h1>{reauthMount ? `重新授权：${reauthMount.displayName}` : '添加网盘'}</h1>
         <p className="muted" style={{ margin: '0 0 12px' }}>
-          第 {step} 步 / 共 {totalSteps} 步：{stepLabel}
+          {reauthMount
+            ? `原地更新凭证：保存后还是这个网盘，同步任务、分组和缓存都在，不会新建一个盘。厂商是固定的（${chosen?.name ?? provider}）。`
+            : `第 ${step} 步 / 共 ${totalSteps} 步：${stepLabel}`}
         </p>
 
         {step === 1 && (
@@ -1227,12 +1269,61 @@ export default function AddMountDialog({
                 </div>
                 <div className="field">
                   <label>个人访问令牌（Access Token）</label>
-                  <input className="input" type="password" autoComplete="off" value={accessToken} onChange={(e) => setAccessToken(e.target.value)} />
+                  <input className="input" type="password" autoComplete="off" value={accessToken} onChange={(e) => { setAccessToken(e.target.value); setWorkspaces(null); setWsError(null) }} />
                 </div>
                 <div className="field">
-                  <label>工作区 ID（可选，留空为个人空间）</label>
-                  <input className="input" placeholder="例如：8762" autoComplete="off" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)} />
-                  <div className="hint">只挂个人空间就留空；要挂某个团队空间，填它的数字 ID。</div>
+                  <label>工作区</label>
+                  {!workspaces ? (
+                    <>
+                      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <button className="btn" type="button" disabled={wsLoading || !accessToken.trim()} onClick={() => void fetchWorkspaces()}>
+                          {wsLoading ? '获取中…' : '获取工作区列表'}
+                        </button>
+                        {!accessToken.trim() && <span className="hint" style={{ margin: 0 }}>先粘贴令牌，再点这里拉列表。</span>}
+                      </div>
+                      {wsError && <div className="error-box" style={{ marginTop: 8 }}>{wsError}</div>}
+                    </>
+                  ) : (
+                    <>
+                      {workspaces.map((w) => (
+                        <label key={w.id} className="radio-row">
+                          <input
+                            type="radio"
+                            name="drime-workspace"
+                            checked={workspaceId === String(w.id)}
+                            onChange={() => setWorkspaceId(String(w.id))}
+                          />
+                          <span>
+                            {w.id === 0 ? '个人空间' : w.name}
+                            {w.role ? `（${w.role}）` : ''}
+                            <span className="muted"> · ID {w.id}</span>
+                          </span>
+                        </label>
+                      ))}
+                      {workspaces.length === 1 && <div className="hint">只有一个工作区，已自动选上。</div>}
+                      <button className="btn btn-sm" type="button" onClick={() => { setWorkspaces(null); setWsError(null) }}>
+                        重新获取
+                      </button>
+                    </>
+                  )}
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn btn-sm" type="button" onClick={() => setWsManual(!wsManual)}>
+                      {wsManual ? '收起手动输入' : '手动输入 ID'}
+                    </button>
+                  </div>
+                  {wsManual && (
+                    <>
+                      <input
+                        className="input"
+                        style={{ marginTop: 8 }}
+                        placeholder="例如：8762"
+                        autoComplete="off"
+                        value={workspaceId}
+                        onChange={(e) => setWorkspaceId(e.target.value)}
+                      />
+                      <div className="hint">只挂个人空间就填 0 或留空；要挂某个团队空间，填它的数字 ID。</div>
+                    </>
+                  )}
                 </div>
               </>
             )}
@@ -1257,9 +1348,11 @@ export default function AddMountDialog({
             <div className="notice-box">凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。</div>
             </div>
             <div className="dialog-actions">
-              <button className="btn" disabled={saving || testState === 'testing'} onClick={() => setStep(1)}>
-                上一步
-              </button>
+              {!reauthMount && (
+                <button className="btn" disabled={saving || testState === 'testing'} onClick={() => setStep(1)}>
+                  上一步
+                </button>
+              )}
               <button className="btn" disabled={saving || testState === 'testing'} onClick={requestClose}>
                 取消
               </button>

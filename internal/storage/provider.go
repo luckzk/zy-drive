@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package storage defines the unified Provider interface, the capability
 // table and the registry. Application, sync and transfer code only import
 // this package — never a concrete driver package. Driver registration

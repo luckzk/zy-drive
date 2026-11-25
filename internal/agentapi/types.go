@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package agentapi is the desktop ↔ Agent protocol. Types are defined
 // once here and shared by both ends (desktop client and Agent server),
 // so the two sides cannot drift apart. The Agent API has five core

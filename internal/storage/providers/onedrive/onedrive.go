@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package onedrive implements storage.Provider for Microsoft
 // OneDrive (personal, work/school, and the OneDrive for Business
 // document library behind it) through the Microsoft Graph API v1.0

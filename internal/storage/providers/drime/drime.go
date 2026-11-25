@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package drime implements storage.Provider for Drime Cloud using the
 // official Drime API v1 over plain HTTP (no third-party SDK).
 //

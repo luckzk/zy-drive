@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package http provides the shared HTTP client for all drivers.
 // It owns retry, backoff and rate-limit discipline so no driver writes
 // its own: network errors retry with exponential backoff, 429s wait the

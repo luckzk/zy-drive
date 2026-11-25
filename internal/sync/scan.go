@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package sync implements the sync engine: scan → compare → plan →
 // confirm → execute. It only understands the unified domain.Node model
 // and the storage.Provider interface — vendor names never appear here.
@@ -24,30 +25,46 @@ type Snapshot struct {
 // directories are recorded as well as files (empty folders matter for
 // Mirror). Errors abort the scan — a partial snapshot must never be
 // treated as complete.
+// Scan walks a provider tree from rootRef and returns a snapshot
+// keyed by display path. Keys are RELATIVE to the scan root, so a
+// job syncing /photos -> /backup compares "a.txt" with "a.txt",
+// not "/photos/a.txt" with "/backup/a.txt".
+//
+// Drivers return root-relative paths from List ("/photos/a.txt"
+// for a child of /photos), so the scan root is stripped here. The
+// old code did the opposite — it PREPENDED the parent path on
+// recursion, doubling nested paths ("/sub/sub/b.txt") — because it
+// assumed List returned paths relative to the listed folder, which
+// no driver does. The execution side re-attaches the root via
+// PrefixedProvider in runJob.
 func Scan(ctx context.Context, p storage.Provider, rootRef string) (*Snapshot, error) {
 	snap := &Snapshot{Nodes: map[string]domain.Node{}}
-	if err := scanInto(ctx, p, rootRef, "", snap); err != nil {
+	root := strings.TrimPrefix(rootRef, "local://")
+	root = strings.TrimPrefix(root, "local:")
+	root = strings.Trim(root, "/")
+	if err := scanInto(ctx, p, rootRef, root, snap); err != nil {
 		return nil, err
 	}
 	return snap, nil
 }
 
-func scanInto(ctx context.Context, p storage.Provider, ref, prefix string, snap *Snapshot) error {
+func scanInto(ctx context.Context, p storage.Provider, ref, root string, snap *Snapshot) error {
 	children, err := p.List(ctx, ref)
 	if err != nil {
 		return err
 	}
 	for _, n := range children {
-		// Normalise the display path under the scan root.
+		// Display path relative to the scan root.
 		disp := n.Path
-		if prefix != "" {
-			disp = prefix + "/" + strings.TrimPrefix(n.Path, "/")
+		if root != "" {
+			rel := strings.Trim(strings.TrimPrefix(strings.Trim(n.Path, "/"), root+"/"), "/")
+			disp = "/" + rel
 		}
 		nn := n
 		nn.Path = disp
 		snap.Nodes[disp] = nn
 		if n.IsDir {
-			if err := scanInto(ctx, p, n.Ref, disp, snap); err != nil {
+			if err := scanInto(ctx, p, n.Ref, root, snap); err != nil {
 				return err
 			}
 		}

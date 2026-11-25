@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // api client — the only layer allowed to talk to the Go backend.
 // Desktop (mygo window): calls go through mygo.Bind via the generated
 // client in ../mygo.ts (DesktopService, from internal/app/bind.go).
@@ -7,9 +8,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
 
-export type { AddMountInput, Agent, AgentStatus, AgentTestResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -34,7 +35,6 @@ export function friendlyError(e: unknown): string {
   if (/connection refused/i.test(m)) return '连接被拒绝：对方服务没在运行，或地址/端口不对。'
   if (/i\/o timeout|timeout/i.test(m)) return '连接超时：网络不通或对方没有响应。'
   if (/no such host/i.test(m)) return '找不到这个主机：检查地址是否写对。'
-  if (/runs on an Agent; agent execution/i.test(m)) return '这个任务要在 Agent 上跑，Agent 执行在 V0.2 接入，当前只能在本机跑。'
   return m || '操作失败，请重试。'
 }
 
@@ -102,6 +102,20 @@ export const api = {
     DesktopService.exchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL),
   getSettings: () => DesktopService.getSettings(),
   saveSettings: (s: Settings) => DesktopService.saveSettings(s),
+  // V0.9.0: in-place re-authorization (same mount, new credentials),
+  // Drime workspace picker, batch transfer, Agent run control.
+  updateMountCredentials: (id: string, input: AddMountInput) => DesktopService.updateMountCredentials(id, input),
+  listDrimeWorkspaces: async (accessToken: string) => nonNull(await DesktopService.listDrimeWorkspaces(accessToken)),
+  batchDownload: (mountID: string, refs: string[], destDir: string) => DesktopService.batchDownload(mountID, refs, destDir),
+  batchCopy: (srcMount: string, refs: string[], dstMount: string, dstRef: string) =>
+    DesktopService.batchCopy(srcMount, refs, dstMount, dstRef),
+  retryTransfer: (id: string) => DesktopService.retryTransfer(id),
+  retryFailedTransfers: () => DesktopService.retryFailedTransfers(),
+  pushJobToAgent: (jobID: string) => DesktopService.pushJobToAgent(jobID),
+  triggerAgentJob: (jobID: string) => DesktopService.triggerAgentJob(jobID),
+  listJobRuns: async (jobID: string) => nonNull(await DesktopService.listJobRuns(jobID)),
+  exportAgentBundle: (agentID: string, passphrase: string) => DesktopService.exportAgentBundle(agentID, passphrase),
+  saveAgentToken: (agentID: string, token: string) => DesktopService.saveAgentToken(agentID, token),
   // Settings → 网络: what the OS has configured (for display),
   // and a one-shot connectivity test through the current setup.
   getSystemProxy: () => DesktopService.getSystemProxy(),

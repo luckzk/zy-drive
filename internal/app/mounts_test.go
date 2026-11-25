@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package app
 
 import (
@@ -885,5 +886,136 @@ func TestAddMountSkipProbeUsesRecentTest(t *testing.T) {
 	}
 	if m2.Verified {
 		t.Fatal("a mount saved without any passed test must stay unverified")
+	}
+}
+
+// TestUpdateMountCredentials proves the in-place re-authorize (V0.9.0,
+// item 3): a new key pair + a new bucket swap in on the SAME mount
+// id, the group and the sync job still point at it, the old account's
+// cached listings/cursors are cleared, and the change survives a
+// restart. A failed probe (or a wrong provider) changes nothing.
+func TestUpdateMountCredentials(t *testing.T) {
+	srv := mockS3Server(false)
+	defer srv.Close()
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	a := newTestAppWithDB(t, dbPath)
+	ctx := context.Background()
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "R2 备份", Provider: domain.ProviderS3,
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKey: "ak-1", SecretKey: "sk-1", PathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(s3): %v", err)
+	}
+	if err := a.UpdateMountGroup(m.ID, "工作"); err != nil {
+		t.Fatalf("UpdateMountGroup: %v", err)
+	}
+	// A sync job and some cached listings/cursors from the old account.
+	dstDir := t.TempDir()
+	dst, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "本地备份", Provider: domain.ProviderLocal, LocalPath: dstDir,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(local): %v", err)
+	}
+	job, err := a.SaveSyncJob(&domain.SyncJob{
+		Name: "照片同步", SrcMount: m.ID, SrcRef: "",
+		DstMount: dst.ID, DstRef: "", Direction: domain.DirectionCopy,
+		RunOn: domain.RunOnLocal,
+	})
+	if err != nil {
+		t.Fatalf("SaveSyncJob: %v", err)
+	}
+	if err := a.DB.UpsertNodes(m.ID, "", []domain.Node{{Path: "old.txt", Ref: "old.txt", Name: "old.txt"}}); err != nil {
+		t.Fatalf("UpsertNodes: %v", err)
+	}
+	if err := a.DB.SaveCursor(m.ID, "cur-old-account"); err != nil {
+		t.Fatalf("SaveCursor: %v", err)
+	}
+
+	// Re-authorize: new keys, new bucket, same mount.
+	updated, err := a.UpdateMountCredentials(ctx, m.ID, AddMountInput{
+		DisplayName: "R2 备份", Provider: domain.ProviderS3, Group: "工作",
+		Endpoint: srv.URL, Region: "us-east-1", Bucket: "test-bucket2",
+		AccessKey: "ak-2", SecretKey: "sk-2", PathStyle: true,
+	})
+	if err != nil {
+		t.Fatalf("UpdateMountCredentials: %v", err)
+	}
+	if updated.ID != m.ID {
+		t.Fatalf("re-auth changed the mount id: %q -> %q", m.ID, updated.ID)
+	}
+	if updated.RootLabel != "test-bucket2" || !updated.Verified || updated.Group != "工作" {
+		t.Fatalf("updated mount = %+v, want RootLabel test-bucket2, Verified, Group 工作", updated)
+	}
+	if got := a.ListMounts(); len(got) != 2 {
+		t.Fatalf("mounts after re-auth = %d, want 2 (no duplicate)", len(got))
+	}
+	if jobs := a.ListSyncJobs(); len(jobs) != 1 || jobs[0].ID != job.ID || jobs[0].SrcMount != m.ID {
+		t.Fatalf("jobs after re-auth = %+v, want the same job still pointing at %s", jobs, m.ID)
+	}
+	if nodes, _ := a.DB.ListCached(m.ID, ""); len(nodes) != 0 {
+		t.Fatalf("cached listings survived re-auth: %+v", nodes)
+	}
+	if cur, _ := a.DB.LoadCursor(m.ID); cur != "" {
+		t.Fatalf("old account's delta cursor survived re-auth: %q", cur)
+	}
+	creds, found, err := a.decryptMountCreds(secretIDFor(m.ID))
+	if err != nil || !found || creds.AccessKey != "ak-2" || creds.SecretKey != "sk-2" {
+		t.Fatalf("stored secret after re-auth = %+v found=%v err=%v, want ak-2/sk-2", creds, found, err)
+	}
+	// Survives a restart with the new credentials.
+	a2 := reopenApp(t, dbPath)
+	mounts := a2.ListMounts()
+	if len(mounts) != 2 {
+		t.Fatalf("mounts after restart = %d, want 2", len(mounts))
+	}
+	var got *domain.Mount
+	for _, mm := range mounts {
+		if mm.ID == m.ID {
+			got = mm
+		}
+	}
+	if got == nil || got.RootLabel != "test-bucket2" || got.Group != "工作" {
+		t.Fatalf("mount after restart = %+v, want test-bucket2 / 工作", got)
+	}
+	creds, _, err = a2.decryptMountCreds(secretIDFor(m.ID))
+	if err != nil || creds.AccessKey != "ak-2" {
+		t.Fatalf("secret after restart = %+v err=%v", creds, err)
+	}
+
+	// A failed probe changes nothing: dead endpoint, same input shape.
+	if _, err := a2.UpdateMountCredentials(ctx, m.ID, AddMountInput{
+		DisplayName: "R2 备份", Provider: domain.ProviderS3, Group: "工作",
+		Endpoint: "http://127.0.0.1:1", Region: "us-east-1", Bucket: "test-bucket3",
+		AccessKey: "ak-3", SecretKey: "sk-3", PathStyle: true,
+	}); err == nil {
+		t.Fatal("re-auth against a dead endpoint must fail")
+	}
+	if mounts := a2.ListMounts(); len(mounts) != 2 {
+		t.Fatalf("mounts after failed re-auth = %d", len(mounts))
+	} else {
+		for _, mm := range mounts {
+			if mm.ID == m.ID && mm.RootLabel != "test-bucket2" {
+				t.Fatalf("failed re-auth changed the mount: %+v", mm)
+			}
+		}
+	}
+	creds, _, err = a2.decryptMountCreds(secretIDFor(m.ID))
+	if err != nil || creds.AccessKey != "ak-2" {
+		t.Fatalf("secret after failed re-auth = %+v err=%v, want ak-2", creds, err)
+	}
+	// Wrong provider kind is rejected outright.
+	if _, err := a2.UpdateMountCredentials(ctx, m.ID, AddMountInput{
+		DisplayName: "R2 备份", Provider: domain.ProviderDropbox, AccessToken: "x",
+	}); err == nil {
+		t.Fatal("re-auth with a different provider kind must be rejected")
+	}
+	// Local mounts have no credentials to update.
+	if _, err := a2.UpdateMountCredentials(ctx, dst.ID, AddMountInput{
+		DisplayName: "本地备份", Provider: domain.ProviderLocal, LocalPath: dstDir,
+	}); err == nil {
+		t.Fatal("re-auth on a local mount must be rejected")
 	}
 }

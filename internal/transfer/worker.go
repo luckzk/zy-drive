@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package transfer
 
 import (
@@ -12,16 +13,22 @@ import (
 // optional per-transfer speed limit. It knows nothing about sync — it
 // only moves bytes. The actual move is done by Executor, injected by
 // the app layer (which knows the providers involved).
+//
+// Concurrency and the limiter are live settings (V0.9.0): the
+// Settings page changes them and ApplyTransferSettings pushes the
+// new values here — in-flight transfers keep running, the next
+// acquire honours the new cap, and the limiter paces the next read
+// (the executor reads it via Limiter()).
 type Executor func(ctx context.Context, t *domain.Transfer, report func(done, speedBps int64)) error
 
 // Worker runs the queue.
 type Worker struct {
-	queue       *Queue
-	executor    Executor
-	concurrency int
-	limiter     *Limiter
+	queue    *Queue
+	executor Executor
+	sem      *Semaphore
 
 	mu      sync.Mutex
+	limiter *Limiter
 	running map[string]context.CancelFunc
 }
 
@@ -31,13 +38,41 @@ func NewWorker(q *Queue, exec Executor, concurrency int, limiter *Limiter) *Work
 	if concurrency <= 0 {
 		concurrency = 2
 	}
-	return &Worker{queue: q, executor: exec, concurrency: concurrency,
+	return &Worker{queue: q, executor: exec, sem: NewSemaphore(concurrency),
 		limiter: limiter, running: map[string]context.CancelFunc{}}
+}
+
+// SetConcurrency changes the parallel-transfer cap live (clamped
+// 1..16). Already-running transfers are not interrupted.
+func (w *Worker) SetConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > 16 {
+		n = 16
+	}
+	w.sem.SetLimit(n)
+}
+
+// Concurrency returns the current cap.
+func (w *Worker) Concurrency() int { return w.sem.Limit() }
+
+// SetLimiter swaps the rate limiter live (nil = unlimited).
+func (w *Worker) SetLimiter(l *Limiter) {
+	w.mu.Lock()
+	w.limiter = l
+	w.mu.Unlock()
+}
+
+// Limiter returns the current rate limiter (may be nil).
+func (w *Worker) Limiter() *Limiter {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.limiter
 }
 
 // Start launches the worker loop until ctx is cancelled.
 func (w *Worker) Start(ctx context.Context) {
-	sem := make(chan struct{}, w.concurrency)
 	for {
 		select {
 		case <-ctx.Done():
@@ -56,9 +91,11 @@ func (w *Worker) Start(ctx context.Context) {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		sem <- struct{}{}
+		if !w.sem.Acquire(ctx) {
+			return
+		}
 		go func(t *domain.Transfer) {
-			defer func() { <-sem }()
+			defer w.sem.Release()
 			w.runOne(ctx, t)
 		}(next)
 	}

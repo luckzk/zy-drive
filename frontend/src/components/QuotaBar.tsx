@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // QuotaBar — one mount's storage usage, the same rendering in the
 // sidebar card, the browse header and the Inspector: never a
 // different number in two places. All states are honest:

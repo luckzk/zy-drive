@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // FileTable — the middle file list. Rows come from the backend via
 // api.browse; this component never invents rows. Click selects (and
 // opens the Inspector), double-click enters a folder, checkbox

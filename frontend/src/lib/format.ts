@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Formatting helpers — one place, so sizes and times look the same
 // on every page. No mock values live here: -1 means "unknown" (dirs).
 

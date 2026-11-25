@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package app is the application layer: the only business-orchestration
 // entry point. The UI (frontend via mygo.Bind), the CLI and the Agent
 // all call into App. App only talks to the storage.Provider interface,
@@ -43,6 +44,12 @@ type App struct {
 	// resolve. Built lazily; local jobs never leave this machine.
 	localProv storage.Provider
 	events    *EventBus
+	// transferLimiter is the single shared rate limiter for the
+	// whole app (Settings speed limit is a global cap, not
+	// per-transfer: 4 transfers at 1 MB/s each would otherwise
+	// total 4 MB/s). Created once by ApplyTransferSettings and
+	// re-rated live on every settings save.
+	transferLimiter *transfer.Limiter
 	// testedOK remembers configs TestMountConfig probed
 	// successfully (in-component test, wizard step 2): a save
 	// within 5 minutes for the same config is stored Verified

@@ -1,13 +1,14 @@
 services:
   agent:
     build: ../..
-    image: zy-drive-agent:0.1.0
+    image: zy-drive-agent:0.9.0
     container_name: zy-drive-agent
     restart: unless-stopped
     environment:
       # API token: set a real one. The Agent API must sit behind HTTPS
       # (reverse proxy terminates TLS); never expose :8080 bare.
-      - MCM_AGENT_TOKEN=${MCM_AGENT_TOKEN:-change-me}
+      - ZY_DRIVE_AGENT_TOKEN=${ZY_DRIVE_AGENT_TOKEN:-change-me}
+      # Old name MCM_AGENT_TOKEN still works as a fallback.
     volumes:
       - zy-drive-agent-data:/data
     ports:

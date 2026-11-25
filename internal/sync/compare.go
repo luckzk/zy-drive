@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package sync
 
 import (
@@ -37,6 +38,14 @@ func Compare(src, dst *Snapshot, mode domain.CompareMode, exclude []string) []Ch
 		}
 		dn, ok := dst.Nodes[p]
 		if !ok {
+			// Directories are created implicitly when their
+			// contents upload (every driver's Upload makes the
+			// parent), so a source-only directory is not a
+			// change of its own — uploading it as a file would
+			// fail. Empty source directories do not sync.
+			if sn.IsDir {
+				continue
+			}
 			out = append(out, Change{Path: p, Kind: ChangeNew, Src: &sn, Reason: "only on source"})
 			continue
 		}

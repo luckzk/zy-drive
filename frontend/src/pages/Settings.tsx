@@ -1,6 +1,8 @@
+// SPDX-License-Identifier: MIT
 // Settings — sections: 通用 / 网盘 / 同步默认 / Agent / 关于.
-// The Agent section is kept as-is (add / edit / delete / test
-// connection / set-default); the other sections are new in V0.3.
+// The Agent section: add / edit / delete / test connection /
+// set-default, plus the API token field and the encrypted bundle
+// export (V0.9.0); the other sections are new in V0.3.
 //
 // Persistence: one Settings struct in the `settings` table
 // (GetSettings/SaveSettings Bind), reloaded on restart. Theme and
@@ -326,11 +328,20 @@ export default function SettingsPage({
   const [editing, setEditing] = useState<Agent | null>(null)
   const [formName, setFormName] = useState('')
   const [formAddress, setFormAddress] = useState('')
+  const [formToken, setFormToken] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [testingId, setTestingId] = useState<string | null>(null)
   const [testMsg, setTestMsg] = useState<Record<string, string>>({})
   const [agentBusy, setAgentBusy] = useState(false)
   const [agentDialogClosing, requestAgentDialogClose, resetAgentDialog] = useClosing(() => setEditing(null))
+  // 导出配置包 (V0.9.0): per-Agent inline box — passphrase in,
+  // file path out. The bundle is encrypted; the user copies it to
+  // the server by hand and imports it there.
+  const [exportAgentId, setExportAgentId] = useState<string | null>(null)
+  const [exportPass, setExportPass] = useState('')
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportResult, setExportResult] = useState<import('../mygo').ExportResult | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   const loadAgents = useCallback(async () => {
     setAgentsLoading(true)
@@ -362,6 +373,7 @@ export default function SettingsPage({
     })
     setFormName('')
     setFormAddress('')
+    setFormToken('')
   }
 
   const startEdit = (a: Agent) => {
@@ -369,6 +381,7 @@ export default function SettingsPage({
     setEditing(a)
     setFormName(a.name)
     setFormAddress(a.address)
+    setFormToken('')
   }
 
   const saveAgentForm = async () => {
@@ -389,12 +402,37 @@ export default function SettingsPage({
         address,
       })
       if (!saved) throw new Error('保存 Agent 失败')
+      // Token is only written when the field is non-empty: it is
+      // never read back (a secret), so an empty field means
+      // "keep the saved one".
+      if (formToken.trim()) {
+        await api.saveAgentToken(saved.id, formToken.trim())
+      }
       requestAgentDialogClose()
       await loadAgents()
     } catch (e) {
       setAgentsError(friendlyError(e))
     } finally {
       setAgentBusy(false)
+    }
+  }
+
+  const doExportBundle = async (a: Agent) => {
+    if (exportPass.trim().length < 8) {
+      setExportError('口令至少 8 位：配置包里有网盘凭证，口令太短不安全。')
+      return
+    }
+    setExportBusy(true)
+    setExportError(null)
+    setExportResult(null)
+    try {
+      const res = await api.exportAgentBundle(a.id, exportPass.trim())
+      if (!res) throw new Error('导出失败：后端没有返回文件路径。')
+      setExportResult(res)
+    } catch (e) {
+      setExportError(friendlyError(e))
+    } finally {
+      setExportBusy(false)
     }
   }
 
@@ -674,7 +712,7 @@ export default function SettingsPage({
                 )}
                 {reauthTarget?.id === m.id && (
                   <div style={{ fontSize: 13, marginTop: 4 }}>
-                    已打开添加向导：按新凭证走完后，这个旧网盘还留在这里——确认新网盘能用后，再点“删除”移除旧的。
+                    正在重新授权：走完后还是这个网盘，同步任务、分组和缓存都在，不会新建一个盘。
                   </div>
                 )}
               </div>
@@ -777,7 +815,7 @@ export default function SettingsPage({
               <div className="hint">V0.1 引擎的冲突规则是固定的（新版占原名、另一份保留为冲突副本），其他策略后续版本再提供。</div>
             </div>
             <details className="settings-advanced">
-              <summary>高级：并发与限速（引擎暂未读取）</summary>
+              <summary>高级：并发与限速（同步引擎已读取，保存后立即生效）</summary>
               <div className="field" style={{ marginTop: 12 }}>
                 <label>默认并发数（1–16）</label>
                 <input
@@ -788,7 +826,7 @@ export default function SettingsPage({
                   value={draft.syncConcurrency}
                   onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
                 />
-                <div className="hint">已保存，但当前同步引擎固定 2 路并发、尚未读取这个设置；引擎支持后才生效，不假装现在就能调。</div>
+                <div className="hint">同步时同时传几个文件（默认 4）。Drime 遇到 429 可能罚 15 小时，并发别乱调高；已建任务的并发在下次运行时取最新设置。</div>
               </div>
               <div className="field">
                 <label>限速（KB/s，0 = 不限速）</label>
@@ -799,7 +837,7 @@ export default function SettingsPage({
                   value={draft.syncSpeedLimitKBps}
                   onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
                 />
-                <div className="hint">已保存，但当前同步引擎没有限速器；引擎支持后才生效。</div>
+                <div className="hint">全局上限：所有传输加起来不超过这个速度（不是每个文件一路）。0 = 不限速。</div>
               </div>
             </details>
             <div style={{ marginBottom: 0 }}>
@@ -871,9 +909,62 @@ export default function SettingsPage({
                   {a.lastHeartbeat ? ` · 上次心跳 ${formatTime(a.lastHeartbeat)}` : ' · 还没有心跳'}
                 </div>
                 {testMsg[a.id] && <div style={{ fontSize: 13, marginTop: 4 }}>{testMsg[a.id]}</div>}
+                {exportAgentId === a.id && (
+                  <div style={{ marginTop: 8, padding: 12, border: '1px solid var(--border)', borderRadius: 8 }}>
+                    <div style={{ fontSize: 13, marginBottom: 8 }}>
+                      导出加密配置包（该 Agent 的任务 + 用到的网盘凭证），自己拷到服务器上导入。凭证只走你自己的手，不经过我们的服务器。
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <input
+                        className="input"
+                        type="password"
+                        autoComplete="off"
+                        style={{ width: 200 }}
+                        placeholder="配置包口令（至少 8 位）"
+                        value={exportPass}
+                        onChange={(e) => setExportPass(e.target.value)}
+                      />
+                      <button className="btn-primary btn-sm" disabled={exportBusy} onClick={() => void doExportBundle(a)}>
+                        {exportBusy ? '导出中…' : '导出'}
+                      </button>
+                    </div>
+                    {exportError && <div className="error-box" style={{ marginTop: 8 }}>{exportError}</div>}
+                    {exportResult && (
+                      <div className="notice-box" style={{ marginTop: 8, marginBottom: 0 }}>
+                        <div style={{ fontSize: 13 }}>已导出到：</div>
+                        <div style={{ fontSize: 13, wordBreak: 'break-all' }}>{exportResult.path}</div>
+                        <div style={{ fontSize: 12, marginTop: 4 }} className="muted">
+                          把这个文件拷到服务器，跑 <code>zy-drive-agent import --file &lt;文件&gt;</code>（口令交互输入或经 ZY_DRIVE_BUNDLE_PASSPHRASE），再启动 Agent。
+                        </div>
+                        {exportResult.skipped && exportResult.skipped.length > 0 && (
+                          <div style={{ fontSize: 12, marginTop: 4 }}>
+                            跳过的任务（服务器跑不了，仍留在本机）：
+                            <ul style={{ margin: '4px 0 0', paddingLeft: 16 }}>
+                              {exportResult.skipped.map((s) => (
+                                <li key={s}>{s}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               <button className="btn btn-sm" disabled={testingId === a.id} onClick={() => void testAgent(a)}>
                 {testingId === a.id ? '测试中…' : '测试连接'}
+              </button>
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  const open = exportAgentId !== a.id
+                  setExportAgentId(open ? a.id : null)
+                  setExportPass('')
+                  setExportResult(null)
+                  setExportError(null)
+                }}
+              >
+                {exportAgentId === a.id ? '收起导出' : '导出配置包'}
               </button>
               {!a.default && (
                 <button className="btn btn-sm" onClick={() => void setDefaultAgent(a.id)}>
@@ -968,8 +1059,20 @@ export default function SettingsPage({
               />
               <div className="hint">填 Agent 的 HTTP 地址，不用加 http:// 也行。测试连接调的是这个地址的 /api/health，不需要 Token。</div>
             </div>
+            <div className="field">
+              <label>API Token（Agent 启动时配的 ZY_DRIVE_AGENT_TOKEN）</label>
+              <input
+                className="input"
+                type="password"
+                autoComplete="off"
+                value={formToken}
+                onChange={(e) => setFormToken(e.target.value)}
+                placeholder="留空 = 不改已保存的令牌"
+              />
+              <div className="hint">推送任务、立即同步、拉运行记录都要用它。令牌存在本机、加密保存；服务器上改了令牌后，这里也要改成一样的。</div>
+            </div>
             <div className="notice-box">
-              API Token 现在不在这里填：桌面端还没有保存 Token 的接口。Token 只在 Agent 启动时配，同步任务真正推到 Agent 上跑的功能在 V0.2 接入。
+              定时任务在 Agent 上跑（同步任务页里设定时、点“立即同步”或等定时触发）。凭证不随推送走：先在设置 → Agent 里点“导出配置包”，把加密包拷到服务器上导入，Agent 才能跑这些任务。
             </div>
             <div className="dialog-actions">
               <button className="btn" onClick={requestAgentDialogClose}>

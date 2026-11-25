@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package auth owns OAuth2 flows and encrypted credential storage.
 // Tokens are never stored in plaintext and never appear in logs.
 // The master key is a random key generated once and kept in a

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // decode-fonts — 把 base64 存的字体文件解回 public/fonts/*.woff2。
 //
 // 为什么字体要 base64 存在仓库里：GitHub 快照推送（snapshot push）

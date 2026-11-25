@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package app
 
 import (
@@ -393,5 +394,222 @@ func TestUploadFilesS3MockEndToEnd(t *testing.T) {
 	nodes, err := a.Browse(ctx, m.ID, "")
 	if err != nil || len(nodes) != 1 || nodes[0].Name != "up.txt" {
 		t.Fatalf("Browse s3 after upload: %v, %+v", err, nodes)
+	}
+}
+
+// TestBatchCopyLocalEndToEnd: 10 files across folders, one batch
+// copy, queue progress, all complete with structure kept.
+func TestBatchCopyLocalEndToEnd(t *testing.T) {
+	srcDir := t.TempDir()
+	for i := 0; i < 10; i++ {
+		sub := ""
+		if i >= 5 {
+			sub = "sub"
+		}
+		writeTestFile(t, filepath.Join(srcDir, sub, fmt.Sprintf("f%d.txt", i)), fmt.Sprintf("content-%d", i))
+	}
+	dstDir := t.TempDir()
+	a := newTestApp(t)
+	startTestWorker(t, a)
+	ctx := context.Background()
+	src, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "源", Provider: domain.ProviderLocal, LocalPath: srcDir,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(src): %v", err)
+	}
+	dst, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "目标", Provider: domain.ProviderLocal, LocalPath: dstDir,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(dst): %v", err)
+	}
+	refs := []string{"f0.txt", "f1.txt", "f2.txt", "f3.txt", "f4.txt", "sub"}
+	res, err := a.BatchCopy(ctx, src.ID, refs, dst.ID, "")
+	if err != nil {
+		t.Fatalf("BatchCopy: %v", err)
+	}
+	if len(res.Transfers) != 10 {
+		t.Fatalf("BatchCopy transfers = %d, want 10 (skipped %+v)", len(res.Transfers), res.Skipped)
+	}
+	done := waitTransfersTerminal(t, a, transferIDs(res.Transfers), 10*time.Second)
+	for _, tr := range done {
+		if tr.Status != domain.TransferCompleted {
+			t.Fatalf("transfer %+v: status %q, error %q", tr, tr.Status, tr.Error)
+		}
+		if tr.Kind != domain.TransferCopy {
+			t.Fatalf("transfer %+v: kind %q, want copy", tr, tr.Kind)
+		}
+	}
+	for i := 0; i < 10; i++ {
+		rel := fmt.Sprintf("f%d.txt", i)
+		if i >= 5 {
+			rel = filepath.Join("sub", rel)
+		}
+		got, err := os.ReadFile(filepath.Join(dstDir, rel))
+		if err != nil {
+			t.Fatalf("read dst %s: %v", rel, err)
+		}
+		if string(got) != fmt.Sprintf("content-%d", i) {
+			t.Fatalf("dst %s: got %q", rel, got)
+		}
+	}
+}
+
+// TestBatchDownloadLocalEndToEnd: files + a folder download into a
+// local directory, structure kept.
+func TestBatchDownloadLocalEndToEnd(t *testing.T) {
+	srcDir := t.TempDir()
+	writeTestFile(t, filepath.Join(srcDir, "a.txt"), "aaa")
+	writeTestFile(t, filepath.Join(srcDir, "photos", "b.txt"), "bbb")
+	writeTestFile(t, filepath.Join(srcDir, "photos", "c.txt"), "ccc")
+	a := newTestApp(t)
+	startTestWorker(t, a)
+	ctx := context.Background()
+	src, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "源", Provider: domain.ProviderLocal, LocalPath: srcDir,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(src): %v", err)
+	}
+	destDir := t.TempDir()
+	res, err := a.BatchDownload(ctx, src.ID, []string{"a.txt", "photos"}, destDir)
+	if err != nil {
+		t.Fatalf("BatchDownload: %v", err)
+	}
+	if len(res.Transfers) != 3 {
+		t.Fatalf("BatchDownload transfers = %d, want 3 (skipped %+v)", len(res.Transfers), res.Skipped)
+	}
+	done := waitTransfersTerminal(t, a, transferIDs(res.Transfers), 10*time.Second)
+	for _, tr := range done {
+		if tr.Status != domain.TransferCompleted {
+			t.Fatalf("transfer %+v: status %q, error %q", tr, tr.Status, tr.Error)
+		}
+	}
+	for rel, want := range map[string]string{
+		"a.txt": "aaa", "photos/b.txt": "bbb", "photos/c.txt": "ccc",
+	} {
+		got, err := os.ReadFile(filepath.Join(destDir, rel))
+		if err != nil {
+			t.Fatalf("read dest %s: %v", rel, err)
+		}
+		if string(got) != want {
+			t.Fatalf("dest %s: got %q, want %q", rel, got, want)
+		}
+	}
+}
+
+// TestBatchRetryDoesNotRedoFinished: after a batch finishes, a retry
+// of the one failed transfer re-runs ONLY that transfer — the
+// finished files are never copied again (mtimes prove it).
+func TestBatchRetryDoesNotRedoFinished(t *testing.T) {
+	srcDir := t.TempDir()
+	for i := 0; i < 4; i++ {
+		writeTestFile(t, filepath.Join(srcDir, fmt.Sprintf("f%d.txt", i)), fmt.Sprintf("v%d", i))
+	}
+	dstDir := t.TempDir()
+	a := newTestApp(t)
+	startTestWorker(t, a)
+	ctx := context.Background()
+	src, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "源", Provider: domain.ProviderLocal, LocalPath: srcDir,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(src): %v", err)
+	}
+	dst, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "目标", Provider: domain.ProviderLocal, LocalPath: dstDir,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(dst): %v", err)
+	}
+	res, err := a.BatchCopy(ctx, src.ID, []string{"f0.txt", "f1.txt", "f2.txt", "f3.txt"}, dst.ID, "")
+	if err != nil {
+		t.Fatalf("BatchCopy: %v", err)
+	}
+	done := waitTransfersTerminal(t, a, transferIDs(res.Transfers), 10*time.Second)
+	for _, tr := range done {
+		if tr.Status != domain.TransferCompleted {
+			t.Fatalf("transfer %+v: status %q", tr, tr.Status)
+		}
+	}
+	// One transfer that fails: source file deleted after enqueue.
+	bad := &domain.Transfer{
+		Kind: domain.TransferCopy, SrcMount: src.ID, SrcRef: "gone.txt",
+		DstMount: dst.ID, DstRef: "gone.txt", Size: 3,
+	}
+	if err := a.Queue.Enqueue(bad); err != nil {
+		t.Fatalf("Enqueue(bad): %v", err)
+	}
+	failed := waitTransfersTerminal(t, a, []string{bad.ID}, 10*time.Second)
+	if failed[bad.ID].Status != domain.TransferFailed {
+		t.Fatalf("bad transfer status = %q, want failed", failed[bad.ID].Status)
+	}
+	mtimes := map[string]time.Time{}
+	for i := 0; i < 4; i++ {
+		st, err := os.Stat(filepath.Join(dstDir, fmt.Sprintf("f%d.txt", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mtimes[fmt.Sprintf("f%d.txt", i)] = st.ModTime()
+	}
+	// Retry only the failed one; the four finished files must not
+	// be touched (their mtimes stay exactly the same).
+	if _, err := a.RetryTransfer(ctx, bad.ID); err != nil {
+		t.Fatalf("RetryTransfer: %v", err)
+	}
+	failed2 := waitTransfersTerminal(t, a, []string{bad.ID}, 10*time.Second)
+	if failed2[bad.ID].Status != domain.TransferFailed {
+		t.Fatalf("retried transfer status = %q, want failed again (source still missing)", failed2[bad.ID].Status)
+	}
+	if failed2[bad.ID].Retries != 1 {
+		t.Fatalf("retried transfer Retries = %d, want 1", failed2[bad.ID].Retries)
+	}
+	for rel, before := range mtimes {
+		st, err := os.Stat(filepath.Join(dstDir, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !st.ModTime().Equal(before) {
+			t.Fatalf("finished file %s was re-copied on retry (mtime %v -> %v)", rel, before, st.ModTime())
+		}
+	}
+	// A completed transfer cannot be re-queued at all.
+	if _, err := a.RetryTransfer(ctx, res.Transfers[0].ID); err == nil {
+		t.Fatal("re-queueing a completed transfer must fail")
+	}
+	// RetryFailedTransfers picks up the still-failed one.
+	if n, err := a.RetryFailedTransfers(); err != nil || n != 1 {
+		t.Fatalf("RetryFailedTransfers = %d, %v, want 1, nil", n, err)
+	}
+}
+
+// TestBatchSkipsMissingAndSelfCopy: unreadable refs are skipped
+// with a reason instead of failing the batch, and copying a file
+// onto itself is refused.
+func TestBatchSkipsMissingAndSelfCopy(t *testing.T) {
+	srcDir := t.TempDir()
+	writeTestFile(t, filepath.Join(srcDir, "a.txt"), "aaa")
+	a := newTestApp(t)
+	ctx := context.Background()
+	src, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "源", Provider: domain.ProviderLocal, LocalPath: srcDir,
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(src): %v", err)
+	}
+	res, err := a.BatchDownload(ctx, src.ID, []string{"a.txt", "nope.txt"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("BatchDownload: %v", err)
+	}
+	if len(res.Transfers) != 1 || len(res.Skipped) != 1 {
+		t.Fatalf("BatchDownload: transfers=%d skipped=%d, want 1/1", len(res.Transfers), len(res.Skipped))
+	}
+	res2, err := a.BatchCopy(ctx, src.ID, []string{"a.txt"}, src.ID, "")
+	if err != nil {
+		t.Fatalf("BatchCopy: %v", err)
+	}
+	if len(res2.Transfers) != 0 || len(res2.Skipped) != 1 {
+		t.Fatalf("self-copy: transfers=%d skipped=%d, want 0/1 (%+v)", len(res2.Transfers), len(res2.Skipped), res2.Skipped)
 	}
 }

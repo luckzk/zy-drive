@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package drive implements storage.Provider for Google Drive using
 // the Drive API v3 over plain HTTP (no third-party SDK).
 //

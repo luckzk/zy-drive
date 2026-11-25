@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Minimal i18n for the app shell (navigation, header, Settings
 // page chrome). Only the shell is translated: the file browser,
 // sync editor and dialogs stay in Chinese for now, and the Settings

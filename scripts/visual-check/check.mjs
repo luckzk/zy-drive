@@ -105,6 +105,9 @@ const STUB = `(() => {
   let slowLeft = SLOW_MS ? 2 : 0
   const slow = () => { if (slowLeft <= 0) return Promise.resolve(); slowLeft -= 1; return new Promise((r) => setTimeout(r, SLOW_MS)) }
   const empty = { 'DesktopService.ListAgents': [], 'DesktopService.Transfers': [], 'DesktopService.ListSyncJobs': [] }
+  // 可变的桩 Agent：SaveAgent 往里加，ListAgents 返回 live 列表
+  // （V0.9.0：导出配置包测试需要先有一个 Agent 行）。
+  let __mockAgents = []
   // 可变的桩网盘：ListMounts 返回这份 live 列表，AddMount 往里加、
   // TestMount 把 verified 翻成 true，后面的步骤（设置页重新测试）
   // 才能看到状态变化——静态列表做不到。
@@ -159,7 +162,44 @@ const STUB = `(() => {
         const mount = (${STUB_MOUNTS}).find((m) => m.id === args[0]) ?? (${STUB_MOUNTS})[0]
         return { ...mount, rootRef: '', rootLabel: args[1] + (args[2] ? '/' + args[2] : '') }
       }
-      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '' }
+      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '/tmp/zy-downloads', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '' }
+      // V0.9.0 桩：原地更新凭证（同 ID、改名/分组、标已验证）、
+      // Drime 工作区列表（个人空间 + sese + 设计组）、批量传
+      // 输、重试、Agent 推送/触发/运行记录、配置包导出、Token 保存。
+      if (method === 'DesktopService.UpdateMountCredentials') {
+        const m = __mockMounts.find((x) => x.id === args[0])
+        if (!m) throw new Error('stub: unknown mount')
+        const input = args[1] || {}
+        if (input.displayName) m.displayName = input.displayName
+        if (input.group !== undefined) m.group = input.group
+        m.verified = true
+        return { ...m }
+      }
+      if (method === 'DesktopService.ListDrimeWorkspaces') return [
+        { id: 0, name: '个人空间', role: '' },
+        { id: 8762, name: 'sese', role: 'Workspace Owner' },
+        { id: 1234, name: '设计组', role: 'Member' },
+      ]
+      if (method === 'DesktopService.BatchDownload') return { transfers: [{ id: 't-1', kind: 'download', status: 'queued', srcMount: args[0], srcRef: (args[1] ?? [])[0] ?? '', dstMount: 'local', dstRef: '', done: 0, size: 0, speedBps: 0, createdAt: '', updatedAt: '' }], skipped: [] }
+      if (method === 'DesktopService.BatchCopy') return { transfers: [{ id: 't-2', kind: 'copy', status: 'queued', srcMount: args[0], srcRef: (args[1] ?? [])[0] ?? '', dstMount: args[2], dstRef: args[3], done: 0, size: 0, speedBps: 0, createdAt: '', updatedAt: '' }], skipped: [] }
+      if (method === 'DesktopService.RetryTransfer') return { id: args[0], kind: 'upload', status: 'queued', srcMount: '', srcRef: '', dstMount: '', dstRef: '', done: 0, size: 0, speedBps: 0, createdAt: '', updatedAt: '' }
+      if (method === 'DesktopService.RetryFailedTransfers') return 0
+      if (method === 'DesktopService.PushJobToAgent') return null
+      if (method === 'DesktopService.TriggerAgentJob') return null
+      if (method === 'DesktopService.ListJobRuns') return []
+      if (method === 'DesktopService.ExportAgentBundle') return { path: '/tmp/zy-drive-agent-bundle-ag-1-20261125-000000.json', skipped: [] }
+      if (method === 'DesktopService.SaveAgentToken') return null
+      if (method === 'DesktopService.ListAgents') return __mockAgents
+      if (method === 'DesktopService.SaveAgent') {
+        const ag = { ...(args[0] || {}), id: args[0]?.id || 'ag-1', online: false, jobsRunning: 0 }
+        const i = __mockAgents.findIndex((x) => x.id === ag.id)
+        if (i >= 0) __mockAgents[i] = ag
+        else __mockAgents.push(ag)
+        return ag
+      }
+      if (method === 'DesktopService.RemoveAgent') { __mockAgents = __mockAgents.filter((x) => x.id !== args[0]); return null }
+      if (method === 'DesktopService.SetDefaultAgent') { __mockAgents.forEach((x) => { x.default = x.id === args[0] }); return null }
+      if (method === 'DesktopService.TestAgent') return { online: true, version: '0.9.0', protocolVersion: '1', message: 'Agent 在线（0.9.0，协议 1）' }
       if (method === 'DesktopService.SaveSettings') return null
       // 网络（v0.8.5）：检测到的系统代理 + 代理测试桩。via 与
       // Detail 的文案照抄后端（internal/app/proxy.go）的格式。
@@ -385,10 +425,12 @@ try {
     const emptyAgain = await page.locator('.sidebar').textContent()
     if (!emptyAgain?.includes('还没有网盘')) failures.push('删掉测试网盘后侧栏没有回到零网盘空态')
 
-    // 1c. Drime 向导（V0.6.0 起 PAT-only）：Drime 必须可选（不再
-    // 标 V0.2），第 2 步只有两样——个人访问令牌（提示“令牌只
-    // 显示一次”）和可选的工作区 ID；OAuth 相关字段（Client ID、
-    // 生成授权链接、授权码、Refresh Token）必须一个都不出现。
+    // 1c. Drime 向导（V0.6.0 起 PAT-only，V0.9.0 起工作区选择器）：
+    // Drime 必须可选（不再标 V0.2），第 2 步只有两样——个人访问
+    // 令牌（提示“令牌只显示一次”）和工作区选择器（从列表点选，
+    // 不手填数字；“手动输入 ID”只作兜底）；OAuth 相关字段
+    // （Client ID、生成授权链接、授权码、Refresh Token）必须
+    // 一个都不出现。
     await page.getByRole('button', { name: '添加网盘', exact: true }).click()
     await page.waitForTimeout(400)
     const drimeCard = page.locator('.provider-card', { hasText: 'Drime' }).first()
@@ -407,11 +449,39 @@ try {
     if (drimeStep2?.includes('生成授权链接')) failures.push('Drime 向导第 2 步出现了“生成授权链接”（PAT-only，应隐藏）')
     if (drimeStep2?.includes('授权码')) failures.push('Drime 向导第 2 步出现了授权码（PAT-only，应隐藏）')
     if (drimeStep2?.includes('Refresh Token')) failures.push('Drime 向导第 2 步出现了 Refresh Token（PAT-only，应隐藏）')
-    if (!drimeStep2?.includes('工作区 ID')) failures.push('Drime 向导第 2 步没有“工作区 ID”字段')
+    if (!drimeStep2?.includes('获取工作区列表')) failures.push('Drime 向导第 2 步没有“获取工作区列表”按钮（V0.9.0 工作区选择器）')
+    if (!drimeStep2?.includes('手动输入 ID')) failures.push('Drime 向导第 2 步没有“手动输入 ID”兜底（列表拉不到时应能手填）')
+    if (drimeStep2?.includes('工作区 ID（可选，留空为个人空间）')) failures.push('Drime 向导第 2 步还留着旧的“工作区 ID”输入框（V0.9.0 应改成列表点选）')
     // (C) Drime 也是一页表单：同一页上有测试连接 + 保存，没有第 3 步。
     if (!drimeStep2?.includes('测试连接')) failures.push('Drime 一页表单里没有“测试连接”按钮')
     if (drimeStep2?.includes('下一步：测试')) failures.push('Drime 不应再有“下一步：测试”（一页表单，没有第 3 步）')
     if (drimeStep2?.includes('第 3 步')) failures.push('Drime 一页表单里不应出现“第 3 步”')
+    // 工作区选择器流程：粘贴令牌 → 获取列表 → 出现三个工作区
+    // （个人空间 / sese / 设计组）→ 点选 sese（8762）→ 选中态。
+    await page.locator('.dialog input[type="password"]').first().fill('stub-drime-token')
+    await page.waitForTimeout(200)
+    await page.getByRole('button', { name: '获取工作区列表', exact: true }).click()
+    await page.waitForTimeout(600)
+    const wsPicker = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      if (!d) return { found: false }
+      const text = d.textContent ?? ''
+      const radios = [...d.querySelectorAll('input[type="radio"]')].map((r) => ({ checked: r.checked, label: r.closest('label')?.textContent ?? '' }))
+      return { found: true, hasPersonal: text.includes('个人空间'), hasSese: text.includes('sese'), hasDesign: text.includes('设计组'), radios }
+    })
+    console.log('drime workspace picker:', JSON.stringify(wsPicker))
+    if (!wsPicker.hasPersonal || !wsPicker.hasSese || !wsPicker.hasDesign) failures.push(`Drime 工作区列表不全（应有个人空间 / sese / 设计组），实测 ${JSON.stringify(wsPicker)}`)
+    if (wsPicker.radios.length !== 3) failures.push(`Drime 工作区应为 3 个单选项，实测 ${wsPicker.radios.length} 个`)
+    if (wsPicker.radios.length === 3) {
+      await page.locator('.dialog input[type="radio"]').nth(1).click()
+      await page.waitForTimeout(200)
+      const wsChecked = await page.evaluate(() => {
+        const d = document.querySelector('.dialog')
+        const radios = [...(d?.querySelectorAll('input[type="radio"]') ?? [])]
+        return radios.map((r) => r.checked)
+      })
+      if (JSON.stringify(wsChecked) !== JSON.stringify([false, true, false])) failures.push(`点选 sese 后选中态不对，实测 ${JSON.stringify(wsChecked)}`)
+    }
     await page.screenshot({ path: path.join(SHOTS, '01c-wizard-drime.png') })
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
@@ -890,6 +960,60 @@ try {
     }
   }
 
+  // 2e. 批量操作栏（V0.9.0，VISUAL_MOUNTS）：勾选一行后出现
+  // “已选 N 个” + 下载 / 复制到…；下载进队列有提示，复制弹
+  // 出目标选择框（可切换目标网盘、确认按钮是“复制到这里”）。
+  if (process.env.VISUAL_MOUNTS) {
+    await page.locator('.file-table input[type="checkbox"]').first().click()
+    await page.waitForTimeout(400)
+    const batchBar = await page.evaluate(() => {
+      const body = document.body.textContent ?? ''
+      return {
+        hasCount: body.includes('已选 1 个'),
+        hasDownload: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === '下载到默认文件夹'),
+        hasCopy: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === '复制到…'),
+        hasOldNote: body.includes('尚未接入'),
+      }
+    })
+    console.log('batch bar:', JSON.stringify(batchBar))
+    if (!batchBar.hasCount) failures.push('勾选一行后没有出现“已选 1 个”')
+    if (!batchBar.hasDownload) failures.push('批量栏里没有“下载到默认文件夹”按钮')
+    if (!batchBar.hasCopy) failures.push('批量栏里没有“复制到…”按钮')
+    if (batchBar.hasOldNote) failures.push('批量栏里还留着“尚未接入”的旧文案')
+    if (batchBar.hasDownload) {
+      await page.getByRole('button', { name: '下载到默认文件夹', exact: true }).click()
+      await page.waitForTimeout(600)
+      const dlMsg = await page.evaluate(() => document.body.textContent ?? '')
+      if (!dlMsg.includes('已把 1 个文件加入下载队列')) failures.push(`点下载后没有出现入队提示，实测 ${JSON.stringify(dlMsg.slice(0, 200))}`)
+    }
+    // 重新勾选（下载后选择被清空），再测复制目标框。
+    await page.locator('.file-table input[type="checkbox"]').first().click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '复制到…', exact: true }).click()
+    await page.waitForTimeout(600)
+    const copyDialog = await page.evaluate(() => {
+      const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('复制到哪里'))
+      if (!d) return { found: false }
+      return {
+        found: true,
+        hasMountSelect: !!d.querySelector('select'),
+        hasConfirm: [...d.querySelectorAll('button')].some((b) => b.textContent.trim() === '复制到这里'),
+      }
+    })
+    console.log('copy target dialog:', JSON.stringify(copyDialog))
+    if (!copyDialog.found) failures.push('点“复制到…”后没有弹出复制目标选择框')
+    if (copyDialog.found && !copyDialog.hasMountSelect) failures.push('复制目标框里不能切换目标网盘')
+    if (copyDialog.found && !copyDialog.hasConfirm) failures.push('复制目标框没有“复制到这里”按钮')
+    await page.screenshot({ path: path.join(SHOTS, '02e-batch-copy.png') })
+    if (copyDialog.found) {
+      await page.locator('.dialog-actions >> text=取消').click()
+      await page.waitForTimeout(400)
+    }
+    // 取消选择，恢复干净态。
+    await page.getByRole('button', { name: '取消选择', exact: true }).click().catch(() => {})
+    await page.waitForTimeout(300)
+  }
+
   // 3. 同步任务页：先列已保存任务（零任务空态）
   await page.locator('.nav-item', { hasText: '同步任务' }).click()
   await page.waitForTimeout(600)
@@ -1054,6 +1178,51 @@ try {
     await page.screenshot({ path: path.join(SHOTS, '03f-sync-batch-created.png') })
     await page.locator('.dual-box >> text=取消').click().catch(() => {})
     await page.waitForTimeout(400)
+
+    // 3f2. 定时 + 运行记录（V0.9.0）：编辑器里有“定时”选择
+    // （手动 / 每小时 / 每天固定时间跑），选每天后出现时间
+    // 输入；任务卡片上有“定时：手动”和“运行记录”按钮，点开
+    // 显示真实的空记录（桩返回 []），不是假数据。
+    await page.getByRole('button', { name: '创建同步任务' }).click()
+    await page.waitForTimeout(800)
+    const sched = await page.evaluate(() => {
+      const box = document.querySelector('.dual-box')
+      if (!box) return { found: false }
+      const text = box.textContent ?? ''
+      const selects = [...box.querySelectorAll('select')].map((s) => [...s.options].map((o) => o.textContent))
+      return { found: true, hasManual: text.includes('只在点“立即同步”时跑'), hasHourly: text.includes('每小时跑一次'), hasDaily: text.includes('每天固定时间跑'), selects }
+    })
+    console.log('schedule ui:', JSON.stringify(sched))
+    if (!sched.hasManual || !sched.hasHourly || !sched.hasDaily) failures.push(`编辑器里“定时”三选项不全（手动/每小时/每天），实测 ${JSON.stringify(sched)}`)
+    // 选每天 → 时间输入出现。
+    await page.locator('.dual-box select').last().selectOption({ label: '每天固定时间跑' })
+    await page.waitForTimeout(300)
+    const dailyTime = await page.evaluate(() => {
+      const box = document.querySelector('.dual-box')
+      return { hasTimeInput: !!box?.querySelector('input[type="time"]') }
+    })
+    if (!dailyTime.hasTimeInput) failures.push('定时选“每天固定时间跑”后没有出现时间输入')
+    await page.screenshot({ path: path.join(SHOTS, '03g-sync-schedule.png') })
+    await page.locator('.dual-box >> text=取消').click().catch(() => {})
+    await page.waitForTimeout(400)
+    // 任务卡片：定时文案 + 运行记录空态。
+    const jobMeta = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.job-card')].map((c) => c.textContent ?? '')
+      return { cards, hasSchedule: cards.some((t) => t.includes('定时：手动')), hasRunsBtn: cards.some((t) => t.includes('运行记录')) }
+    })
+    console.log('job card schedule:', JSON.stringify(jobMeta))
+    if (!jobMeta.hasSchedule) failures.push('任务卡片上没有“定时：手动”')
+    if (!jobMeta.hasRunsBtn) failures.push('任务卡片上没有“运行记录”按钮')
+    if (jobMeta.hasRunsBtn) {
+      await page.getByRole('button', { name: '运行记录', exact: true }).first().click()
+      await page.waitForTimeout(600)
+      const runs = await page.evaluate(() => {
+        const cards = [...document.querySelectorAll('.job-card')].map((c) => c.textContent ?? '')
+        return { hasEmpty: cards.some((t) => t.includes('还没有运行记录')), hasTitle: cards.some((t) => t.includes('运行记录')) }
+      })
+      if (!runs.hasEmpty) failures.push(`点“运行记录”后没有显示空记录，实测 ${JSON.stringify(runs)}`)
+    }
+    await page.screenshot({ path: path.join(SHOTS, '03h-sync-runs.png') })
   }
 
   // 4. 设置页：Agent 列表（零 Agent 空态）
@@ -1298,6 +1467,96 @@ try {
       if (!retestAfter.msg.includes('测试通过')) failures.push('点“重新测试”后没有显示“测试通过”')
       if (retestAfter.hasBadge) failures.push('重新测试通过后“未验证”徽章没有消失')
       await page.screenshot({ path: path.join(SHOTS, '04e-settings-retest.png') })
+    }
+  }
+
+  // 4b4. Agent 对话框与导出配置包（V0.9.0）：添加 Agent 对话框
+  // 里有 API Token 字段（留空 = 不改），不再有“V0.2 接入”的
+  // 旧提示；保存后 Agent 行上有“导出配置包”，填口令导出后
+  // 显示文件路径。
+  await page.getByRole('button', { name: '添加 Agent', exact: true }).click()
+  await page.waitForTimeout(400)
+  const agentDialog = await page.evaluate(() => {
+    const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('添加 Agent'))
+    if (!d) return { found: false }
+    const text = d.textContent ?? ''
+    return {
+      found: true,
+      hasToken: text.includes('API Token'),
+      hasV02: text.includes('V0.2'),
+      hasExportHint: text.includes('导出配置包'),
+    }
+  })
+  console.log('agent dialog:', JSON.stringify(agentDialog))
+  if (!agentDialog.found) failures.push('点“添加 Agent”后没有弹出对话框')
+  if (agentDialog.found && !agentDialog.hasToken) failures.push('Agent 对话框里没有 API Token 字段（V0.9.0 应新增）')
+  if (agentDialog.found && agentDialog.hasV02) failures.push('Agent 对话框里还留着“V0.2 接入”的旧提示')
+  if (agentDialog.found && !agentDialog.hasExportHint) failures.push('Agent 对话框里没有提“导出配置包”')
+  if (agentDialog.found) {
+    await page.locator('.dialog input').nth(0).fill('测试服务器')
+    await page.locator('.dialog input').nth(1).fill('127.0.0.1:18080')
+    await page.locator('.dialog input[type="password"]').fill('stub-agent-token')
+    await page.locator('.dialog').getByRole('button', { name: '保存', exact: true }).click()
+    await page.waitForTimeout(800)
+    const agentRow = await page.evaluate(() => {
+      const section = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === 'Agent')
+      if (!section) return { found: false }
+      const text = section.textContent ?? ''
+      return { found: true, hasRow: text.includes('测试服务器'), hasExport: [...section.querySelectorAll('button')].some((b) => b.textContent.trim() === '导出配置包') }
+    })
+    console.log('agent row:', JSON.stringify(agentRow))
+    if (!agentRow.hasRow) failures.push('保存 Agent 后列表里没有“测试服务器”')
+    if (agentRow.hasRow && !agentRow.hasExport) failures.push('Agent 行上没有“导出配置包”按钮')
+    if (agentRow.hasExport) {
+      await page.getByRole('button', { name: '导出配置包', exact: true }).click()
+      await page.waitForTimeout(400)
+      await page.locator('.settings-card input[type="password"]').fill('export-pass-123')
+      await page.locator('.settings-card', { hasText: '测试服务器' }).getByRole('button', { name: '导出', exact: true }).click()
+      await page.waitForTimeout(600)
+      const exportOut = await page.evaluate(() => {
+        const section = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === 'Agent')
+        const text = section?.textContent ?? ''
+        return { hasPath: text.includes('zy-drive-agent-bundle-ag-1-20261125-000000.json'), hasImportHint: text.includes('zy-drive-agent import') }
+      })
+      console.log('agent export:', JSON.stringify(exportOut))
+      if (!exportOut.hasPath) failures.push('点“导出”后没有显示配置包文件路径')
+      if (!exportOut.hasImportHint) failures.push('导出后没有提示服务器上的导入命令')
+      await page.screenshot({ path: path.join(SHOTS, '04f-settings-agent-export.png') })
+    }
+  }
+
+  // 4b5. 原地重新授权（V0.9.0，VISUAL_MOUNTS）：点“重新授权”
+  // 后对话框标题是“重新授权：<名字>”，走完保存后还是同一个
+  // 网盘（侧栏里没有多出一个），任务/分组/缓存都在——不是新建。
+  if (process.env.VISUAL_MOUNTS) {
+    const sidebarBefore = await page.locator('.sidebar').textContent()
+    const mountCountBefore = (sidebarBefore?.match(/我的 R2/g) ?? []).length
+    await page.locator('.settings-card', { hasText: '已添加的网盘' }).getByRole('button', { name: '重新授权' }).first().click()
+    await page.waitForTimeout(500)
+    const reauthDialog = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      if (!d) return { found: false }
+      return { found: true, title: d.querySelector('h1')?.textContent ?? '', text: d.textContent ?? '' }
+    })
+    console.log('reauth dialog:', JSON.stringify(reauthDialog))
+    if (!reauthDialog.found) failures.push('点“重新授权”后没有弹出对话框')
+    if (reauthDialog.found && !reauthDialog.title.startsWith('重新授权：')) failures.push(`重新授权对话框标题应为“重新授权：<名字>”，实测 ${JSON.stringify(reauthDialog.title)}`)
+    if (reauthDialog.found && !reauthDialog.text.includes('还是这个网盘')) failures.push('重新授权对话框没有说明“还是这个网盘”（原地更新）')
+    if (reauthDialog.found) {
+      // S3 表单：填桶与密钥，测试通过后保存。
+      await page.locator('.dialog .field', { hasText: '桶名（Bucket）' }).locator('input').fill('test-bucket')
+      await page.locator('.dialog .field', { hasText: 'AccessKey' }).locator('input').fill('ak-reauth')
+      await page.locator('.dialog .field', { hasText: 'SecretKey' }).locator('input').fill('sk-reauth')
+      await page.locator('.dialog').getByRole('button', { name: '测试连接', exact: true }).click()
+      await page.waitForTimeout(600)
+      const testOut = await page.evaluate(() => document.querySelector('.dialog')?.textContent ?? '')
+      if (!testOut.includes('连接测试通过')) failures.push('重新授权时测试连接没有通过（桩应返回通过）')
+      await page.locator('.dialog-actions').getByRole('button', { name: '保存', exact: true }).click()
+      await page.waitForTimeout(800)
+      const sidebarAfter = await page.locator('.sidebar').textContent()
+      const mountCountAfter = (sidebarAfter?.match(/我的 R2/g) ?? []).length
+      if (mountCountAfter !== mountCountBefore || mountCountAfter !== 1) failures.push(`重新授权后“我的 R2”在侧栏里应仍为 1 个（原地更新，不新建），保存前 ${mountCountBefore} 个、保存后 ${mountCountAfter} 个`)
+      await page.screenshot({ path: path.join(SHOTS, '04g-settings-reauth.png') })
     }
   }
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 package agentapi
 
 import (
@@ -62,9 +63,10 @@ func (c *Client) RunJob(ctx context.Context, jobID string) error {
 	return c.do(ctx, http.MethodPost, "/api/jobs/"+jobID+"/run", nil, nil)
 }
 
-// ListRuns returns the run history for a job.
-func (c *Client) ListRuns(ctx context.Context, jobID string) ([]domain.Run, error) {
-	var out []domain.Run
+// ListRuns returns the run history for a job, newest first, each
+// run with its items.
+func (c *Client) ListRuns(ctx context.Context, jobID string) ([]RunResponse, error) {
+	var out []RunResponse
 	err := c.do(ctx, http.MethodGet, "/api/jobs/"+jobID+"/runs", nil, &out)
 	return out, err
 }

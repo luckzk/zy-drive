@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Command zy-drive-desktop is entry one: the mygo desktop app.
 // It only assembles dependencies and starts: configuration loading,
 // provider registration, app construction, worker start, then the
@@ -123,9 +124,12 @@ func main() {
 
 	// Transfer worker: executes queued moves (cross-cloud copies and
 	// drag-drop uploads) via app.ExecuteTransfer — streaming, never
-	// staged on local disk.
+	// staged on local disk. Concurrency and the speed limit come
+	// from Settings (V0.9.0): ApplyTransferSettings pushes the
+	// stored values in now and on every later settings save.
 	worker := transfer.NewWorker(queue, application.ExecuteTransfer, 2, nil)
 	application.Worker = worker
+	application.ApplyTransferSettings()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

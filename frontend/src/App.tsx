@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // App — desktop shell (mygo Web frontend mode), rebuilt from the
 // user-confirmed UI Demo (v8, 2026-11-24). Layout:
 //   top: ZyDrive + search (Ctrl+K) + 新建同步
@@ -245,6 +246,7 @@ export default function App() {
                   <FileBrowser
                     key={activeMount.id}
                     mount={activeMount}
+                    mounts={mounts}
                     quota={quotas[activeMount.id]}
                     onRefreshQuota={() => void loadQuotas()}
                   />
@@ -274,7 +276,7 @@ export default function App() {
         </main>
       </div>
 
-      <TransferDock transfers={transfers} />
+      <TransferDock transfers={transfers} onRetry={() => void loadTransfers()} />
 
       {showPalette && (
         <CommandPalette
@@ -289,6 +291,7 @@ export default function App() {
           initialStep={reauthMount ? 2 : 1}
           initialName={reauthMount?.displayName}
           initialGroup={reauthMount?.group ?? ''}
+          reauthMount={reauthMount ?? undefined}
           onClose={() => {
             setShowAddMount(false)
             setReauthMount(null)

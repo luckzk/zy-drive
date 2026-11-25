@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // Inspector — the right-hand details panel. It only renders when the
 // user selected a file or folder (on-demand); otherwise the parent
 // does not mount it at all, so the table takes the full width.

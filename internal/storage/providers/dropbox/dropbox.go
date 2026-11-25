@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package dropbox implements storage.Provider for Dropbox using the
 // official Dropbox API v2 over plain HTTP (no third-party SDK).
 //

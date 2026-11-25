@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
 // Package domain holds the core models. It depends on no other internal
 // package: every other package may depend on domain, never the reverse.
 // If a model starts importing a driver or UI package, the extensibility
