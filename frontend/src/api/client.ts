@@ -38,7 +38,7 @@ export function friendlyError(e: unknown): string {
   if (/mygo\s*:\s*runtime|runtime not found|not in a mygo|mygo runtime|bind|WebView|ipc/i.test(msg) || /Failed to fetch|NetworkError|Load failed/i.test(msg)) {
     return '未能连接到桌面后端。请在 ZyDrive 桌面窗口中打开，不要用浏览器直接访问。'
   }
-  if (/auth_expired|unauthorized|401|token expired|reauthor/i.test(m)) return '授权已过期，请重新授权后再试。'
+  if (/auth_expired|unauthorized|401|token expired|session expired|reauthor/i.test(m)) return '授权已过期，请重新授权后再试。'
   if (/unknown mount/i.test(m)) return '找不到这个网盘，它可能已被移除。'
   if (/unknown agent/i.test(m)) return '找不到这个 Agent，它可能已被删除。'
   if (/connection refused/i.test(m)) return '连接被拒绝：对方服务没在运行，或地址/端口不对。'

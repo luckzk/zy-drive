@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -654,7 +655,21 @@ func (a *App) LoadMounts() error {
 		}
 		p, err := a.Registry.New(m.Provider, cfg)
 		if err != nil {
-			m.Status = domain.MountError
+			// Log the real reason: the UI only shows a status,
+			// so without this line the cause (e.g. an expired
+			// MEGA session) is invisible anywhere. Provider
+			// errors never contain credential values, so this
+			// is safe to log.
+			log.Printf("mounts: mount=%s provider=%s: %v", m.ID, m.Provider, err)
+			if errors.Is(err, storage.ErrSessionExpired) {
+				// The stored session is dead; only a fresh
+				// login revives the mount. The UI already
+				// renders this status as "授权过期了，重新授权
+				// 后就能继续浏览。"
+				m.Status = domain.MountAuthExpired
+			} else {
+				m.Status = domain.MountError
+			}
 			a.mounts[m.ID] = MountHandle{Mount: m}
 			continue
 		}

@@ -39,7 +39,10 @@ func (a *App) ProviderFor(mountID string) (storage.Provider, error) {
 		return nil, fmt.Errorf("app: unknown mount %q", mountID)
 	}
 	if h.Provider == nil {
-		return nil, fmt.Errorf("app: mount %q 未能加载（凭证或配置有问题），请删除后重新添加", mountID)
+		if h.Mount.Status == domain.MountAuthExpired {
+			return nil, fmt.Errorf("app: mount %q 的授权已过期，请在设置 → 网盘里点“重新授权”", mountID)
+		}
+		return nil, fmt.Errorf("app: mount %q 未能加载（可能是网络问题），请点“重试”，不行再在设置 → 网盘里重新授权", mountID)
 	}
 	return h.Provider, nil
 }

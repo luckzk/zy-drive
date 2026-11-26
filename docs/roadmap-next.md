@@ -5,6 +5,7 @@
 > **v0.9.0 落地（2026-11-25）：本文件第 3 节的五项已全部做完，见文末“附：v0.9.0 落地记录”。**
 > **v0.9.1 落地（2026-11-25）：单文件断点续传（Drime 先行）、Box/pCloud/MEGA 三家新驱动、文件预览两档，见文末“附：v0.9.1 落地记录”。**
 > **v0.9.2 补丁（2026-11-26）：MEGA 表单三处 UI 修正（测试通过变绿、凭证说明改问号悬浮提示、输入框焦点绿环左侧裁剪修复）+ Dropbox 一键授权自动换取 bug 修复，见文末“附：v0.9.2 补丁”。**
+> **v0.9.3 补丁（2026-11-26，未推）：MEGA 挂载加载失败的诊断与恢复——LoadMounts 记真实错误、会话失效标 auth_expired、文件浏览重试走 TestMount，见文末“附：v0.9.3 补丁”。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -151,6 +152,13 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 2. **凭证说明改问号悬浮提示**：原来单独占一行的灰底长条“凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。”已删，改成“已通过测试，点保存即存为已验证。”文末的“?”圆圈图标，鼠标悬停或键盘聚焦时在图标上方弹出气泡显示这段文字。OAuth 表单那边的同一段文字先没动——那边没有“已通过测试”这行字，问号没地方挂，等用户说再改。
 3. **输入框焦点绿环左侧被裁**：根因是 `.dialog-flex .dialog-body` 只留了右侧 4px 内边距、左侧 0，`overflow-y: auto` 的滚动容器把 2px 焦点 outline 左侧裁掉了，右侧靠 4px 内边距保住了——左右不对称，看起来就是左侧绿被挡住。改成四边 4px 内边距（select 的 outline-offset 1px 也需要 3px 空间），根治。
 4. **Dropbox 一键授权后不自动换 Token（2026-11-26，用户报：浏览器显示“授权成功”白页面，手动换取能成功）**：根因是过期闭包——轮询 interval 在 genAuthLink 里创建，那时 setLinkClientId 还没生效，轮询回调里 exchangeCode 读到的 linkClientId 还是 ''，自动换取拿空 Client ID 去换，Dropbox 拒了；手动点“换取 Token”读的是已更新的 state，所以能成功。和 2026-11-25 修的 oauthState 过期闭包同一类 bug，那次只修了 state，漏了 linkClientId/linkClientSecret。修法同款：加 linkClientIdRef/linkClientSecretRef，genAuthLink 里同步写 ref，exchangeCode 优先读 ref。验证方法：先让检查桩的 ExchangeOAuthCode 像真 Dropbox 一样拒空 client_id，跑出复现（自动换取 client_id 为 ''、无 Token）；修完再跑，自动换取 client_id 为 'zydrive-builtin-id'、Token 与自动测试都通过，检查里加了该断言，防回归。
+
+## 附：v0.9.3 补丁（2026-11-26，MEGA 挂载加载失败的诊断与恢复；未推，等用户确认）
+
+1. **故障**：用户在 Mac 上加好的两个 MEGA 盘（mega001、mega002）在 0.9.2 更新重启后加载失败，侧栏显示“出错 / 容量暂不可用”，文件浏览红字 `app: mount "…" 未能加载（凭证或配置有问题），请删除后重新添加`。该报错来自 `ProviderFor` 的 nil 驱动分支，真实原因被 `LoadMounts` 吞掉了（`Registry.New` 失败只置状态、不记日志、不留错误），外面无从得知。查证：0.9.1 与 0.9.2 的后端 Go 代码除版本号外完全相同（GitHub 对照过），所以不是 0.9.2 改坏的，是重启暴露了潜伏的恢复失败；MEGA 是唯一在构造时就发网络请求（会话登录 → `f` 命令）的驱动，OAuth 类驱动都是离线构造、首次使用才联网，所以启动期一次瞬时失败就会永久杀死 MEGA 盘、别的盘却能自愈。
+2. **修法（四件）**：① `storage.ErrSessionExpired` 哨兵错误；② MEGA 适配器对会话登录失败做分类——服务器明确拒绝会话（`f` 命令回错误号，如 `[-9]`，解码成类型错误）才包 `ErrSessionExpired`，瞬时失败（net/url 错误、JSON 语法错误、EBADRESP）原样返回、不标过期——关键点：go-mega 的 `api_request` 会吞掉传输错误（循环内 `err` 遮住了具名返回值，返回空 body + nil 错误），于是传输失败在 `getFileSystem` 里表现为“unexpected end of JSON input”，仍是“服务器没回答”，不是“会话被拒”；③ `LoadMounts` 把构造失败的真实原因记进日志，并把 `ErrSessionExpired` 映射成 `MountAuthExpired`（前端早已会渲染成“授权过期了，重新授权后就能继续浏览。”）；④ 文件浏览错误框的“重试”改走 `TestMount`（按保存的凭证重建驱动，失败返回真实原因），原来只调 `load()` 重新列目录、驱动是 nil 时永远得到同一个错；`ProviderFor` 的文案也按状态区分（过期 → 指去设置重新授权；其他 → 先重试）；`friendlyError` 加 `session expired` 映射。另加 `newWithClient(cfg, client)` 注入点供测试。
+3. **真账号复现的意外结果**：用户给了 mega001 的账号密码（只用一次、环境变量传参、未落盘、复现用测试文件已删），本 VM 的 Go 客户端能连 MEGA（curl 超时是沙箱拦 curl，不是连不上）。结果：密码登录在第一步就被 MEGA 拒绝，错误是 -16 `User blocked`（EBLOCKED），不是密码错（密码错是 -9），也不是会话恢复那一步——连会话都没拿到，无从验证会话恢复。用户 2026-11-26 10:32 确认：账号被锁，重置密码后恢复；挂载也随之恢复且无需重新授权——ZyDrive 存的是会话不是密码，锁定时会话也被拒、解锁后旧会话继续有效（这次密码重置没有让旧会话失效）。根因确认：账号被锁 → 会话被拒 → 启动加载失败，非代码 bug。
+4. **验证**：go vet + go test 全过（21 个包；全量跑时 `TestRunnerRetryOnce` 一次因时序失败，单独重跑 3/3 通过，与本次改动无关，agentrun 未动）；新增适配器假服务器测试 3 个（拒绝 → ErrSessionExpired、有效会话恢复成功、网络失败不标过期）与应用层重启往返测试 2 个（MEGA 盘重启后状态 OK、会话失败标 auth_expired 且报错指去重新授权）；npm 构建 JS 418.27 kB；make build 三二进制均报 0.9.3；visual-check 三种模式全过。
 
 ## 附：文件去重设计（2026-11-25，用户：各云去重逻辑不同，可能需要给每个云单独做）
 

@@ -121,6 +121,22 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
     }
   }, [mount.id, ref])
 
+  const [retrying, setRetrying] = useState(false)
+  // 重试挂载本身（TestMount 按保存的凭证重建驱动，失败时
+  // 返回真实原因），而不只是重新列目录：驱动是 nil 时重新
+  // 列目录永远只会得到同一个错误。
+  const retryMount = useCallback(async () => {
+    setRetrying(true)
+    try {
+      await api.testMount(mount.id)
+      await load()
+    } catch (e) {
+      setError(friendlyError(e))
+    } finally {
+      setRetrying(false)
+    }
+  }, [mount.id, load])
+
   // Reset navigation when switching mounts.
   useEffect(() => {
     setCrumbs([])
@@ -375,8 +391,8 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
             {error}
             {mount.status === 'auth_expired' && <div style={{ marginTop: 8 }}>授权过期了，重新授权后就能继续浏览。</div>}
             <div style={{ marginTop: 8 }}>
-              <button className="btn btn-sm" onClick={() => void load()}>
-                重试
+              <button className="btn btn-sm" disabled={retrying} onClick={() => void retryMount()}>
+                {retrying ? '重试中…' : '重试'}
               </button>
             </div>
           </div>

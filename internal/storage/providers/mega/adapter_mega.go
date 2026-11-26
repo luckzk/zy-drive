@@ -12,8 +12,12 @@ package mega
 
 import (
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"time"
 
 	gomeg "github.com/t3rm1n4l/go-mega"
@@ -33,12 +37,22 @@ import (
 // storage.SessionExporter so the app can store it encrypted at
 // rest after the first password login.
 func New(cfg storage.Config) (storage.Provider, error) {
+	return newWithClient(cfg, nil)
+}
+
+// newWithClient is New with an injectable HTTP client (nil = the
+// default client with the shared proxy transport). Tests pass a
+// client pointed at a fake MEGA server.
+func newWithClient(cfg storage.Config, client *http.Client) (storage.Provider, error) {
 	m := gomeg.New()
 	m.SetLogger(nil) // silence the library's log.Printf default
-	m.SetClient(&http.Client{
-		Transport: netproxy.Transport(),
-		Timeout:   120 * time.Second,
-	})
+	if client == nil {
+		client = &http.Client{
+			Transport: netproxy.Transport(),
+			Timeout:   120 * time.Second,
+		}
+	}
+	m.SetClient(client)
 	a := &megaAdapter{m: m}
 	if sid := cfg.Extra["mega_session_id"]; sid != "" {
 		keyB64 := cfg.Extra["mega_master_key"]
@@ -50,7 +64,27 @@ func New(cfg storage.Config) (storage.Provider, error) {
 			return nil, fmt.Errorf("mega: saved master key is not valid base64: %w", err)
 		}
 		if err := a.LoginWithKeys(sid, key); err != nil {
-			return nil, fmt.Errorf("mega: saved session login failed: %w", err)
+			// The server rejected the session (expired,
+			// revoked, or never valid): only a fresh password
+			// login can revive the mount. A transport failure
+			// is different — it is transient and retryable,
+			// so it must NOT be marked "expired" (that would
+			// send the user to re-authorize for a blip).
+			// go-mega surfaces a rejected session as a
+			// response error (the `f` command answers with an
+			// error number like [-9], which fails to unmarshal
+			// into the filesystem struct), while transport
+			// failures surface as net/url errors — or, worse,
+			// as "unexpected end of JSON input": api_request
+			// swallows a transport error (its loop-local err
+			// shadows the named return) and returns an empty
+			// body with a nil error, so the unmarshal fails
+			// on empty input. That is still "no server
+			// answer", not a rejection.
+			if isTransientMegaError(err) {
+				return nil, fmt.Errorf("mega: saved session login failed: %w", err)
+			}
+			return nil, fmt.Errorf("mega: saved session expired or invalid, re-login required (%v): %w", err, storage.ErrSessionExpired)
 		}
 		return newProvider(a), nil
 	}
@@ -69,6 +103,32 @@ func New(cfg storage.Config) (storage.Provider, error) {
 		return nil, fmt.Errorf("mega: login failed: %w", err)
 	}
 	return newProvider(a), nil
+}
+
+// isTransientMegaError reports whether err means "no usable
+// server answer" rather than "the server rejected the session":
+// a transport failure, an empty/malformed body (go-mega swallows
+// transport errors and hands back an empty response, which fails
+// as a JSON syntax error), or a non-JSON response (EBADRESP).
+// A rejected session answers with a JSON error number, which is a
+// *json.UnmarshalTypeError — deliberately NOT matched here.
+func isTransientMegaError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return true
+	}
+	var synErr *json.SyntaxError
+	if errors.As(err, &synErr) {
+		return true
+	}
+	if errors.Is(err, gomeg.EBADRESP) {
+		return true
+	}
+	return false
 }
 
 // megaAdapter forwards megaClient onto *gomeg.Mega.

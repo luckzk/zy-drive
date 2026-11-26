@@ -3,7 +3,9 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -1184,4 +1186,119 @@ func TestBeginExchangeOAuthBoxPcloud(t *testing.T) {
 		t.Fatalf("stateless dropbox callback: got %+v, want waiting", res)
 	}
 	a.CancelOAuth(dbStart.State)
+}
+
+// --- fake MEGA driver for the restart round-trip tests (v0.9.3) ---
+//
+// Password login always succeeds and exports the session id from
+// fakeMegaExportSID. Session login succeeds, unless
+// fakeMegaSessionErr is set — then it fails with that error (the
+// tests use the ErrSessionExpired wrap, like the real adapter).
+// The factory is registered into the shared default registry once
+// (later Register calls panic and are recovered, keeping the first
+// factory); behaviour is driven by the package-level vars, and the
+// tests in this package run sequentially, so this is safe.
+
+var (
+	fakeMegaSessionErr error
+	fakeMegaExportSID  = "test-session-id"
+)
+
+type fakeMegaProvider struct {
+	storage.Provider // embedded nil; only overridden methods are called
+	exportSessionID  string
+}
+
+func (f *fakeMegaProvider) List(ctx context.Context, ref string) ([]domain.Node, error) {
+	return nil, nil
+}
+
+func (f *fakeMegaProvider) Caps() domain.Caps { return domain.Caps{} }
+
+func (f *fakeMegaProvider) ExportSession(ctx context.Context) (string, string, error) {
+	return f.exportSessionID, base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")), nil
+}
+
+func fakeMegaFactory(cfg storage.Config) (storage.Provider, error) {
+	if sid := cfg.Extra["mega_session_id"]; sid != "" {
+		if fakeMegaSessionErr != nil {
+			return nil, fakeMegaSessionErr
+		}
+		return &fakeMegaProvider{exportSessionID: sid}, nil
+	}
+	if cfg.Extra["mega_email"] == "" || cfg.Extra["mega_password"] == "" {
+		return nil, fmt.Errorf("mega: email + password are required (or a saved session)")
+	}
+	return &fakeMegaProvider{exportSessionID: fakeMegaExportSID}, nil
+}
+
+func registerFakeMega(t *testing.T) {
+	t.Helper()
+	reg := storage.Default()
+	func() {
+		defer func() { _ = recover() }()
+		reg.Register(domain.ProviderMega, fakeMegaFactory)
+	}()
+}
+
+func addFakeMegaMount(t *testing.T, app *App) *domain.Mount {
+	t.Helper()
+	m, err := app.AddMountWithCredentials(context.Background(), AddMountInput{
+		DisplayName:  "mega-test",
+		Provider:     domain.ProviderMega,
+		MegaEmail:    "a@example.com",
+		MegaPassword: "secret",
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials: %v", err)
+	}
+	return m
+}
+
+func TestMegaMountSurvivesRestart(t *testing.T) {
+	fakeMegaSessionErr = nil
+	fakeMegaExportSID = "test-session-id"
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	app1 := newTestAppWithDB(t, dbPath)
+	registerFakeMega(t)
+	m := addFakeMegaMount(t, app1)
+	// Fresh App on the same DB file, as after a restart.
+	app2 := reopenApp(t, dbPath)
+	got := app2.ListMounts()
+	if len(got) != 1 {
+		t.Fatalf("want 1 mount after restart, got %d", len(got))
+	}
+	if got[0].Status != domain.MountOK {
+		t.Fatalf("status = %q, want ok", got[0].Status)
+	}
+	if _, err := app2.ProviderFor(m.ID); err != nil {
+		t.Fatalf("ProviderFor: %v", err)
+	}
+}
+
+func TestLoadMountsMegaSessionFailureMarksAuthExpired(t *testing.T) {
+	fakeMegaExportSID = "test-session-id"
+	// Password login succeeds and exports the session; the
+	// restart-time session login fails with the sentinel, like the
+	// real adapter does when MEGA rejects the stored session.
+	fakeMegaSessionErr = fmt.Errorf("mega: saved session expired or invalid, re-login required: %w", storage.ErrSessionExpired)
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	app1 := newTestAppWithDB(t, dbPath)
+	registerFakeMega(t)
+	m := addFakeMegaMount(t, app1)
+	app2 := reopenApp(t, dbPath)
+	got := app2.ListMounts()
+	if len(got) != 1 {
+		t.Fatalf("want 1 mount after restart, got %d", len(got))
+	}
+	if got[0].Status != domain.MountAuthExpired {
+		t.Fatalf("status = %q, want auth_expired", got[0].Status)
+	}
+	_, err := app2.ProviderFor(m.ID)
+	if err == nil {
+		t.Fatal("ProviderFor should fail for an expired mount")
+	}
+	if !strings.Contains(err.Error(), "重新授权") {
+		t.Fatalf("error should point at re-auth, got: %v", err)
+	}
 }

@@ -169,7 +169,14 @@ type DirectURLer interface {
 	DirectURL(ctx context.Context, ref string) (string, error)
 }
 
-// SessionExporter is the optional interface for drivers whose
+// ErrSessionExpired marks a stored-session login that the provider
+// rejected: the session is dead (expired, revoked, or never valid
+// for this server), and only a fresh login with the user's
+// credentials can revive the mount. It must NOT wrap transient
+// failures (network, timeout): those are retryable, and marking
+// them "expired" would send the user to re-authorize for a blip.
+// Drivers wrap it with %w; LoadMounts maps it to MountAuthExpired.
+var ErrSessionExpired = errors.New("storage: saved session expired")
 // login yields a storable session handle (MEGA, v0.9.1): the app
 // persists the exported session instead of the user's password.
 // sessionID is the opaque server session; secret is the master
