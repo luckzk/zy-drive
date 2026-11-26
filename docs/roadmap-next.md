@@ -5,7 +5,8 @@
 > **v0.9.0 落地（2026-11-25）：本文件第 3 节的五项已全部做完，见文末“附：v0.9.0 落地记录”。**
 > **v0.9.1 落地（2026-11-25）：单文件断点续传（Drime 先行）、Box/pCloud/MEGA 三家新驱动、文件预览两档，见文末“附：v0.9.1 落地记录”。**
 > **v0.9.2 补丁（2026-11-26）：MEGA 表单三处 UI 修正（测试通过变绿、凭证说明改问号悬浮提示、输入框焦点绿环左侧裁剪修复）+ Dropbox 一键授权自动换取 bug 修复，见文末“附：v0.9.2 补丁”。**
-> **v0.9.3 补丁（2026-11-26，未推）：MEGA 挂载加载失败的诊断与恢复——LoadMounts 记真实错误、会话失效标 auth_expired、文件浏览重试走 TestMount，见文末“附：v0.9.3 补丁”。**
+> **v0.9.3 补丁（2026-11-26，已推，提交 b3892ed9）：MEGA 挂载加载失败的诊断与恢复——LoadMounts 记真实错误、会话失效标 auth_expired、文件浏览重试走 TestMount，见文末“附：v0.9.3 补丁”。根因后经用户确认是 MEGA 账号被锁（重置密码后恢复，旧会话继续有效），不是代码 bug。**
+> **v0.10.0（2026-11-26，未推）：主页交互优化——长按拖拽网盘换分组 + 文件右键菜单（删除/重命名/移动，三个新后端方法），见文末“附：v0.10.0”。另修了一个共享样式真 bug：`.dialog-actions` 的 sticky 底栏在短对话框里会盖住文案行下半截。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -153,7 +154,7 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 3. **输入框焦点绿环左侧被裁**：根因是 `.dialog-flex .dialog-body` 只留了右侧 4px 内边距、左侧 0，`overflow-y: auto` 的滚动容器把 2px 焦点 outline 左侧裁掉了，右侧靠 4px 内边距保住了——左右不对称，看起来就是左侧绿被挡住。改成四边 4px 内边距（select 的 outline-offset 1px 也需要 3px 空间），根治。
 4. **Dropbox 一键授权后不自动换 Token（2026-11-26，用户报：浏览器显示“授权成功”白页面，手动换取能成功）**：根因是过期闭包——轮询 interval 在 genAuthLink 里创建，那时 setLinkClientId 还没生效，轮询回调里 exchangeCode 读到的 linkClientId 还是 ''，自动换取拿空 Client ID 去换，Dropbox 拒了；手动点“换取 Token”读的是已更新的 state，所以能成功。和 2026-11-25 修的 oauthState 过期闭包同一类 bug，那次只修了 state，漏了 linkClientId/linkClientSecret。修法同款：加 linkClientIdRef/linkClientSecretRef，genAuthLink 里同步写 ref，exchangeCode 优先读 ref。验证方法：先让检查桩的 ExchangeOAuthCode 像真 Dropbox 一样拒空 client_id，跑出复现（自动换取 client_id 为 ''、无 Token）；修完再跑，自动换取 client_id 为 'zydrive-builtin-id'、Token 与自动测试都通过，检查里加了该断言，防回归。
 
-## 附：v0.9.3 补丁（2026-11-26，MEGA 挂载加载失败的诊断与恢复；未推，等用户确认）
+## 附：v0.9.3 补丁（2026-11-26，MEGA 挂载加载失败的诊断与恢复；已推，提交 b3892ed9）
 
 1. **故障**：用户在 Mac 上加好的两个 MEGA 盘（mega001、mega002）在 0.9.2 更新重启后加载失败，侧栏显示“出错 / 容量暂不可用”，文件浏览红字 `app: mount "…" 未能加载（凭证或配置有问题），请删除后重新添加`。该报错来自 `ProviderFor` 的 nil 驱动分支，真实原因被 `LoadMounts` 吞掉了（`Registry.New` 失败只置状态、不记日志、不留错误），外面无从得知。查证：0.9.1 与 0.9.2 的后端 Go 代码除版本号外完全相同（GitHub 对照过），所以不是 0.9.2 改坏的，是重启暴露了潜伏的恢复失败；MEGA 是唯一在构造时就发网络请求（会话登录 → `f` 命令）的驱动，OAuth 类驱动都是离线构造、首次使用才联网，所以启动期一次瞬时失败就会永久杀死 MEGA 盘、别的盘却能自愈。
 2. **修法（四件）**：① `storage.ErrSessionExpired` 哨兵错误；② MEGA 适配器对会话登录失败做分类——服务器明确拒绝会话（`f` 命令回错误号，如 `[-9]`，解码成类型错误）才包 `ErrSessionExpired`，瞬时失败（net/url 错误、JSON 语法错误、EBADRESP）原样返回、不标过期——关键点：go-mega 的 `api_request` 会吞掉传输错误（循环内 `err` 遮住了具名返回值，返回空 body + nil 错误），于是传输失败在 `getFileSystem` 里表现为“unexpected end of JSON input”，仍是“服务器没回答”，不是“会话被拒”；③ `LoadMounts` 把构造失败的真实原因记进日志，并把 `ErrSessionExpired` 映射成 `MountAuthExpired`（前端早已会渲染成“授权过期了，重新授权后就能继续浏览。”）；④ 文件浏览错误框的“重试”改走 `TestMount`（按保存的凭证重建驱动，失败返回真实原因），原来只调 `load()` 重新列目录、驱动是 nil 时永远得到同一个错；`ProviderFor` 的文案也按状态区分（过期 → 指去设置重新授权；其他 → 先重试）；`friendlyError` 加 `session expired` 映射。另加 `newWithClient(cfg, client)` 注入点供测试。
@@ -237,3 +238,38 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 ### 不属于清理缓存范围的
 
 挂载元数据、同步任务、本地解密索引（SQLite）——体量小、自动管理，不进设置里的清理入口。
+
+## 附：v0.10.0（2026-11-26，拖拽分组 + 右键菜单；未推，等用户确认）
+
+用户 2026-11-26 11:39 定：“两个一起做，但是拖拽分组这个是长按就能拖拽”。原型 Demo v8 画的是握柄拖拽（`.mdrag`），用户明确改成长按，握柄没做。
+
+### A. 长按拖拽换分组（纯前端，Sidebar.tsx）
+
+- 按住网盘卡片 400ms 且移动不超过 6px 才进入拖拽态；按住后先移动 = 普通点击，不触发拖拽。普通单击仍选中网盘；悬停的移除（垃圾桶）按钮照常工作，按钮区域的 pointerdown 不启动拖拽。
+- 拖拽中：卡片半透明 + 阴影（提起态），所有分组行（含“未分组”）成放置目标，悬停的分组按原型样式高亮：2px 品牌绿虚线框、outline-offset 2px（`.group-drop-target`，对标原型 `.mgroup.dragover`）。
+- 松手落在某分组 → `api.updateMountGroup(mount.id, 分组名)`（未分组传 `''`），成功后 `onGroupsChanged()` 刷新；落在别处或按 Esc 取消；拖拽结束后的 click 用标记拦截，不误触发选中。指针事件自实现，不用原生 draggable（原生做不了长按启动）；拖拽中禁文本选中；长按期间禁浏览器原生菜单。
+- 测试教训（检查桩里）：分组按名字 Unicode 排序，“个人”排在最前——拿侧栏第一张卡当拖拽源会拖到同组、变成 no-op，断言不到更新；改成拖“工作”组第一张卡（我的 R2）。另：“工作”组在侧栏可视区之外时要先 `scrollIntoViewIfNeeded()`，否则按住点落在视口外、拖拽起不来。
+
+### B. 文件右键菜单 + 三个新后端方法
+
+- 后端（`internal/app/fileops.go` 新文件）：`DeleteNodes`（逐个调 Provider.Delete，逐项结果；Provider 为 nil 时返回 v0.9.3 的人类可读错误；Caps.CanDelete 为 false 直接报错）、`RenameNode`（空名、含 `/` 或 `\`、`.`/`..`、改根目录都拒绝；同名是 no-op；目标 ref = 同目录 + 新名）、`MoveNodes`（同盘逐个 Rename；跨盘先走 BatchCopy 排队，复制成功的源文件再由 worker 逐个删——实现方式是在 Transfer 上加 `DeleteSource` 标志（migration v23，`transfers.delete_source`），`executeCopy` 在 `dst.Upload` 成功后才删源，复制失败的源文件绝不删；空文件夹没有文件可复制，改为同步在目标建目录 + 删源文件夹，否则移动空文件夹会静默无事发生）。三个方法都绑进 DesktopService（bind.go），`frontend/src/mygo.ts` 重新生成，`api/client.ts` 加 wrapper。
+- 菜单项按 Caps 显隐（不支持的能力不出现，不灰掉点不动）：单选——打开（文件夹进目录；文件选中并开 Inspector）、预览、下载（现有 batchDownload）、复制到…（现有 UploadTargetDialog + batchCopy）、移动到…（复用 UploadTargetDialog + 新 MoveNodes）、重命名（仅单选）、删除（二次确认）、在 Finder 中显示（按系统换文案，与 PreviewPane 共用 `revealLabel`）、用系统应用打开、详情（选中并开 Inspector 且高级页默认展开——Inspector 用 nonce 信号 `openAdvancedNonce` 展开，不重挂载、不在点别的行时误展开）；多选——下载、复制到…、移动到…、删除（无重命名）。
+- 删除语义（按 Caps.DeleteToTrash）：能进回收站的盘（Box/Drime/Drive/Dropbox/MEGA/OneDrive/pCloud）写“将移入回收站，可在网盘回收站恢复。”；本地文件夹、S3/R2 写“将永久删除，无法恢复。”。确认框显示数量 + 前几个文件名；危险按钮确认后才执行。删除/移动/重命名后刷新列表，按现有 batchMsg/batchError 模式显示结果，清空相应选择。批量栏（`checked.size>0` 的 notice-box）也加了一个“删除”按钮，走同一确认与删除流程，样式与原型一致用红色（`.btn-danger`）。
+- 跨盘移动收尾（前端轮询，复用上传轮询的 2s 间隔与 30 分钟上限）：等队列里的移动全部终态后，文件夹下所有文件都已复制成功、且没有失败的，才删源文件夹——有任何失败文件留在里面时绝不删；队列里找不到的传输视为已终态（不阻塞轮询），但它的文件夹不参与清理。嵌套空子文件夹不在此列：BatchCopy 本来就不复制空目录，移过去的文件夹里空子文件夹会丢（已知缺口，见下）。
+- 另：批量下载/复制改成显式传 refs（右键菜单可能只作用于单行，不在已选集合里；只清掉实际操作过的选择）；UploadTargetDialog 加 `verb` 参数，移动框文案是“移动”不是“复制”。
+
+### 顺手修的共享样式真 bug（`.dialog-actions` sticky 底栏盖字）
+
+- 现象：删除确认框里“将移入回收站，可在网盘回收站恢复。”只剩上半截字，下半截被一条横线拦腰截断。查了三轮才定根因：DOM 排版完全正常（Range 矩形 392–410、盒子 391–411、无元素盖住、动画已结束、无溢出），像素数出来墨迹在 y=402 处干净截断；最后量到 `.dialog-actions` 的实测顶边是 403.19——它是 `position: sticky; bottom: 0`，短对话框不滚动时粘性条被拉到对话框底部内边处、盖住了上面那行字的下半截（实色背景 + 顶边框就是截图里那条横线）。tokens.css 自己的注释还写着“短对话框不滚动，所以粘性是不起作用的”——实测证明这句话是错的。受影响的不只删除框：所有短对话框（重命名框同理）都会被盖；长对话框（UploadTargetDialog 长列表）本来就靠 sticky 让底栏滚动时可见。
+- 修法：`.dialog-actions` 拿掉 `position: sticky; bottom: 0`；UploadTargetDialog 改走 AddMountDialog 已在用的 `.dialog-flex` 模式（标题固定、中间 `.dialog-body` 滚动、底栏静态），长列表底栏依然固定、短内容底栏在正常流里不再盖字。检查里加了永久回归断言（底栏顶边必须在文案行底边之下）。
+
+### Demo v8 对比结论
+
+- 对齐：分组 dragover 绿虚线（2px  dashed #56E16C、offset 2px，与原型 `.mgroup.dragover` 一致，多一个 12px 圆角）；批量栏四项齐全（已选 N 个 + 下载 + 复制到… + 删除（红）+ 取消选择，与原型一致，仅顺序不同——原型复制在前、下载在后，现有顺序是下载在前，v0.10.0 之前就这样，没动）；复制/移动目标框复用同一组件（原型是专用的“复制到其他网盘”弹窗带计划预览，按任务要求复用 UploadTargetDialog，未按原型另做）。
+- 有意偏离（用户/任务已定）：拖拽是长按启动，不是原型的握柄 `.mdrag`（用户 2026-11-26 11:39 亲定）；右键菜单“详情”直接开 Inspector 高级页，原型是设置页里一个开关控制右键菜单是否显示“高级”入口（v0.10.0 没做那个开关）。
+- 未做（既有缺口，不属 v0.10.0）：Inspector 里没有原型那三个操作按钮（打开/下载/复制到…），Inspector 一直只有详情展示 + 高级手风琴，这些操作目前只在右键菜单与批量栏里。
+
+### 验证（2026-11-26）
+
+- go vet 全过；go test ./... 全过（21 个包；新增 `TestMoveNodesCrossMountEmptyFolder`，fileops 测试共 8 个）；npm 构建 JS 428.36 kB / gzip 132.32 kB；make build 三二进制均报 0.10.0；visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2h（右键菜单：菜单含复制到…/移动到…/重命名/删除；删除确认框回收站文案；点取消菜单关闭；移动到…打开目标框）与 2i（长按 450ms 进拖拽态、拖到“个人”组后 UpdateMountGroup 被调到 `["m-s3", "个人"]`、卡片换组）断言段，桩补了 UpdateMountGroup/DeleteNodes/RenameNode/MoveNodes。
+- 诚实缺口：真机长按手感（400ms 是否顺手、误触率）需用户 Mac 实测；跨盘移动大文件耗时与收尾轮询（2s 间隔、30 分钟上限）在真机大文件上未验证；嵌套空子文件夹跨盘移动会丢（BatchCopy 本来就不复制空目录）；重命名/删除/移动的真实账号端到端仍是 mock 契约测试 + 本地盘测试，未在 Dropbox/Drive 等真账号上跑过。

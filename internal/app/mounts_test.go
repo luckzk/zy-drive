@@ -2,16 +2,20 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1198,22 +1202,156 @@ func TestBeginExchangeOAuthBoxPcloud(t *testing.T) {
 // (later Register calls panic and are recovered, keeping the first
 // factory); behaviour is driven by the package-level vars, and the
 // tests in this package run sequentially, so this is safe.
+//
+// v0.10.0: the fake also has an in-memory filesystem (files map)
+// so the file-operations tests can exercise Delete/Rename/Move
+// against it: List/Stat derive children from the stored keys,
+// OpenRead fails for refs in fakeMegaFailRead (a copy of them
+// fails, so a move must not delete the source), and Caps() is
+// driven by fakeMegaCaps (zero by default, preserving the old
+// behaviour for the restart tests).
 
 var (
 	fakeMegaSessionErr error
 	fakeMegaExportSID  = "test-session-id"
+	fakeMegaCaps       domain.Caps
+	fakeMegaFailRead   map[string]bool
 )
+
+type fakeMegaEntry struct {
+	name    string
+	isDir   bool
+	content []byte
+}
 
 type fakeMegaProvider struct {
 	storage.Provider // embedded nil; only overridden methods are called
 	exportSessionID  string
+	files            map[string]fakeMegaEntry
+}
+
+func newFakeMegaProvider(sid string) *fakeMegaProvider {
+	return &fakeMegaProvider{exportSessionID: sid, files: map[string]fakeMegaEntry{}}
+}
+
+func fakeMegaParent(ref string) string {
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		return ref[:i]
+	}
+	return ""
 }
 
 func (f *fakeMegaProvider) List(ctx context.Context, ref string) ([]domain.Node, error) {
-	return nil, nil
+	ref = strings.Trim(ref, "/")
+	var out []domain.Node
+	for key, e := range f.files {
+		if fakeMegaParent(key) != ref {
+			continue
+		}
+		out = append(out, domain.Node{Ref: key, Path: "/" + key, Name: e.name, IsDir: e.isDir, Size: int64(len(e.content))})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
 }
 
-func (f *fakeMegaProvider) Caps() domain.Caps { return domain.Caps{} }
+func (f *fakeMegaProvider) Stat(ctx context.Context, ref string) (domain.Node, error) {
+	ref = strings.Trim(ref, "/")
+	if ref == "" {
+		return domain.Node{Ref: "", Path: "/", Name: "", IsDir: true}, nil
+	}
+	if e, ok := f.files[ref]; ok {
+		return domain.Node{Ref: ref, Path: "/" + ref, Name: e.name, IsDir: e.isDir, Size: int64(len(e.content))}, nil
+	}
+	// Implicit directory: exists when it has children.
+	for key := range f.files {
+		if strings.HasPrefix(key, ref+"/") {
+			return domain.Node{Ref: ref, Path: "/" + ref, Name: path.Base(ref), IsDir: true}, nil
+		}
+	}
+	return domain.Node{}, fmt.Errorf("mega: no such file %q", ref)
+}
+
+func (f *fakeMegaProvider) OpenRead(ctx context.Context, ref string) (io.ReadCloser, error) {
+	ref = strings.Trim(ref, "/")
+	if fakeMegaFailRead[ref] {
+		return nil, fmt.Errorf("mega: read %q failed (test fault)", ref)
+	}
+	e, ok := f.files[ref]
+	if !ok || e.isDir {
+		return nil, fmt.Errorf("mega: no such file %q", ref)
+	}
+	return io.NopCloser(bytes.NewReader(e.content)), nil
+}
+
+func (f *fakeMegaProvider) Upload(ctx context.Context, ref string, r io.Reader, size int64) (domain.Node, error) {
+	ref = strings.Trim(ref, "/")
+	if ref == "" {
+		return domain.Node{}, fmt.Errorf("mega: cannot upload to the root")
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return domain.Node{}, err
+	}
+	f.files[ref] = fakeMegaEntry{name: path.Base(ref), content: b}
+	return domain.Node{Ref: ref, Path: "/" + ref, Name: path.Base(ref), Size: int64(len(b))}, nil
+}
+
+func (f *fakeMegaProvider) Mkdir(ctx context.Context, ref string) error {
+	ref = strings.Trim(ref, "/")
+	if ref == "" {
+		return fmt.Errorf("mega: cannot mkdir the root")
+	}
+	f.files[ref] = fakeMegaEntry{name: path.Base(ref), isDir: true}
+	return nil
+}
+
+func (f *fakeMegaProvider) Rename(ctx context.Context, src, dst string) error {
+	src = strings.Trim(src, "/")
+	dst = strings.Trim(dst, "/")
+	if src == "" || dst == "" || src == dst {
+		return fmt.Errorf("mega: invalid rename %q -> %q", src, dst)
+	}
+	if _, err := f.Stat(ctx, src); err != nil {
+		return err
+	}
+	// Move the entry and, for a directory, its whole subtree.
+	moved := map[string]fakeMegaEntry{}
+	for key, e := range f.files {
+		if key == src || strings.HasPrefix(key, src+"/") {
+			moved[strings.Replace(key, src, dst, 1)] = e
+		}
+	}
+	for key := range f.files {
+		if key == src || strings.HasPrefix(key, src+"/") {
+			delete(f.files, key)
+		}
+	}
+	for key, e := range moved {
+		if key == dst {
+			e.name = path.Base(dst)
+		}
+		f.files[key] = e
+	}
+	return nil
+}
+
+func (f *fakeMegaProvider) Delete(ctx context.Context, ref string) error {
+	ref = strings.Trim(ref, "/")
+	if ref == "" {
+		return fmt.Errorf("mega: cannot delete the root")
+	}
+	if _, err := f.Stat(ctx, ref); err != nil {
+		return err
+	}
+	for key := range f.files {
+		if key == ref || strings.HasPrefix(key, ref+"/") {
+			delete(f.files, key)
+		}
+	}
+	return nil
+}
+
+func (f *fakeMegaProvider) Caps() domain.Caps { return fakeMegaCaps }
 
 func (f *fakeMegaProvider) ExportSession(ctx context.Context) (string, string, error) {
 	return f.exportSessionID, base64.StdEncoding.EncodeToString([]byte("0123456789abcdef")), nil
@@ -1224,12 +1362,12 @@ func fakeMegaFactory(cfg storage.Config) (storage.Provider, error) {
 		if fakeMegaSessionErr != nil {
 			return nil, fakeMegaSessionErr
 		}
-		return &fakeMegaProvider{exportSessionID: sid}, nil
+		return newFakeMegaProvider(sid), nil
 	}
 	if cfg.Extra["mega_email"] == "" || cfg.Extra["mega_password"] == "" {
 		return nil, fmt.Errorf("mega: email + password are required (or a saved session)")
 	}
-	return &fakeMegaProvider{exportSessionID: fakeMegaExportSID}, nil
+	return newFakeMegaProvider(fakeMegaExportSID), nil
 }
 
 func registerFakeMega(t *testing.T) {
@@ -1242,9 +1380,13 @@ func registerFakeMega(t *testing.T) {
 }
 
 func addFakeMegaMount(t *testing.T, app *App) *domain.Mount {
+	return addFakeMegaMountAs(t, app, "mega-test")
+}
+
+func addFakeMegaMountAs(t *testing.T, app *App, name string) *domain.Mount {
 	t.Helper()
 	m, err := app.AddMountWithCredentials(context.Background(), AddMountInput{
-		DisplayName:  "mega-test",
+		DisplayName:  name,
 		Provider:     domain.ProviderMega,
 		MegaEmail:    "a@example.com",
 		MegaPassword: "secret",

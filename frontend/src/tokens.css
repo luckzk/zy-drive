@@ -317,6 +317,15 @@ button {
 .mount-card .mount-name { font-size: 14px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mount-card .mount-meta { font-size: 12px; color: var(--ink-secondary); margin-top: 2px; }
 
+/* ---- 长按拖拽换分组（v0.10.0） ----
+   拖拽中的卡片呈提起态（半透明 + 阴影）；悬停的分组按 Demo v8
+   原型高亮——2px 品牌绿虚线框、向外 2px（原型 .mgroup.dragover）。
+   拖拽中整栏禁选文本，卡片抓手光标。 */
+.sidebar.dragging { user-select: none; }
+.sidebar.dragging .mount-card { cursor: grabbing; }
+.mount-card.dragging { opacity: 0.55; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16); }
+.group-drop-target { outline: 2px dashed var(--brand); outline-offset: 2px; border-radius: 12px; }
+
 /* ---- 容量条（侧栏卡片 / 浏览页头 / 详情共用，见 QuotaBar） ---- */
 .quota-bar { margin-top: 4px; }
 .quota-text { font-size: 11px; color: var(--ink-secondary); }
@@ -379,6 +388,28 @@ button {
   font-size: 14px; font-weight: 400; color: var(--ink);
 }
 .sidebar-menu button:hover { background: var(--card); }
+
+/* ---- 文件右键菜单（v0.10.0） ----
+   固定定位在光标处（ContextMenu.tsx 算好位置、clamp 不出视口）。
+   样式复用侧栏浮层菜单（.sidebar-menu）的卡片、圆角、阴影与
+   入场动画；危险项（删除）红色；分隔线 1px。 */
+.context-menu {
+  position: fixed; z-index: 60;
+  min-width: 180px;
+  background: var(--paper); border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  animation: rise-sm 300ms var(--ease) backwards;
+}
+.context-menu button {
+  display: block; width: 100%; text-align: left;
+  border: none; background: none; cursor: pointer;
+  padding: 8px 12px; border-radius: 8px;
+  font-size: 14px; font-weight: 400; color: var(--ink);
+}
+.context-menu button:hover { background: var(--card); }
+.context-menu button.danger { color: var(--danger); }
+.context-menu .context-menu-sep { height: 1px; background: var(--border); margin: 4px 8px; }
 
 /* ---- 文件表 ---- */
 .file-table { width: 100%; border-collapse: collapse; }
@@ -466,14 +497,13 @@ button {
 .dialog h1 { margin-top: 0; }
 .dialog-actions {
   display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;
-  /* Sticky footer: long forms (the one-page S3/Drime/local form,
-     OAuth step 2) scroll inside the dialog (max-height 88vh), and
-     the actions must stay reachable without scrolling to the very
-     bottom. The negative margins bleed the bar to the dialog edges
-     (the dialog's own 24px padding is cancelled under it); the top
-     border separates it from the scrolling form. Short dialogs
-     never scroll, so the stickiness is a no-op there. */
-  position: sticky; bottom: 0;
+  /* v0.10.0：这里以前是 position: sticky; bottom: 0（想让长
+     表单滚动时底栏一直可见）。但实测短对话框也会中招：内容
+     不滚动时粘性条被拉到对话框底部内边处、盖住上面那行字的
+     下半截（删除确认框的“将移入回收站…”只剩上半截字，实测
+     条顶 403.19、被盖的行 391–411）。长对话框改走 .dialog-flex
+     模式（标题固定、.dialog-body 滚动、底栏静态），底栏这里
+     不再粘性。 */
   margin-left: -24px; margin-right: -24px; margin-bottom: -24px;
   padding: 12px 24px 24px;
   background: var(--paper); border-top: 1px solid var(--border);

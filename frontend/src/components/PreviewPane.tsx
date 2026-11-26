@@ -117,8 +117,9 @@ function renderMarkdown(src: string): string {
 
 // revealLabel is the OS-appropriate wording for "show in the
 // system file manager": the desktop runs on the user's machine,
-// so the webview's user agent names the OS.
-function revealLabel(): string {
+// so the webview's user agent names the OS. Exported for the
+// file context menu (FileBrowser), which offers the same entry.
+export function revealLabel(): string {
   const ua = navigator.userAgent
   if (/Macintosh/.test(ua)) return '在 Finder 中显示'
   if (/Windows/.test(ua)) return '在资源管理器中显示'

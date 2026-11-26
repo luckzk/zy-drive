@@ -218,6 +218,30 @@ const STUB = `(() => {
       ]
       if (method === 'DesktopService.BatchDownload') return { transfers: [{ id: 't-1', kind: 'download', status: 'queued', srcMount: args[0], srcRef: (args[1] ?? [])[0] ?? '', dstMount: 'local', dstRef: '', done: 0, size: 0, speedBps: 0, createdAt: '', updatedAt: '' }], skipped: [] }
       if (method === 'DesktopService.BatchCopy') return { transfers: [{ id: 't-2', kind: 'copy', status: 'queued', srcMount: args[0], srcRef: (args[1] ?? [])[0] ?? '', dstMount: args[2], dstRef: args[3], done: 0, size: 0, speedBps: 0, createdAt: '', updatedAt: '' }], skipped: [] }
+      // v0.10.0 文件操作桩：DeleteNodes/RenameNode/MoveNodes
+      // 返回逐项结果（前端按 done/failed 显示）；UpdateMountGroup
+      // 记录调用参数并改 live 列表，拖拽测试靠它断言。
+      if (method === 'DesktopService.UpdateMountGroup') {
+        window.__lastGroupUpdate = args
+        const m = __mockMounts.find((x) => x.id === args[0])
+        if (m) m.group = args[1]
+        return null
+      }
+      if (method === 'DesktopService.DeleteNodes') {
+        window.__lastDelete = args
+        return { done: args[1], failed: [], transfers: [] }
+      }
+      if (method === 'DesktopService.RenameNode') {
+        const parts = (args[1] || '').split('/').filter(Boolean)
+        parts.pop()
+        parts.push(args[2])
+        return parts.join('/')
+      }
+      if (method === 'DesktopService.MoveNodes') {
+        window.__lastMove = args
+        if (args[2] === args[0]) return { done: args[1], failed: [], transfers: [] }
+        return { done: [], failed: [], transfers: (args[1] ?? []).map((r, i) => ({ id: 't-mv-' + i, kind: 'copy', status: 'queued', srcMount: args[0], srcRef: r, dstMount: args[2], dstRef: args[3], done: 0, size: 0, speedBps: 0, createdAt: '', updatedAt: '' })) }
+      }
       if (method === 'DesktopService.RetryTransfer') return { id: args[0], kind: 'upload', status: 'queued', srcMount: '', srcRef: '', dstMount: '', dstRef: '', done: 0, size: 0, speedBps: 0, createdAt: '', updatedAt: '' }
       if (method === 'DesktopService.RetryFailedTransfers') return 0
       if (method === 'DesktopService.PushJobToAgent') return null
@@ -1292,6 +1316,100 @@ try {
     // 关掉 Inspector，恢复干净态。
     await page.locator('aside.inspector-enter button[aria-label="关闭详情"]').click().catch(() => {})
     await page.waitForTimeout(300)
+  }
+
+  // 2h. 文件右键菜单（v0.10.0，VISUAL_MOUNTS）：右键文件行弹出
+  // 菜单，含 复制到…/移动到…/重命名/删除；点 删除 出现二次
+  // 确认框（桩网盘 DeleteToTrash=true，写明移入回收站），
+  // 取消后菜单关闭；点 移动到… 打开移动目标框。
+  if (process.env.VISUAL_MOUNTS) {
+    const firstRow = page.locator('.file-table tbody tr').first()
+    await firstRow.click({ button: 'right' })
+    await page.waitForTimeout(400)
+    const menuLabels = await page.evaluate(() => [...document.querySelectorAll('.context-menu button')].map((b) => b.textContent?.trim()))
+    console.log('context menu:', JSON.stringify(menuLabels))
+    for (const want of ['复制到…', '移动到…', '重命名', '删除']) {
+      if (!menuLabels.includes(want)) failures.push(`右键菜单没有“${want}”`)
+    }
+    await page.screenshot({ path: path.join(SHOTS, '02h-context-menu.png') })
+    // 删除确认框：数量 + 文件名 + 回收站文案。等 700ms 再截：
+    // 对话框入场动画 500ms，400ms 截图会拍到动画中途的字。
+    await page.getByRole('menuitem', { name: '删除' }).click()
+    await page.waitForTimeout(700)
+    const delDialog = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      return d ? d.textContent ?? '' : ''
+    })
+    console.log('delete dialog:', JSON.stringify(delDialog))
+    if (!delDialog.includes('回收站')) failures.push('删除确认框没有写明“移入回收站”')
+    // 回归（v0.10.0）：.dialog-actions 以前是 sticky，短对话
+    // 框里会盖住这行字的下半截。断言底栏顶边在文案行底边之下。
+    const overlap = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      const p = [...(d?.querySelectorAll('p') ?? [])].find((x) => x.textContent?.includes('回收站'))
+      const bar = d?.querySelector('.dialog-actions')
+      if (!p || !bar) return null
+      return { pBottom: p.getBoundingClientRect().bottom, barTop: bar.getBoundingClientRect().top }
+    })
+    if (!overlap) failures.push('删除确认框找不到回收站文案行或底栏')
+    else if (overlap.barTop < overlap.pBottom) failures.push(`删除确认框底栏盖住了回收站文案行（栏顶 ${overlap.barTop} < 行底 ${overlap.pBottom}）`)
+    await page.screenshot({ path: path.join(SHOTS, '02h-delete-confirm.png') })
+    await page.getByRole('button', { name: '取消' }).click()
+    await page.waitForTimeout(400)
+    if (await page.locator('.context-menu').count()) failures.push('点取消后右键菜单还开着')
+    // 移动到… 打开目标选择框（复用 UploadTargetDialog）。
+    await firstRow.click({ button: 'right' })
+    await page.waitForTimeout(400)
+    await page.getByRole('menuitem', { name: '移动到…' }).click()
+    await page.waitForTimeout(600)
+    const moveTitle = await page.locator('.dialog h1').first().textContent().catch(() => '')
+    if (moveTitle?.trim() !== '移动到哪里？') failures.push(`点“移动到…”后目标框标题不对，实测 ${JSON.stringify(moveTitle)}`)
+    await page.getByRole('button', { name: '取消' }).click().catch(() => {})
+    await page.waitForTimeout(400)
+  }
+
+  // 2i. 长按拖拽换分组（v0.10.0，VISUAL_MOUNTS）：按住“工作”
+  // 组的第一张网盘卡片（我的 R2）450ms 进入拖拽态
+  // （.mount-card.dragging），拖到“个人”分组行松手 →
+  // UpdateMountGroup 被调到（mountId + 新分组），卡片随之换组。
+  // 注意：分组按名字 Unicode 排序，“个人”排在最前——不能
+  // 拿侧栏第一张卡片当源（它已在“个人”组，拖过去是同组 no-op）。
+  if (process.env.VISUAL_MOUNTS) {
+    const firstCard = page.locator('[data-group="工作"] .mount-card').first()
+    // “工作”组按 Unicode 排序在最后，卡片可能在侧栏可视区
+    // 之外：先滚到可见，否则按住点落在视口外、拖拽起不来。
+    await firstCard.scrollIntoViewIfNeeded()
+    const draggedName = (await firstCard.locator('.mount-name').textContent())?.trim() ?? ''
+    const cardBox = await firstCard.boundingBox()
+    const personalGroup = page.locator('[data-group="个人"]')
+    const groupBox = await personalGroup.boundingBox()
+    if (!cardBox || !groupBox) {
+      failures.push('长按拖拽测试：找不到网盘卡片或“个人”分组行')
+    } else {
+      await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2)
+      await page.mouse.down()
+      await page.waitForTimeout(450)
+      const dragging = await page.evaluate(() => !!document.querySelector('.mount-card.dragging'))
+      if (!dragging) failures.push('按住网盘卡片 450ms 后没有进入拖拽态（.mount-card.dragging）')
+      await page.screenshot({ path: path.join(SHOTS, '02i-drag-group.png') })
+      // 分步移动到目标分组行中心（每步都经过 pointermove，
+      // 拖拽态的 dropGroup 才能跟上）。
+      const steps = 10
+      for (let i = 1; i <= steps; i++) {
+        await page.mouse.move(
+          cardBox.x + cardBox.width / 2 + (groupBox.x + groupBox.width / 2 - (cardBox.x + cardBox.width / 2)) * i / steps,
+          cardBox.y + cardBox.height / 2 + (groupBox.y + groupBox.height / 2 - (cardBox.y + cardBox.height / 2)) * i / steps,
+        )
+        await page.waitForTimeout(30)
+      }
+      await page.mouse.up()
+      await page.waitForTimeout(600)
+      const lastGroup = await page.evaluate(() => window.__lastGroupUpdate ?? null)
+      console.log('last group update:', JSON.stringify(lastGroup))
+      if (!lastGroup || lastGroup[1] !== '个人') failures.push(`拖到“个人”分组后 UpdateMountGroup 没被调到，实测 ${JSON.stringify(lastGroup)}`)
+      const personalText = await page.evaluate(() => document.querySelector('[data-group="个人"]')?.textContent ?? '')
+      if (draggedName && !personalText.includes(draggedName)) failures.push(`拖拽后“${draggedName}”没出现在“个人”分组里`)
+    }
   }
 
   // 3. 同步任务页：先列已保存任务（零任务空态）

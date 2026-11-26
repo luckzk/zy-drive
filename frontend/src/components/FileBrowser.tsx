@@ -17,9 +17,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { isMyGo, onFileDrop } from 'mygo-runtime'
 import type { Mount, MountQuota, Node, Transfer } from '../mygo'
 import { api, friendlyError, type UploadSkipped } from '../api/client'
-import { Skeleton } from './motion'
+import { Skeleton, useClosing } from './motion'
+import ContextMenu, { type ContextMenuEntry } from './ContextMenu'
 import FileTable from './FileTable'
 import Inspector from './Inspector'
+import { revealLabel } from './PreviewPane'
 import UploadTargetDialog from './UploadTargetDialog'
 import QuotaBar from './QuotaBar'
 
@@ -42,11 +44,30 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
   const [batchMsg, setBatchMsg] = useState<string | null>(null)
   const [batchError, setBatchError] = useState<string | null>(null)
   const [copyMount, setCopyMount] = useState<Mount | null>(null)
+  const [copyRefs, setCopyRefs] = useState<string[]>([])
+  // 右键菜单（v0.10.0）：菜单坐标 + 作用的目标（已选集合或单行）。
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; nodes: Node[] } | null>(null)
+  const [moveMount, setMoveMount] = useState<Mount | null>(null)
+  const [moveRefs, setMoveRefs] = useState<string[]>([])
+  const [renameTarget, setRenameTarget] = useState<Node | null>(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [renameError, setRenameError] = useState<string | null>(null)
+  const [deleteTargets, setDeleteTargets] = useState<Node[] | null>(null)
+  // “详情”菜单项打开 Inspector 时高级页默认展开：nonce 只在
+  // 点“详情”时 +1，点别的行、手动收起后都不会误展开。
+  const [inspectorOpenNonce, setInspectorOpenNonce] = useState(0)
+  // 跨盘移动的收尾轮询（见 startMoveCleanupPoll）：与上传轮询
+  // 各用一个计时器，卸载时都要清掉。
+  const movePollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [deleteClosing, requestDeleteClose, resetDeleteClose] = useClosing(() => setDeleteTargets(null))
+  const [renameClosing, requestRenameClose, resetRenameClose] = useClosing(() => setRenameTarget(null))
 
   const checkedRefs = () => [...checked]
 
-  const handleBatchDownload = async () => {
-    if (checked.size === 0 || batchBusy) return
+  // refs 显式传入：右键菜单可能只作用于单行（不在已选集合
+  // 里），只清掉实际操作过的那些，不动其余已选项。
+  const handleBatchDownload = async (refs: string[]) => {
+    if (refs.length === 0 || batchBusy) return
     setBatchBusy(true)
     setBatchMsg(null)
     setBatchError(null)
@@ -56,11 +77,15 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
       if (!dir) {
         throw new Error('还没有设置默认下载文件夹：先去设置 → 通用里填一个，批量下载会下到那里。')
       }
-      const res = await api.batchDownload(mount.id, checkedRefs(), dir)
+      const res = await api.batchDownload(mount.id, refs, dir)
       if (!res) throw new Error('批量下载没有返回结果。')
       const skipped = res.skipped?.length ? `；${res.skipped.length} 个没下：${res.skipped.map((s) => `${s.path}（${s.reason}）`).join('、')}` : ''
       setBatchMsg(`已把 ${res.transfers?.length ?? 0} 个文件加入下载队列，进度见右下角传输胶囊${skipped}。`)
-      setChecked(new Set())
+      setChecked((prev) => {
+        const next = new Set(prev)
+        refs.forEach((r) => next.delete(r))
+        return next
+      })
       void load()
     } catch (e) {
       setBatchError(friendlyError(e))
@@ -70,23 +95,290 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
   }
 
   const handleBatchCopyConfirm = async (targetRef: string) => {
-    if (!copyMount || checked.size === 0 || batchBusy) return
+    if (!copyMount || copyRefs.length === 0 || batchBusy) return
     const dst = copyMount
+    const refs = copyRefs
     setCopyMount(null)
+    setCopyRefs([])
     setBatchBusy(true)
     setBatchMsg(null)
     setBatchError(null)
     try {
-      const res = await api.batchCopy(mount.id, checkedRefs(), dst.id, targetRef)
+      const res = await api.batchCopy(mount.id, refs, dst.id, targetRef)
       if (!res) throw new Error('批量复制没有返回结果。')
       const skipped = res.skipped?.length ? `；${res.skipped.length} 个没复制：${res.skipped.map((s) => `${s.path}（${s.reason}）`).join('、')}` : ''
       setBatchMsg(`已把 ${res.transfers?.length ?? 0} 个文件加入复制队列（${mount.displayName} → ${dst.displayName}），进度见右下角传输胶囊${skipped}。`)
-      setChecked(new Set())
+      setChecked((prev) => {
+        const next = new Set(prev)
+        refs.forEach((r) => next.delete(r))
+        return next
+      })
     } catch (e) {
       setBatchError(friendlyError(e))
     } finally {
       setBatchBusy(false)
     }
+  }
+
+  // ---- 右键菜单（v0.10.0） ----
+  // 右键某行：已在已选集合里 → 菜单作用于整个集合；否则只
+  // 作用于该行（并选中它，Inspector 同步显示）。
+  const handleContextMenu = (n: Node, e: React.MouseEvent) => {
+    const key = nodeKey(n)
+    let targets: Node[]
+    if (checked.has(key)) {
+      targets = [...checked]
+        .map((k) => nodes.find((x) => nodeKey(x) === k))
+        .filter((x): x is Node => !!x)
+    } else {
+      targets = [n]
+      setSelected(n)
+    }
+    setCtxMenu({ x: e.clientX, y: e.clientY, nodes: targets })
+  }
+
+  // 菜单项按 Caps 显隐（domain/caps.go 的规则：不支持的能力
+  // 不出现，而不是灰掉点不动）。9 个驱动 CanRename/CanDelete
+  // 都是 true；DeleteToTrash 只在本地文件夹与 S3/R2 上为 false。
+  const menuItems = (targets: Node[]): ContextMenuEntry[] => {
+    const refs = targets.map(nodeKey)
+    const single = targets.length === 1 ? targets[0] : null
+    const items: ContextMenuEntry[] = []
+    if (single) {
+      items.push({
+        label: '打开',
+        onClick: () => {
+          if (single.isDir) openDir(single)
+          else setSelected(single)
+        },
+      })
+      if (!single.isDir) items.push({ label: '预览', onClick: () => setSelected(single) })
+    }
+    items.push({ label: '下载', onClick: () => void handleBatchDownload(refs) })
+    items.push({
+      label: '复制到…',
+      onClick: () => {
+        setCopyRefs(refs)
+        const others = mounts.filter((m) => m.id !== mount.id)
+        if (others.length > 0) setCopyMount(others[0])
+      },
+    })
+    items.push({
+      label: '移动到…',
+      onClick: () => {
+        setMoveRefs(refs)
+        // 默认本盘内移动（目标框里仍可换到别的盘）。
+        setMoveMount(mount)
+      },
+    })
+    if (single && mount.caps.canRename) {
+      items.push({
+        label: '重命名',
+        onClick: () => {
+          resetRenameClose()
+          setRenameTarget(single)
+          setRenameValue(single.name)
+          setRenameError(null)
+        },
+      })
+    }
+    if (mount.caps.canDelete) {
+      items.push({
+        label: '删除',
+        danger: true,
+        onClick: () => {
+          resetDeleteClose()
+          setDeleteTargets(targets)
+        },
+      })
+    }
+    if (single && !single.isDir) {
+      items.push('sep')
+      items.push({ label: revealLabel(), onClick: () => void handleReveal(single) })
+      items.push({ label: '用系统应用打开', onClick: () => void handleSystemOpen(single) })
+    }
+    if (single) {
+      items.push('sep')
+      items.push({
+        label: '详情',
+        onClick: () => {
+          setSelected(single)
+          setInspectorOpenNonce((n) => n + 1)
+        },
+      })
+    }
+    return items
+  }
+
+  const handleReveal = async (n: Node) => {
+    setBatchMsg(null)
+    setBatchError(null)
+    try {
+      await api.revealInFinder(mount.id, nodeKey(n))
+      setBatchMsg(`已在文件管理器中打开 ${n.name} 所在位置。`)
+    } catch (e) {
+      setBatchError(friendlyError(e))
+    }
+  }
+
+  const handleSystemOpen = async (n: Node) => {
+    setBatchMsg(null)
+    setBatchError(null)
+    try {
+      await api.openWithSystemApp(mount.id, nodeKey(n))
+      setBatchMsg(`已用系统应用打开 ${n.name}。`)
+    } catch (e) {
+      setBatchError(friendlyError(e))
+    }
+  }
+
+  const handleRenameConfirm = async () => {
+    if (!renameTarget || batchBusy) return
+    const name = renameValue.trim()
+    if (!name || name.includes('/') || name.includes('\\')) {
+      setRenameError('新名字不能为空，也不能含 /。')
+      return
+    }
+    const target = renameTarget
+    setBatchBusy(true)
+    setBatchMsg(null)
+    setBatchError(null)
+    try {
+      await api.renameNode(mount.id, nodeKey(target), name)
+      setBatchMsg(`已重命名为 ${name}。`)
+      requestRenameClose()
+      setChecked((prev) => {
+        const next = new Set(prev)
+        next.delete(nodeKey(target))
+        return next
+      })
+      if (selected && nodeKey(selected) === nodeKey(target)) setSelected(null)
+      void load()
+    } catch (e) {
+      setRenameError(friendlyError(e))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTargets || deleteTargets.length === 0 || batchBusy) return
+    const targets = deleteTargets
+    const refs = targets.map(nodeKey)
+    setBatchBusy(true)
+    setBatchMsg(null)
+    setBatchError(null)
+    try {
+      const res = await api.deleteNodes(mount.id, refs)
+      if (!res) throw new Error('删除没有返回结果。')
+      const failed = res.failed?.length ? `；${res.failed.length} 个没删掉：${res.failed.map((s) => `${s.path}（${s.reason}）`).join('、')}` : ''
+      setBatchMsg(`已删除 ${res.done?.length ?? 0} 个${failed}。`)
+      requestDeleteClose()
+      setChecked((prev) => {
+        const next = new Set(prev)
+        refs.forEach((r) => next.delete(r))
+        return next
+      })
+      if (selected && refs.includes(nodeKey(selected))) setSelected(null)
+      void load()
+    } catch (e) {
+      setBatchError(friendlyError(e))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  const handleMoveConfirm = async (targetRef: string) => {
+    if (!moveMount || moveRefs.length === 0 || batchBusy) return
+    const dst = moveMount
+    const refs = moveRefs
+    setMoveMount(null)
+    setMoveRefs([])
+    setBatchBusy(true)
+    setBatchMsg(null)
+    setBatchError(null)
+    try {
+      const res = await api.moveNodes(mount.id, refs, dst.id, targetRef)
+      if (!res) throw new Error('移动没有返回结果。')
+      const failed = res.failed?.length ? `；${res.failed.length} 个没移动：${res.failed.map((s) => `${s.path}（${s.reason}）`).join('、')}` : ''
+      setChecked((prev) => {
+        const next = new Set(prev)
+        refs.forEach((r) => next.delete(r))
+        return next
+      })
+      if (dst.id === mount.id) {
+        // 同盘：Rename 已同步完成，刷新即可。
+        setBatchMsg(`已移动 ${res.done?.length ?? 0} 个到 ${dst.displayName}${failed}。`)
+        void load()
+      } else {
+        // 跨盘：文件在复制队列里跑，源文件由 worker 在各自复制
+        // 成功后删除（复制失败的源文件绝不删）；现在不要 load()，
+        // 列表里的源文件还真实存在，刷新后等收尾轮询处理。
+        const queued = res.transfers?.length ?? 0
+        setBatchMsg(
+          `已把 ${queued} 个文件加入移动队列（${mount.displayName} → ${dst.displayName}），复制完成后自动删除源文件，进度见右下角传输胶囊${failed}。`,
+        )
+        startMoveCleanupPoll((res.transfers ?? []).filter((t): t is Transfer => !!t), refs)
+      }
+    } catch (e) {
+      setBatchError(friendlyError(e))
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  // 跨盘移动的收尾（v0.10.0）：文件由 worker 在复制成功后逐
+  // 个删源；选中的文件夹本身还留着（空文件夹）。等队列里的
+  // 移动全部终态后，文件夹下所有文件都已复制成功、且没有失败
+  // 的，才删文件夹——有任何失败文件留在里面时绝不删。复用
+  // 上传轮询的 2s 间隔与 30 分钟上限；队列里找不到的传输
+  // 视为已终态（不阻塞轮询），但它的文件夹不参与清理——
+  // 不知道它成功还是失败。
+  const startMoveCleanupPoll = (transfers: Transfer[], refs: string[]) => {
+    const ids = new Set(transfers.map((t) => t.id))
+    if (ids.size === 0) {
+      void load()
+      return
+    }
+    const folderRefs = refs.filter((r) => nodes.find((n) => nodeKey(n) === r)?.isDir)
+    const started = Date.now()
+    const tick = async () => {
+      let all: Transfer[]
+      try {
+        all = await api.transfers()
+      } catch {
+        movePollTimer.current = setTimeout(() => void tick(), 2000)
+        return
+      }
+      const mine = all.filter((t) => ids.has(t.id))
+      const terminal = mine.filter((t) => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
+      const missing = [...ids].filter((id) => !mine.some((t) => t.id === id))
+      if (terminal.length + missing.length < ids.size) {
+        if (Date.now() - started > 30 * 60 * 1000) {
+          void load()
+          return
+        }
+        movePollTimer.current = setTimeout(() => void tick(), 2000)
+        return
+      }
+      const completedRefs = new Set(mine.filter((t) => t.status === 'completed').map((t) => t.srcRef))
+      const failedRefs = new Set(mine.filter((t) => t.status !== 'completed').map((t) => t.srcRef))
+      const deletable: string[] = []
+      for (const f of folderRefs) {
+        const under = [...completedRefs, ...failedRefs].filter((r) => r.startsWith(f + '/'))
+        const hasFailed = [...failedRefs].some((r) => r.startsWith(f + '/'))
+        if (under.length > 0 && !hasFailed) deletable.push(f)
+      }
+      if (deletable.length > 0) {
+        try {
+          await api.deleteNodes(mount.id, deletable)
+        } catch {
+          // 空文件夹删不掉不报错：它不占数据，用户可手动删。
+        }
+      }
+      void load()
+    }
+    movePollTimer.current = setTimeout(() => void tick(), 2000)
   }
   // Inspector close animates out (300ms) before unmounting.
   const [inspectorClosing, setInspectorClosing] = useState(false)
@@ -169,12 +461,27 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
   const [pendingPaths, setPendingPaths] = useState<string[] | null>(null)
   const [lastTargetRef, setLastTargetRef] = useState<string | null>(null)
 
+  // Unmount 时清掉两个轮询计时器（上传、跨盘移动收尾）。
   useEffect(
     () => () => {
       if (pollTimer.current) clearTimeout(pollTimer.current)
+      if (movePollTimer.current) clearTimeout(movePollTimer.current)
     },
     [],
   )
+
+  // Esc 关闭重命名/删除对话框（useClosing 的退出动画走完才
+  // 真正关；与 UploadTargetDialog 各自的 Esc 监听一致）。
+  useEffect(() => {
+    if (!deleteTargets && !renameTarget) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (deleteTargets) requestDeleteClose()
+      else requestRenameClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [deleteTargets, renameTarget, requestDeleteClose, requestRenameClose])
 
   // Uploads one batch of local paths into the given directory ref
   // and polls transfers() until the batch is terminal, then refreshes
@@ -430,13 +737,14 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
               })
             }}
             onOpen={openDir}
+            onContextMenu={handleContextMenu}
           />
         )}
         {checked.size > 0 && (
           <div className="notice-box" style={{ marginTop: 8 }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
               <span style={{ fontSize: 13 }}>已选 {checked.size} 个</span>
-              <button className="btn btn-sm" disabled={batchBusy} onClick={() => void handleBatchDownload()}>
+              <button className="btn btn-sm" disabled={batchBusy} onClick={() => void handleBatchDownload(checkedRefs())}>
                 {batchBusy ? '处理中…' : '下载到默认文件夹'}
               </button>
               <button
@@ -444,11 +752,26 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
                 disabled={batchBusy || mounts.filter((m) => m.id !== mount.id).length === 0}
                 onClick={() => {
                   const others = mounts.filter((m) => m.id !== mount.id)
-                  if (others.length > 0) setCopyMount(others[0])
+                  if (others.length > 0) {
+                    setCopyRefs(checkedRefs())
+                    setCopyMount(others[0])
+                  }
                 }}
               >
                 复制到…
               </button>
+              {mount.caps.canDelete && (
+                <button
+                  className="btn btn-sm btn-danger"
+                  disabled={batchBusy}
+                  onClick={() => {
+                    resetDeleteClose()
+                    setDeleteTargets([...checked].map((k) => nodes.find((x) => nodeKey(x) === k)).filter((x): x is Node => !!x))
+                  }}
+                >
+                  删除
+                </button>
+              )}
               <button className="btn btn-sm" disabled={batchBusy} onClick={() => setChecked(new Set())}>
                 取消选择
               </button>
@@ -462,20 +785,90 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
         {batchMsg && <div className="notice-box" style={{ marginTop: 8, fontSize: 13 }}>{batchMsg}</div>}
         {batchError && <div className="error-box" style={{ marginTop: 8, fontSize: 13 }}>{batchError}</div>}
       </div>
-      {selected && <Inspector node={selected} mount={mount} quota={quota} closing={inspectorClosing} onClose={closeInspector} />}
+      {selected && <Inspector node={selected} mount={mount} quota={quota} closing={inspectorClosing} onClose={closeInspector} openAdvancedNonce={inspectorOpenNonce} />}
       {copyMount && (
         <UploadTargetDialog
           mount={copyMount}
           mounts={mounts.filter((m) => m.id !== mount.id)}
           onMountChange={setCopyMount}
           initialRef={copyMount.rootRef}
-          fileCount={checked.size}
+          fileCount={copyRefs.length}
           title="复制到哪里？"
           confirmLabel="复制到这里"
           onConfirm={(targetRef) => void handleBatchCopyConfirm(targetRef)}
-          onCancel={() => setCopyMount(null)}
+          onCancel={() => {
+            setCopyMount(null)
+            setCopyRefs([])
+          }}
         />
       )}
+      {moveMount && (
+        <UploadTargetDialog
+          mount={moveMount}
+          mounts={mounts}
+          onMountChange={setMoveMount}
+          initialRef={moveMount.id === mount.id ? ref : moveMount.rootRef}
+          fileCount={moveRefs.length}
+          title="移动到哪里？"
+          confirmLabel="移动到这里"
+          verb="移动"
+          onConfirm={(targetRef) => void handleMoveConfirm(targetRef)}
+          onCancel={() => {
+            setMoveMount(null)
+            setMoveRefs([])
+          }}
+        />
+      )}
+      {renameTarget && (
+        <div className={`dialog-backdrop${renameClosing ? ' closing' : ''}`} onClick={requestRenameClose}>
+          <div className={`dialog${renameClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <h1>重命名</h1>
+            <input
+              autoFocus
+              value={renameValue}
+              onChange={(e) => {
+                setRenameValue(e.target.value)
+                setRenameError(null)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleRenameConfirm()
+              }}
+              placeholder="新名字（只填文件名，不能含 /）"
+              aria-label="新名字"
+            />
+            {renameError && <div className="error-box" style={{ marginTop: 8 }}>{renameError}</div>}
+            <div className="dialog-actions">
+              <button className="btn" onClick={requestRenameClose}>取消</button>
+              <button className="btn-primary" disabled={batchBusy || renameValue.trim().length === 0} onClick={() => void handleRenameConfirm()}>
+                {batchBusy ? '重命名中…' : '确定'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {deleteTargets && (
+        <div className={`dialog-backdrop${deleteClosing ? ' closing' : ''}`} onClick={requestDeleteClose}>
+          <div className={`dialog${deleteClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <h1>{deleteTargets.length === 1 ? `删除“${deleteTargets[0].name}”？` : `删除 ${deleteTargets.length} 个文件？`}</h1>
+            <p className="muted" style={{ margin: '0 0 8px', wordBreak: 'break-all' }}>
+              {deleteTargets.slice(0, 5).map((n) => n.name).join('、')}
+              {deleteTargets.length > 5 ? ` 等 ${deleteTargets.length} 个` : ''}
+            </p>
+            <p style={{ margin: '0 0 12px' }}>
+              {mount.caps.deleteToTrash
+                ? '将移入回收站，可在网盘回收站恢复。'
+                : '将永久删除，无法恢复。'}
+            </p>
+            <div className="dialog-actions">
+              <button className="btn" onClick={requestDeleteClose}>取消</button>
+              <button className="btn-danger" disabled={batchBusy} onClick={() => void handleDeleteConfirm()}>
+                {batchBusy ? '删除中…' : '删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} items={menuItems(ctxMenu.nodes)} onClose={() => setCtxMenu(null)} />}
       {pendingPaths && (
         <UploadTargetDialog
           mount={mount}

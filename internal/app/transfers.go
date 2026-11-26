@@ -560,6 +560,17 @@ func (a *App) executeCopy(ctx context.Context, t *domain.Transfer, report func(d
 	if _, err := dst.Upload(ctx, t.DstRef, pr, t.Size); err != nil {
 		return err
 	}
+	// v0.10.0 move: the copy succeeded, so the source goes now —
+	// and only now. A failed copy never reaches this line, so a
+	// failed move never deletes its source. If the delete itself
+	// fails, the file exists in both places (safe, never lost)
+	// and the transfer reports it, so a retry re-copies and then
+	// retries the delete.
+	if t.DeleteSource {
+		if err := src.Delete(ctx, t.SrcRef); err != nil {
+			return fmt.Errorf("app: 已复制到目标，但删除源文件失败（源文件还在）：%w", err)
+		}
+	}
 	report(t.Size, 0)
 	return nil
 }

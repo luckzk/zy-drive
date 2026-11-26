@@ -360,6 +360,27 @@ func (s *DesktopService) BatchCopy(ctx context.Context, srcMount string, refs []
 	return s.app.BatchCopy(ctx, srcMount, refs, dstMount, dstRef)
 }
 
+// DeleteNodes deletes the selected files/folders on a mount
+// (v0.10.0, right-click menu). Per-item results: a failure only
+// fails itself, the rest still run.
+func (s *DesktopService) DeleteNodes(ctx context.Context, mountID string, refs []string) (*FileOpResult, error) {
+	return s.app.DeleteNodes(ctx, mountID, refs)
+}
+
+// RenameNode renames one file/folder in place (v0.10.0,
+// right-click menu) and returns the new ref.
+func (s *DesktopService) RenameNode(ctx context.Context, mountID, srcRef, newName string) (string, error) {
+	return s.app.RenameNode(ctx, mountID, srcRef, newName)
+}
+
+// MoveNodes moves the selection to a folder on the same or another
+// mount (v0.10.0, right-click menu). Same mount renames in place;
+// cross-mount enqueues copy transfers that delete each source
+// after its own copy succeeds.
+func (s *DesktopService) MoveNodes(ctx context.Context, srcMount string, refs []string, dstMount, dstRef string) (*FileOpResult, error) {
+	return s.app.MoveNodes(ctx, srcMount, refs, dstMount, dstRef)
+}
+
 // RetryTransfer re-queues one failed/cancelled transfer; finished
 // files are never re-done (batch-level resume, V0.9.0).
 func (s *DesktopService) RetryTransfer(ctx context.Context, id string) (*domain.Transfer, error) {

@@ -28,6 +28,7 @@ export default function UploadTargetDialog({
   onCancel,
   title,
   confirmLabel,
+  verb,
   mounts,
   onMountChange,
 }: {
@@ -40,6 +41,9 @@ export default function UploadTargetDialog({
   // upload flow keeps the defaults.
   title?: string
   confirmLabel?: string
+  // 动作动词：默认按 confirmLabel 推断（复制/上传）；移动
+  // 对话框传 "移动"，文案才不说“将复制到”。
+  verb?: string
   // Copy flow: let the user switch the target mount inside the
   // dialog (upload flow passes none and the mount is fixed).
   mounts?: Mount[]
@@ -113,10 +117,14 @@ export default function UploadTargetDialog({
 
   return (
     <div className={`dialog-backdrop${closing ? ' closing' : ''}`} onClick={requestClose}>
-      <div className={`dialog${closing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+      {/* dialog-flex（v0.10.0）：标题固定、中间 .dialog-body 滚动、
+          底栏静态——长列表滚动时底栏一直可见；短内容时底栏在正常
+          流里，不会像以前的 sticky 底栏那样盖住上面那行字。 */}
+      <div className={`dialog dialog-flex${closing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
         <h1>{title ?? '上传到哪里？'}</h1>
+        <div className="dialog-body">
         <p className="muted" style={{ margin: '0 0 12px' }}>
-          {fileCount} 个文件将{confirmLabel ? '复制' : '上传'}到下面选中的文件夹，点“{confirmLabel ?? '上传到这里'}”才开始。
+          {fileCount} 个文件将{verb ?? (confirmLabel ? '复制' : '上传')}到下面选中的文件夹，点“{confirmLabel ?? '上传到这里'}”才开始。
         </p>
 
         {mounts && mounts.length > 0 && (
@@ -208,6 +216,7 @@ export default function UploadTargetDialog({
             </button>
           </div>
           {mkdirError && <div className="hint" style={{ color: 'var(--danger)' }}>{mkdirError}</div>}
+        </div>
         </div>
 
         <div className="dialog-actions">

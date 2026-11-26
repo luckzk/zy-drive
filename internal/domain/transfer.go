@@ -47,6 +47,13 @@ type Transfer struct {
 	// SessionID references a resumable upload session persisted by the
 	// transfer engine, so an interrupted upload continues, not restarts.
 	SessionID string    `json:"sessionId,omitempty"`
+	// DeleteSource marks a cross-cloud copy as a move (v0.10.0):
+	// executeCopy deletes the source file after the upload
+	// succeeded, and only then. A failed copy never deletes
+	// anything — the source stays put, and a retry re-copies
+	// first. Persisted (transfers.delete_source, migration v23)
+	// so a move survives a restart mid-queue.
+	DeleteSource bool   `json:"deleteSource,omitempty"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }

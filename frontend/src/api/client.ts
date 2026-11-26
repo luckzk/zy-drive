@@ -8,9 +8,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
 
-export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -118,6 +118,14 @@ export const api = {
   batchDownload: (mountID: string, refs: string[], destDir: string) => DesktopService.batchDownload(mountID, refs, destDir),
   batchCopy: (srcMount: string, refs: string[], dstMount: string, dstRef: string) =>
     DesktopService.batchCopy(srcMount, refs, dstMount, dstRef),
+  // V0.10.0 file operations (right-click menu): delete, rename,
+  // move. All return per-item results; callers null-check like
+  // batchDownload/batchCopy (a null return means the backend
+  // produced nothing, which is a bug, not an empty result).
+  deleteNodes: (mountID: string, refs: string[]) => DesktopService.deleteNodes(mountID, refs),
+  renameNode: (mountID: string, srcRef: string, newName: string) => DesktopService.renameNode(mountID, srcRef, newName),
+  moveNodes: (srcMount: string, refs: string[], dstMount: string, dstRef: string) =>
+    DesktopService.moveNodes(srcMount, refs, dstMount, dstRef),
   retryTransfer: (id: string) => DesktopService.retryTransfer(id),
   retryFailedTransfers: () => DesktopService.retryFailedTransfers(),
   pushJobToAgent: (jobID: string) => DesktopService.pushJobToAgent(jobID),

@@ -202,6 +202,21 @@ export interface ExportResult {
 }
 
 /**
+ * FileOpResult is the per-item outcome of DeleteNodes/MoveNodes:
+ * refs finished synchronously (Done), refs that failed with a
+ * human reason (Failed), and copy transfers still running in the
+ * queue (Transfers — cross-cloud moves only; the worker deletes
+ * each source file after its own copy succeeds, see
+ * Transfer.DeleteSource). mygo.Bind allows at most one value plus
+ * an error, so all three travel together.
+ */
+export interface FileOpResult {
+  done: string[];
+  failed: UploadSkipped[];
+  transfers: (Transfer | null)[];
+}
+
+/**
  * Mount is one account of one cloud as shown in the left sidebar, e.g.
  * "工作 Drive". The UI is organised by Mount, not by vendor: one account
  * may expose several mounts (e.g. two S3 buckets as two entries).
@@ -650,6 +665,15 @@ export interface Transfer {
    * transfer engine, so an interrupted upload continues, not restarts.
    */
   sessionId?: string;
+  /**
+   * DeleteSource marks a cross-cloud copy as a move (v0.10.0):
+   * executeCopy deletes the source file after the upload
+   * succeeded, and only then. A failed copy never deletes
+   * anything — the source stays put, and a retry re-copies
+   * first. Persisted (transfers.delete_source, migration v23)
+   * so a move survives a restart mid-queue.
+   */
+  deleteSource?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -760,6 +784,12 @@ export const DesktopService = {
    * falls back to it immediately.
    */
   deleteCustomOAuthApp: bind<[ProviderKind], void>("DesktopService.DeleteCustomOAuthApp", (provider: ProviderKind) => [provider]),
+  /**
+   * DeleteNodes deletes the selected files/folders on a mount
+   * (v0.10.0, right-click menu). Per-item results: a failure only
+   * fails itself, the rest still run.
+   */
+  deleteNodes: bind<[string, string[]], FileOpResult | null>("DesktopService.DeleteNodes", (mountID: string, refs: string[]) => [mountID, refs]),
   /** DeleteSyncJob removes a saved sync job. It never touches cloud data. */
   deleteSyncJob: bind<[string], void>("DesktopService.DeleteSyncJob", (id: string) => [id]),
   /** ExchangeOAuthCode swaps a pasted authorization code for tokens. */
@@ -824,6 +854,13 @@ export const DesktopService = {
    */
   mountQuotas: bind<[], (MountQuota | null)[]>("DesktopService.MountQuotas", () => []),
   /**
+   * MoveNodes moves the selection to a folder on the same or another
+   * mount (v0.10.0, right-click menu). Same mount renames in place;
+   * cross-mount enqueues copy transfers that delete each source
+   * after its own copy succeeds.
+   */
+  moveNodes: bind<[string, string[], string, string], FileOpResult | null>("DesktopService.MoveNodes", (srcMount: string, refs: string[], dstMount: string, dstRef: string) => [srcMount, refs, dstMount, dstRef]),
+  /**
    * OpenWithSystemApp downloads a file to the preview cache (or
    * reuses the cached copy) and opens it with the system default
    * app — macOS prefers Quick Look. It returns the local cached
@@ -866,6 +903,11 @@ export const DesktopService = {
   removeAgent: bind<[string], void>("DesktopService.RemoveAgent", (id: string) => [id]),
   /** RemoveMount unregisters a mount. */
   removeMount: bind<[string], void>("DesktopService.RemoveMount", (id: string) => [id]),
+  /**
+   * RenameNode renames one file/folder in place (v0.10.0,
+   * right-click menu) and returns the new ref.
+   */
+  renameNode: bind<[string, string, string], string>("DesktopService.RenameNode", (mountID: string, srcRef: string, newName: string) => [mountID, srcRef, newName]),
   /**
    * RetryFailedTransfers re-queues every failed/cancelled transfer
    * and returns how many were re-queued.

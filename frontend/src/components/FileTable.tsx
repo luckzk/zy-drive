@@ -15,6 +15,7 @@ export default function FileTable({
   onSelect,
   onToggleCheck,
   onOpen,
+  onContextMenu,
 }: {
   nodes: Node[]
   selectedId: string | null
@@ -22,6 +23,9 @@ export default function FileTable({
   onSelect: (n: Node | null) => void
   onToggleCheck: (n: Node) => void
   onOpen: (n: Node) => void
+  // Right-click menu (v0.10.0): the parent decides whether the
+  // row acts alone or as part of the checked set.
+  onContextMenu?: (n: Node, e: React.MouseEvent) => void
 }) {
   if (nodes.length === 0) {
     return (
@@ -53,6 +57,10 @@ export default function FileTable({
               onClick={() => onSelect(isSelected ? null : n)}
               onDoubleClick={() => {
                 if (n.isDir) onOpen(n)
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                onContextMenu?.(n, e)
               }}
             >
               <td onClick={(e) => e.stopPropagation()}>

@@ -78,6 +78,113 @@ export default function Sidebar({
   const [deleting, setDeleting] = useState<string | null>(null)
   const [removingMount, setRemovingMount] = useState<string | null>(null)
   const [removingBusy, setRemovingBusy] = useState(false)
+  // 长按拖拽换分组（v0.10.0）：卡片上按住 400ms 且未明显移动
+  // （6px）才进入拖拽；按住后先移动 = 普通点击，拖拽不启动。
+  // 原生 draggable 做不了长按启动，所以用指针事件自实现：
+  // pointerdown 记起点 + 起 400ms 计时，window 上的
+  // pointermove/pointerup 跟踪全程（不依赖 setPointerCapture，
+  // 拖出卡片也能跟到），elementFromPoint 找悬停的分组。
+  const LONG_PRESS_MS = 400
+  const DRAG_TOLERANCE_PX = 6
+  const [dragMountId, setDragMountId] = useState<string | null>(null)
+  const [dropGroup, setDropGroup] = useState<string | null>(null)
+  const dropGroupRef = useRef<string | null>(null)
+  const dragRef = useRef<{
+    mountId: string
+    group: string
+    timer: ReturnType<typeof setTimeout>
+    dragging: boolean
+    cleanup: () => void
+  } | null>(null)
+  // 拖拽结束后的 click 会落在卡片上：拦截掉，否则刚拖完又
+  // 触发一次选中。普通单击不经过这里，不受影响。
+  const suppressClickRef = useRef(false)
+
+  const onMountPointerDown = (m: Mount) => (e: React.PointerEvent) => {
+    if (e.button !== 0) return
+    if ((e.target as HTMLElement).closest('.mount-remove')) return
+    if (dragRef.current) return
+    const startX = e.clientX
+    const startY = e.clientY
+    const cleanup = () => {
+      if (dragRef.current?.timer) clearTimeout(dragRef.current.timer)
+      dragRef.current = null
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onCancel)
+    }
+    const onMove = (ev: PointerEvent) => {
+      const d = dragRef.current
+      if (!d) return
+      if (!d.dragging) {
+        // 按住后先移动：这是点击/滚动，不是拖拽。
+        if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > DRAG_TOLERANCE_PX) cleanup()
+        return
+      }
+      const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-group]')
+      const g = el ? el.getAttribute('data-group') : null
+      dropGroupRef.current = g
+      setDropGroup(g)
+    }
+    const onUp = () => {
+      const d = dragRef.current
+      cleanup()
+      if (!d || !d.dragging) return
+      const target = dropGroupRef.current
+      dropGroupRef.current = null
+      setDragMountId(null)
+      setDropGroup(null)
+      suppressClickRef.current = true
+      if (target === null || target === d.group) return
+      void (async () => {
+        setBusy(true)
+        setError(null)
+        try {
+          await api.updateMountGroup(m.id, target)
+          onGroupsChanged()
+        } catch (err) {
+          setError(friendlyError(err))
+        } finally {
+          setBusy(false)
+        }
+      })()
+    }
+    const onCancel = () => {
+      cleanup()
+      dropGroupRef.current = null
+      setDragMountId(null)
+      setDropGroup(null)
+    }
+    const timer = setTimeout(() => {
+      if (!dragRef.current) return
+      dragRef.current.dragging = true
+      setDragMountId(m.id)
+    }, LONG_PRESS_MS)
+    dragRef.current = { mountId: m.id, group: m.group ?? '', timer, dragging: false, cleanup }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onCancel)
+  }
+  // Esc 取消拖拽（正在按住时）；卸载时清掉未触发的计时器。
+  useEffect(() => {
+    if (!dragMountId) return
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === 'Escape') {
+        dragRef.current?.cleanup()
+        dropGroupRef.current = null
+        setDragMountId(null)
+        setDropGroup(null)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [dragMountId])
+  useEffect(
+    () => () => {
+      dragRef.current?.cleanup()
+    },
+    [],
+  )
   const [migrateTo, setMigrateTo] = useState<string>('__ungrouped__')
   const [newMigrateGroup, setNewMigrateGroup] = useState('')
   const [busy, setBusy] = useState(false)
@@ -144,7 +251,7 @@ export default function Sidebar({
   }
 
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${dragMountId ? ' dragging' : ''}`}>
       <nav>
         {(['browse', 'sync', 'settings'] as const).map((p, i) => (
           <button
@@ -218,7 +325,11 @@ export default function Sidebar({
         const members = mountsOf(g)
         const isDeleting = deleting === g
         return (
-          <div key={g || '__ungrouped__'}>
+          <div
+            key={g || '__ungrouped__'}
+            data-group={g}
+            className={dropGroup !== null && dropGroup === g ? 'group-drop-target' : undefined}
+          >
             <div className="group-row">
               <span
                 onClick={() => {
@@ -319,9 +430,18 @@ export default function Sidebar({
               return (
                 <div key={m.id}>
                   <div
-                    className={`mount-card stagger-item${m.id === activeMountId ? ' active' : ''}`}
+                    className={`mount-card stagger-item${m.id === activeMountId ? ' active' : ''}${dragMountId === m.id ? ' dragging' : ''}`}
                     style={staggerStyle(mi)}
-                    onClick={() => onSelectMount(m)}
+                    onClick={() => {
+                      if (suppressClickRef.current) {
+                        suppressClickRef.current = false
+                        return
+                      }
+                      onSelectMount(m)
+                    }}
+                    // 长按期间不弹浏览器原生菜单。
+                    onContextMenu={(e) => e.preventDefault()}
+                    onPointerDown={onMountPointerDown(m)}
                   >
                     <BrandLogo provider={m.provider} endpointHost={m.endpointHost} />
                     <div style={{ flex: 1, minWidth: 0, paddingRight: 28 }}>

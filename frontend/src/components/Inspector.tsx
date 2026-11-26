@@ -8,7 +8,7 @@
 // otherwise, never greyed-out and dead. The actions themselves
 // (generate a share link, list versions) are not wired in V0.1, and
 // the panel says so instead of showing a dead button.
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Caps, Mount, MountQuota, Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
 import { Accordion } from './motion'
@@ -30,8 +30,13 @@ function capsList(caps: Caps): string[] {
   return out
 }
 
-export default function Inspector({ node, mount, quota, closing, onClose }: { node: Node; mount: Mount | null; quota?: MountQuota; closing?: boolean; onClose: () => void }) {
+export default function Inspector({ node, mount, quota, closing, onClose, openAdvancedNonce }: { node: Node; mount: Mount | null; quota?: MountQuota; closing?: boolean; onClose: () => void; openAdvancedNonce?: number }) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  // “详情”右键菜单项把 nonce +1 时展开高级页。nonce 只在
+  // 点“详情”时变——点别的行、手动收起后都不会误展开。
+  useEffect(() => {
+    if (openAdvancedNonce) setAdvancedOpen(true)
+  }, [openAdvancedNonce])
   const supported = mount ? capsList(mount.caps) : []
 
   return (

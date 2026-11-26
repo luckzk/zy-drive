@@ -13,8 +13,8 @@ import (
 func (db *DB) SaveTransfer(t *domain.Transfer) error {
 	_, err := db.SQL.Exec(`INSERT INTO transfers
 		(id, kind, job_id, run_id, src_mount, src_ref, dst_mount, dst_ref,
-		 size, done, status, speed_bps, retries, error, session_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 size, done, status, speed_bps, retries, error, session_id, delete_source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 		kind=excluded.kind, job_id=excluded.job_id, run_id=excluded.run_id,
 		src_mount=excluded.src_mount, src_ref=excluded.src_ref,
@@ -22,9 +22,10 @@ func (db *DB) SaveTransfer(t *domain.Transfer) error {
 		size=excluded.size, done=excluded.done, status=excluded.status,
 		speed_bps=excluded.speed_bps, retries=excluded.retries,
 		error=excluded.error, session_id=excluded.session_id,
+		delete_source=excluded.delete_source,
 		updated_at=excluded.updated_at`,
 		t.ID, string(t.Kind), t.JobID, t.RunID, t.SrcMount, t.SrcRef, t.DstMount, t.DstRef,
-		t.Size, t.Done, string(t.Status), t.SpeedBps, t.Retries, t.Error, t.SessionID,
+		t.Size, t.Done, string(t.Status), t.SpeedBps, t.Retries, t.Error, t.SessionID, boolToInt(t.DeleteSource),
 		t.CreatedAt.UTC().Format(time.RFC3339), t.UpdatedAt.UTC().Format(time.RFC3339))
 	return err
 }
@@ -32,7 +33,7 @@ func (db *DB) SaveTransfer(t *domain.Transfer) error {
 // LoadTransfers returns transfers in the given status.
 func (db *DB) LoadTransfers(status domain.TransferStatus) ([]*domain.Transfer, error) {
 	rows, err := db.SQL.Query(`SELECT id, kind, job_id, run_id, src_mount, src_ref,
-		dst_mount, dst_ref, size, done, status, speed_bps, retries, error, session_id,
+		dst_mount, dst_ref, size, done, status, speed_bps, retries, error, session_id, delete_source,
 		created_at, updated_at FROM transfers WHERE status = ? ORDER BY created_at ASC`,
 		string(status))
 	if err != nil {
@@ -46,7 +47,7 @@ func (db *DB) LoadTransfers(status domain.TransferStatus) ([]*domain.Transfer, e
 // died, so the queue can mark them interrupted on startup.
 func (db *DB) LoadInterrupted() ([]*domain.Transfer, error) {
 	rows, err := db.SQL.Query(`SELECT id, kind, job_id, run_id, src_mount, src_ref,
-		dst_mount, dst_ref, size, done, status, speed_bps, retries, error, session_id,
+		dst_mount, dst_ref, size, done, status, speed_bps, retries, error, session_id, delete_source,
 		created_at, updated_at FROM transfers WHERE status IN ('running','queued') ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("cache: load interrupted: %w", err)
@@ -60,13 +61,15 @@ func scanTransfers(rows *sql.Rows) ([]*domain.Transfer, error) {
 	for rows.Next() {
 		var t domain.Transfer
 		var kind, status, createdAt, updatedAt string
+		var deleteSource int
 		if err := rows.Scan(&t.ID, &kind, &t.JobID, &t.RunID, &t.SrcMount, &t.SrcRef,
 			&t.DstMount, &t.DstRef, &t.Size, &t.Done, &status, &t.SpeedBps, &t.Retries,
-			&t.Error, &t.SessionID, &createdAt, &updatedAt); err != nil {
+			&t.Error, &t.SessionID, &deleteSource, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		t.Kind = domain.TransferKind(kind)
 		t.Status = domain.TransferStatus(status)
+		t.DeleteSource = deleteSource != 0
 		t.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		t.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
 		out = append(out, &t)

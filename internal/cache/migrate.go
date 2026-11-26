@@ -206,6 +206,11 @@ var migrations = []string{
 		last_access TEXT NOT NULL,
 		updated_at TEXT NOT NULL
 	)`,
+	// v23 (2026-11-26, cross-cloud move): whether a copy transfer
+	// deletes its source after a successful upload (see
+	// domain.Transfer.DeleteSource). Default 0: every transfer
+	// queued before this column existed was a plain copy.
+	`ALTER TABLE transfers ADD COLUMN delete_source INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.
