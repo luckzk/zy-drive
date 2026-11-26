@@ -115,6 +115,123 @@ export function IconGlobe({ size = 20 }: { size?: number }) {
   )
 }
 
+// Overlay chrome icons (v0.14.0, fullscreen preview): the same
+// neutral line style, but drawn for a dark top/bottom bar —
+// currentColor so they read white on the dark mask. Chevron
+// left/right are the prev/next file arrows; download / info /
+// zoom / rotate / expand / copy / open-external are the top-bar
+// and adaptive toolbar buttons.
+function LineSvg({ size = 18, children }: { size?: number; children: React.ReactNode }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {children}
+    </svg>
+  )
+}
+
+export function IconXLine({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <path d="M6 6l12 12M18 6L6 18" />
+    </LineSvg>
+  )
+}
+
+export function IconChevronLeft({ size = 20 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <path d="M15 5l-7 7 7 7" />
+    </LineSvg>
+  )
+}
+
+export function IconChevronRight({ size = 20 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <path d="M9 5l7 7-7 7" />
+    </LineSvg>
+  )
+}
+
+export function IconDownload({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <path d="M12 3v11" />
+      <path d="M7 10l5 5 5-5" />
+      <path d="M4 20h16" />
+    </LineSvg>
+  )
+}
+
+export function IconInfoLine({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v5" />
+      <path d="M12 7.5h.01" />
+    </LineSvg>
+  )
+}
+
+export function IconZoomIn({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.5-4.5" />
+      <path d="M11 8v6M8 11h6" />
+    </LineSvg>
+  )
+}
+
+export function IconZoomOut({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M21 21l-4.5-4.5" />
+      <path d="M8 11h6" />
+    </LineSvg>
+  )
+}
+
+export function IconRotate({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+      <path d="M21 3v6h-6" />
+    </LineSvg>
+  )
+}
+
+export function IconExpand({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+      <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+      <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+      <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+    </LineSvg>
+  )
+}
+
+export function IconCopy({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <rect x="9" y="9" width="12" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+    </LineSvg>
+  )
+}
+
+export function IconOpenExternal({ size = 18 }: { size?: number }) {
+  return (
+    <LineSvg size={size}>
+      <path d="M14 4h6v6" />
+      <path d="M20 4L10 14" />
+      <path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6" />
+    </LineSvg>
+  )
+}
+
 // Neutral line SVGs (no match in flat-color-icons): a pencil for
 // rename and a chevron for the advanced toggle. 1.8px stroke,
 // currentColor, same 24×24 grid habit as the rest of the UI.

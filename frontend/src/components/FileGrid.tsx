@@ -21,6 +21,7 @@ export default function FileGrid({
   onToggleCheck,
   onOpen,
   onContextMenu,
+  onPreview,
 }: {
   nodes: Node[]
   selectedId: string | null
@@ -31,6 +32,8 @@ export default function FileGrid({
   // Right-click menu (v0.10.0): the parent decides whether the
   // card acts alone or as part of the checked set.
   onContextMenu?: (n: Node, e: React.MouseEvent) => void
+  // Fullscreen preview (v0.14.0): double-click / Space on a file.
+  onPreview?: (n: Node) => void
 }) {
   if (nodes.length === 0) {
     return (
@@ -55,11 +58,24 @@ export default function FileGrid({
             onClick={() => onSelect(isSelected ? null : n)}
             onDoubleClick={() => {
               if (n.isDir) onOpen(n)
+              else onPreview?.(n)
             }}
             onKeyDown={(e) => {
-              if (e.key !== 'Enter') return
-              if (n.isDir) onOpen(n)
-              else onSelect(n)
+              if (e.key === 'Enter') {
+                if (n.isDir) onOpen(n)
+                else onSelect(n)
+              } else if (e.key === ' ') {
+                // Space opens the fullscreen preview for files
+                // (Finder behaviour) — even with a multi-select,
+                // Space still previews (report §四). Folders
+                // ignore it. Guard: the checkbox input is its
+                // own focus target, so Space there still toggles
+                // the checkbox, never the preview.
+                if (n.isDir) return
+                if ((e.target as HTMLElement).tagName === 'INPUT') return
+                e.preventDefault()
+                onPreview?.(n)
+              }
             }}
             onContextMenu={(e) => {
               e.preventDefault()

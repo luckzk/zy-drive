@@ -860,3 +860,281 @@ button:active, .btn:active, .btn-primary:active, .btn-danger:active,
     transition-property: opacity, background-color, border-color, color !important;
   }
 }
+
+/* ---- 全屏预览 overlay (v0.14.0, 报告 §四) ----
+   深色遮罩 #111111 92% + 白字 + 品牌绿点缀。动画只做
+   transform/opacity：遮罩淡入 150ms，图片缩放 200ms，
+   基础曲线 cubic-bezier(0.22,1,0.36,1)。
+   z-index 70：高于对话框（60），低于右上角 Toast（80）——
+   overlay 里点的下载，确认 Toast 仍要看得见。
+   图片宽高过渡是特意破例：缩放要 200ms 动画，而 transform
+   缩放算不出 fit 尺寸；只作用于单张 img，拖动时关掉。
+   hljs 不引整份 github-dark.css（会污染浅色 glance）：
+   只把 github-dark 的 token 颜色抄到 .preview-overlay 作用域下。 */
+.preview-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  background: rgba(17, 17, 17, 0.92);
+  color: #ffffff;
+  opacity: 1;
+  transition: opacity 150ms var(--ease);
+}
+.preview-overlay.closing { opacity: 0; }
+.preview-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 56px;
+  flex-shrink: 0;
+  padding: 0 12px;
+}
+.preview-title {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+  font-size: 15px;
+  line-height: 20px;
+  color: #ffffff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+.preview-icon-btn:hover { background: rgba(255, 255, 255, 0.12); color: #ffffff; }
+.preview-icon-btn.active { color: var(--brand); }
+.preview-icon-btn:disabled { opacity: 0.35; cursor: default; }
+.preview-icon-btn:disabled:hover { background: transparent; }
+.preview-main { flex: 1; min-height: 0; display: flex; position: relative; }
+.preview-content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+}
+.preview-skeleton { width: min(720px, 90%); padding: 24px; }
+.preview-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 200ms var(--ease), background-color 200ms var(--ease);
+  z-index: 2;
+}
+.preview-nav.prev { left: 16px; }
+.preview-nav.next { right: 16px; }
+.preview-content:hover .preview-nav:not(:disabled) { opacity: 1; }
+.preview-nav:focus-visible { opacity: 1; }
+.preview-nav:hover { background: rgba(255, 255, 255, 0.18); }
+.preview-nav:disabled { opacity: 0.25; cursor: default; }
+.preview-nav:disabled:hover { background: rgba(255, 255, 255, 0.08); }
+.preview-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  z-index: 2;
+  opacity: 1;
+  transition: opacity 300ms var(--ease);
+}
+.preview-toolbar.hidden { opacity: 0; pointer-events: none; }
+.preview-tb-label {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+  padding: 0 6px;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+}
+button.preview-tb-label { cursor: pointer; }
+button.preview-tb-label:hover { color: #ffffff; }
+.preview-page-input {
+  width: 56px;
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  font-size: 13px;
+  text-align: center;
+}
+.preview-speed {
+  padding: 4px 6px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #ffffff;
+  font-size: 13px;
+}
+.preview-info {
+  width: 320px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 16px;
+  background: #1e1e1e;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+/* Inspector 内容复用进深色面板：分区标题、kv 标签/值、muted
+   文案都改成白字系；分隔线改淡；按钮保持浅色底（可读）。 */
+.preview-info .insp-section-title { color: rgba(255, 255, 255, 0.6); }
+.preview-info .insp-kv { border-bottom-color: rgba(255, 255, 255, 0.12); }
+.preview-info .insp-kv .k { color: rgba(255, 255, 255, 0.6); }
+.preview-info .insp-kv .v { color: #ffffff; }
+.preview-info .muted { color: rgba(255, 255, 255, 0.6); }
+/* ---- 图片查看器 ---- */
+.preview-image-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  touch-action: none;
+  cursor: zoom-in;
+}
+.preview-image-wrap.zoomed { cursor: grab; overflow: auto; }
+.preview-image-wrap.dragging { cursor: grabbing; }
+.preview-image-wrap img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+  transition: transform 200ms var(--ease), width 200ms var(--ease), height 200ms var(--ease);
+}
+.preview-image-wrap.zoomed.dragging img { transition: none; }
+/* ---- 媒体查看器 ---- */
+.preview-media {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+}
+.preview-media video { max-width: 100%; max-height: calc(100% - 80px); background: #000000; border-radius: 8px; }
+.preview-media audio { width: min(480px, 90%); }
+.preview-media-note { margin: 0; font-size: 13px; color: rgba(255, 255, 255, 0.6); text-align: center; }
+/* ---- PDF 查看器 ---- */
+.preview-pdf { width: 100%; height: 100%; overflow: auto; padding: 16px; text-align: center; }
+.preview-pdf canvas { background: #ffffff; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.5); border-radius: 2px; }
+/* ---- 文本 / 代码 / Markdown ---- */
+.preview-text { width: 100%; height: 100%; overflow: auto; padding: 24px; color: #ffffff; }
+.preview-plain {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.preview-truncated { margin: 12px 0 0; font-size: 13px; color: rgba(255, 255, 255, 0.6); }
+.preview-code { display: flex; align-items: flex-start; background: #0d1117; border-radius: 8px; overflow-x: auto; }
+.preview-code-gutter {
+  position: sticky;
+  left: 0;
+  flex-shrink: 0;
+  padding: 12px 12px 12px 16px;
+  background: #0d1117;
+  color: rgba(255, 255, 255, 0.35);
+  text-align: right;
+  user-select: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.6;
+}
+.preview-code-gutter > div { line-height: 1.6; }
+.preview-code-body {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 12px 16px;
+  background: transparent;
+  color: #e6edf3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.6;
+  white-space: pre;
+}
+/* highlight.js github-dark 配色，只在 overlay 作用域内生效。 */
+.preview-overlay .hljs { background: transparent; color: #e6edf3; }
+.preview-overlay .hljs-comment, .preview-overlay .hljs-quote { color: #8b949e; font-style: italic; }
+.preview-overlay .hljs-keyword, .preview-overlay .hljs-selector-tag, .preview-overlay .hljs-doctag,
+.preview-overlay .hljs-template-tag, .preview-overlay .hljs-type, .preview-overlay .hljs-addition { color: #ff7b72; }
+.preview-overlay .hljs-number, .preview-overlay .hljs-literal { color: #79c0ff; }
+.preview-overlay .hljs-string, .preview-overlay .hljs-regexp, .preview-overlay .hljs-meta .hljs-string { color: #a5d6ff; }
+.preview-overlay .hljs-title, .preview-overlay .hljs-title.class_, .preview-overlay .hljs-title.function_,
+.preview-overlay .hljs-section { color: #d2a8ff; }
+.preview-overlay .hljs-attr, .preview-overlay .hljs-attribute, .preview-overlay .hljs-variable,
+.preview-overlay .hljs-template-variable, .preview-overlay .hljs-name, .preview-overlay .hljs-selector-id,
+.preview-overlay .hljs-selector-class { color: #79c0ff; }
+.preview-overlay .hljs-built_in, .preview-overlay .hljs-symbol, .preview-overlay .hljs-bullet,
+.preview-overlay .hljs-link, .preview-overlay .hljs-meta, .preview-overlay .hljs-selector-pseudo { color: #ffa657; }
+.preview-overlay .hljs-deletion { color: #ffa198; }
+.preview-overlay .hljs-emphasis { font-style: italic; }
+/* Markdown：浅色基底（glance 共用）+ overlay 内的深色变体。 */
+.preview-md { line-height: 1.6; word-break: break-word; }
+.preview-md h1, .preview-md h2, .preview-md h3 { margin: 0.8em 0 0.4em; font-weight: 400; }
+.preview-md h1 { font-size: 20px; }
+.preview-md h2 { font-size: 16px; }
+.preview-md h3 { font-size: 14px; }
+.preview-md p { margin: 0.5em 0; }
+.preview-md ul, .preview-md ol { margin: 0.5em 0; padding-left: 24px; }
+.preview-md li { margin: 0.2em 0; }
+.preview-md a { color: var(--brand-dark); }
+.preview-md code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; background: rgba(0, 0, 0, 0.06); padding: 1px 4px; border-radius: 4px; }
+.preview-md pre { background: rgba(0, 0, 0, 0.06); padding: 12px; border-radius: 8px; overflow-x: auto; }
+.preview-md pre code { background: transparent; padding: 0; }
+.preview-md blockquote { margin: 0.5em 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--ink-secondary); }
+.preview-md table { border-collapse: collapse; }
+.preview-md th, .preview-md td { border: 1px solid var(--border); padding: 4px 8px; }
+.preview-md img { max-width: 100%; }
+.preview-overlay .preview-md a { color: var(--brand); }
+.preview-overlay .preview-md code { background: rgba(255, 255, 255, 0.12); }
+.preview-overlay .preview-md pre { background: rgba(255, 255, 255, 0.08); }
+.preview-overlay .preview-md blockquote { border-color: rgba(255, 255, 255, 0.25); color: rgba(255, 255, 255, 0.6); }
+.preview-overlay .preview-md th, .preview-overlay .preview-md td { border-color: rgba(255, 255, 255, 0.2); }
+/* ---- 失败 / 不支持 ---- */
+.preview-fail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  max-width: 480px;
+  padding: 24px;
+  text-align: center;
+  color: #ffffff;
+}

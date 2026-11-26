@@ -2,7 +2,11 @@
   "dependencies": {
     "@iconify-icons/flat-color-icons": "^2.0.0",
     "@iconify/react": "^6.0.4",
+    "dompurify": "^3.5.0",
+    "highlight.js": "^11.12.0",
+    "marked": "^18.3.0",
     "mygo-runtime": "^0.10.0",
+    "pdfjs-dist": "^5.4.296",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
@@ -25,5 +29,5 @@
     "prebuild": "node scripts/decode-fonts.mjs"
   },
   "type": "module",
-  "version": "0.13.0"
+  "version": "0.14.0"
 }

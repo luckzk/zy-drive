@@ -10,6 +10,7 @@
 > **v0.11.0（2026-11-26，未推）：侧栏网盘排序 + 拖拽丝滑化——长按拖拽可改顺序（第 8 个拖到第 4 个、其余下移带过渡动画），不只是换分组；新增 `sort_order` 字段（迁移 v24/v25）与 `MoveMount` 后端方法，见文末“附：v0.11.0”。**
 > **v0.12.0（2026-11-26，未推）：版本历史真实现（Drive/S3/Dropbox）+ Copier 服务端复制（S3/Dropbox）+ OneDrive 上传 409 修复 + 拖拽分组标题跟随，见文末“附：v0.12.0”。**
 > **v0.13.0（2026-11-26，未推）：文件浏览页 UI/UX 批——命令面板居中修复、主面板去重容量、顶栏去掉“新建同步”、列表/网格切换、详情页定义列表重排、右上角 Toast，见文末“附：v0.13.0”。全屏预览 overlay（调研已定）仍在排队，见 v0.13.0 附录末尾。**
+> **v0.14.0（2026-11-26，未推）：文件预览全屏 overlay（P1）——深色遮罩 + 逐文件切换 + 自适应工具条 + 图片/视频/音频/PDF.js/代码/Markdown 查看器 + 右侧信息面板，见文末“附：v0.14.0”。Inspector 的 glance 保留。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -52,7 +53,7 @@
 | 7 | **同步冲突可视化**（免费，2026-11-25 用户定）：双向同步出冲突时，列表里能看到“两边都改了”，逐项选留哪边、留冲突副本还是合并 | 现在冲突策略只有 keep-both 且是静默的；用户不知道冲突发生过，也没得选 | M | 比较/计划引擎已能识别冲突（conflict.go 已存在） | 冲突判断依赖时间戳+哈希，跨云哈希口径不一会误判；UI 上不要让新手看到“冲突”两个字就慌 |
 | 8 | **单文件断点续传**（免费，2026-11-25 用户定）：大文件分片上传中断后，重启应用能接着传，不是从头传；Drime 先行（走 S3 分片），再扩到 OneDrive uploadSession / Drive resumable | Drime 大文件走 S3 分片，现在失败就整个 abort；用户传大文件（aigo 的剧集动辄几 GB）时断一次就重传一次 | M | transfer/resume.go 已有 Resume 骨架；Drime 分片会话 API 已存在 | uploadId 与已传分片号要持久化到 SQLite；Drime 的分片会话有效期未知，需先验证；失败重试不能触发 429 罚时。**已做（v0.9.1，Drime 先行），见文末落地记录；其他云待扩。** |
 
-| 18 | **文件预览**（免费，2026-11-25 用户定）：图片、视频、PDF、Office 文档在应用内直接看，不用先下载 | 现在文件只能下载下来看；Alist 预览最全，是新手每天都会碰到的能力 | M | 各家驱动已有下载流；图片/视频可先走直链播放 | 大文件视频要边下边播（流式），不能先下完；Office 预览需转码或嵌系统查看器；预览走直链时注意 Token 别泄露到 URL。**已做（v0.9.1，两档：应用内直接预览 + 系统应用打开），见文末落地记录；`zydrive-preview://` 需 Mac 实测。** |
+| 18 | **文件预览**（免费，2026-11-25 用户定）：图片、视频、PDF、Office 文档在应用内直接看，不用先下载 | 现在文件只能下载下来看；Alist 预览最全，是新手每天都会碰到的能力 | M | 各家驱动已有下载流；图片/视频可先走直链播放 | 大文件视频要边下边播（流式），不能先下完；Office 预览需转码或嵌系统查看器；预览走直链时注意 Token 别泄露到 URL。**已做（v0.9.1，两档：应用内直接预览 + 系统应用打开），见文末落地记录；`zydrive-preview://` 需 Mac 实测。v0.14.0 加了第三档全屏 overlay（深色遮罩 + PDF.js + 代码高亮 + Markdown），见文末“附：v0.14.0”。** |
 
 ### P2
 
@@ -399,3 +400,80 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 - visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2l（面板首帧中心 640 = 落位中心 640，无横向跳动）、2m（网格 12 张卡、刷新后仍是网格、切回列表）、2n（Toast 右缘 1264/视口 1280、top 16、悬停 4.5s 不消失、移走后自动消失）。2e/2g 按新容器改过。截图 02l/02m/02n/02e 已目视：面板居中、网格卡片与选中态正常、Toast 深底白字在右上角、悬停列是刷新在上、删除在下。
 - 诚实缺口：网格视图的缩略图只在 `thumbUrl` 有值时显示——桩数据里 12 个文件都没有 thumbUrl，所以网格里全是大图标，真机上缩略图是否出现取决于驱动是否回 thumbUrl（目前只有支持 Thumbnail 的驱动会回）；Toast 的悬停暂停在真机上依赖鼠标事件，与 5s 计时器的竞态只在桩里测过；详情页“类型”行在 mime 缺失时显示“文件”是兜底文案，不是后端给的类型；列表/网格切换的键盘焦点行为（Tab 到卡片/行、Enter 打开）在桩浏览器里没逐项跑过，只在代码层面与表格对齐。
 - 全屏预览 overlay（调研已定、用户已批“按你推荐的做”）不在本版：它是 Inspector 留一瞥 + 全屏覆盖层的大改动，与本批的详情页重排同文件、且 v0.12.0 未推——下一版（暂定 v0.14.0）再做，避免两次未推送的改动混进同一次推送。
+
+## 附：v0.14.0（2026-11-26，全屏预览 overlay P1；未推）
+
+用户 2026-11-26 14:50 说预览 UI 做得太差，调研（`~/workspace/research_notes/preview-ui-20261126/report.md`，§四）结论是：认真看文件应该是全屏覆盖层，侧栏只负责一瞥；把预览塞进 300px Inspector 是形态错位。用户 15:02 批了“按你推荐的做”。本版只做报告 §四的 P1（1–10 项），P2 全部不做。
+
+### A. Overlay 壳（PreviewOverlay.tsx / tokens.css）
+
+- 新组件 `PreviewOverlay.tsx`：fixed 盖满窗口，深色遮罩 `rgba(17,17,17,0.92)` + 白字 + 品牌绿点缀（信息按钮激活态、链接）；开/关淡入淡出 150ms（`useClosing`）；Esc 关；点遮罩空白处关（viewer 各自判断点在自身根上才关，点图片/视频本身不关——文字区点选不关，避免选文字时误关）；焦点陷阱（Tab 在 overlay 内循环，关后焦点回到原处）；打开时记住 `window.scrollY`，关闭时恢复。
+- 层级：overlay z-index 70——高于对话框（60），低于右上角 Toast（80），overlay 里点的下载确认 Toast 仍看得见。
+- 顶栏：左信息开关（i）、中间文件名（超长省略）、右下载 / 用系统应用打开 / 关闭 ×。**没有分享按钮**：应用层根本没有 Share 接线（provider-todo §0.2 仍 open），一个点不动的分享按钮是假 UI；等分享真接线了再加（见本附录末尾“未做”）。
+- 入口四处：文件双击、列表聚焦时 Space、右键菜单“预览”、Inspector glance 下的“全屏查看”按钮。Space 与多选不冲突：有选中集合时 Space 仍开预览（Finder 行为）；焦点在 checkbox 上时 Space 仍是勾选（事件目标是 input 时跳过）。
+
+### B. 逐文件切换（PreviewOverlay.tsx / FileBrowser.tsx）
+
+- 左右边缘箭头（悬停才出现，端点处置灰、不循环——循环会丢位置）+ ← → 键；切换时先出骨架再出内容，没有白闪；切换后 Inspector 的选中也跟到新文件（`onNavigate` 同时 `setSelected`）。
+- 切换范围是当前目录的文件（不含文件夹），按列表顺序；目录刷新导致下标失效时 overlay 不渲染（FileBrowser 的渲染守卫）。
+- 每切一个文件就重置一遍 viewer 状态（图片缩放/旋转、字号、倍速、PDF 页码），不跨文件泄漏。
+
+### C. 底部自适应工具条（PreviewOverlay.tsx / tokens.css）
+
+- 按类型换内容：图片（缩小/缩放标签/放大/适应窗口/旋转）、PDF（上下页/页码输入/缩放/适应宽度）、视频/音频（倍速 0.5x–2x + 视频全屏）、文本/Markdown（字号 −/+/复制全文）。
+- 半透明黑底药丸（`rgba(0,0,0,0.55)` + blur），鼠标静止 2s 后淡出、移动再出现；顶栏常显。
+- 工具条与边缘箭头都放在 `.preview-content` 里——信息面板打开时它们跟的是浏览区中心，不是整个主区中心。
+
+### D. 图片查看器（PreviewViewers.tsx ImageViewer）
+
+- 点按（无拖拽）在适应窗口 ↔ 100% 之间切换；放大后可拖拽平移；滚轮缩放（0.1–8，步进 ×1.25）；旋转 90°（旋转/回适应时清掉旧平移）；缩放从“适应”起步时以 viewer 报回的实际 fit 系数为锚点，不会跳到 100%。
+- 大图先显示缩略图（`thumbUrl`，半透明 + 轻模糊），全图到了再换，没有白屏等。滚轮用原生非 passive 监听——React 的 wheel 是 passive，`preventDefault` 拦不住页面滚动。
+
+### E. 视频/音频（PreviewViewers.tsx MediaViewer）
+
+- 沿用 v0.9.1 的流式 + Range：原生 controls（进度/音量）+ 工具条倍速（`playbackRate`）+ 视频全屏按钮；音频上方是大号类型图标 + 文件名（光秃秃的 `<audio>` 是一条细带，没上下文）。
+- 播不出来（桩的无效字节、或编码不支持）时走失败面板（原因 + 下载 + 系统打开），不假装在播。
+
+### F. PDF：iframe 换成 PDF.js（PreviewViewers.tsx PdfViewer）
+
+- `pdfjs-dist@5.4.296` + `?url` worker import（构建产物里 worker 是独立 asset `pdf.worker.min-*.mjs`）；默认适应宽度；DPR 上限 2 的 canvas 渲染；渲染任务可取消（切页/缩放时旧任务 `RenderingCancelledException` 直接忽略，不是失败）；页码/缩放状态走 imperative `PdfApi` handle，壳的工具条只调它。
+- 加载失败 → 失败面板（原因 + 下载 + 系统打开）。harness 的教训：静态服务的 MIME 表本来没有 `.mjs`，module worker 因 MIME 被拒、PDF 永远渲染不出来——harness 的 MIME 表已补 `.mjs → text/javascript`（检查脚本的改动，不进应用代码）。Go 自身的 mime 表本来就有 `.mjs → text/javascript`，真机 mygo 资产服务不受影响。
+- 依赖：`pdfjs-dist@5.4.296`。
+
+### G. 文本/代码/Markdown（previewShared.ts / PreviewViewers.tsx TextViewer）
+
+- 代码走 highlight.js `lib/common`（与 Box 同族；Go 在列）+ 行号 gutter（独立左列、与代码同行高、横向滚动时 sticky-left；**不**按行切分高亮 HTML——多行 span 会被切断）。highlight.js 主题不引整份 `github-dark.css`（会污染浅色 glance）：只把 github-dark 的 token 颜色抄到 `.preview-overlay .hljs` 作用域下；未知扩展名不猜语言（不用 `highlightAuto`，大文件慢且错），直接原文。
+- Markdown 走 marked（`marked@18.3.0`）+ DOMPurify，替换 PreviewPane 里的手写 escape-first 渲染器（glance 与 overlay 共用同一份 `renderMarkdownSafe`）；链接统一加 `target="_blank" rel="noopener noreferrer"`——同窗口导航会把整个应用顶掉。glance 的 Markdown 顺带有了基础样式（`.preview-md`，浅色基底 + overlay 内深色变体）。
+- 截断阈值保持 512 KiB（后端 PreviewText 的既有限制，本版不动后端；提示文案“已显示前 512 KB，下载查看全文。”——Box 用 192 KB，我们沿用已有的 512 KB，不另起一个数）。
+- 依赖：`highlight.js@11.12.0`、`marked@18.3.0`、`dompurify@3.5.0`。
+
+### H. 右侧信息面板（InspectorInfo.tsx / PreviewOverlay.tsx）
+
+- 默认关闭，i 键/顶栏按钮开关；打开时内容区收窄。复用 Inspector 的同一份内容（`InspectorBasicInfo` + `InspectorAdvanced` 从 Inspector 里抽出来，两边同一份 markup）：基本信息、校验值、高级（能力、版本入口）。**没有容量**——v0.13.0 的删除决定仍然有效，overlay 里也不加。
+- 深色变体：kv 标签/值、分区标题、muted 文案改白字系，分隔线改淡；按钮保持浅色底（可读）。
+
+### I. 加载/失败态（PreviewOverlay.tsx / PreviewViewers.tsx）
+
+- 每种类型都是 骨架 → 内容 → 失败（原因 + 下载 + 系统打开 + 可重试时加重试）。不支持的类型（system / video-unplayable）直接给文件图标 + 大小 + 两个按钮，永不空白。视频/音频播失败、图片打不开、PDF 加载失败都走同一块失败面板。
+- 失败原因按类型区分（图片“可能已损坏”、媒体“可能是编码不支持”、PDF 加载失败、系统 tier 说明原因），不是同一句“加载失败”。
+
+### J. 共享层（previewShared.ts / PreviewPane.tsx / Inspector.tsx）
+
+- 新 `previewShared.ts`：tier 判定（与旧 PreviewPane 同一套后缀表）、`escapeHtml`、`renderMarkdownSafe`、`highlightCode` + `codeLanguage`、`usePreviewSource` hook（图片/视频/音频/PDF 走 `previewURL`，文本/Markdown 走 `previewText`，system/video-unplayable 不 fetch——**harness 里绝不能加载 `zydrive-preview://` URL**，桩浏览器解析不了这个 scheme，会卡死真实鼠标输入）。
+- `PreviewPane.tsx` 改走共享层 + marked 渲染（手写渲染器退役）；修了一个重写时发现的 bug：system/video-unplayable 的 hook 状态是 `idle` 不是 `ready`，消息必须在 `(ready || idle)` 分支里渲染。
+- `Inspector.tsx` 的 glance 下加“全屏查看”按钮（仅文件）。`FileTable`/`FileGrid` 加 `onPreview`：双击文件开 overlay（文件夹仍是双击进入）、Space 开 overlay（文件夹忽略、checkbox 上忽略、preventDefault 拦页面滚动）。
+- `vite-env.d.ts` 新建：`?url` worker import 需要它，之前没有这个文件。
+
+### 未做（P2 + 明确不做，留给以后）
+
+- P2（报告 §四）：缩略图索引条、幻灯片模式、Office 在线预览、图片缩放后下载、视频字幕/音轨、预览内文件操作（重命名/移动/删除）、触屏手势。
+- 不做：评论/标注、Markup 修图、自建 Office 渲染、overlay 里放同步/传输面板（右下角传输胶囊不动）。
+- **分享按钮**：等 provider-todo §0.2 的 Share 接线落地后再加；现在加就是假 UI。
+- 预览缓存规则没动（2 GB 上限、LRU、设置页清理）。
+
+### 验证（2026-11-26）
+
+- go vet 全过；go test ./... 全过（21 个包；整轮里 `internal/agentrun` 抖了一次——`TestRunnerRetryOnce`，单跑通过、整包重跑通过，是已知 flaky，不是本版改动）；make lint exit 0（gofmt + vet + golangci-lint 0 issues + tsc）；npm 构建通过（JS 463.73 kB / gzip 142.57 kB，v0.13.0 是 441.46 kB——多出的是 pdf.js 懒加载块 439.53 kB + highlight.js common 块 165 kB + marked，首屏主包只多了约 22 kB）；make build 三二进制均报 0.14.0。
+- visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2o（overlay 盖满 1280×800、遮罩 rgba(17,17,17,0.92)、标题“封面.png”、图片 naturalWidth 240）、2p（Esc 关闭）、2q（“下一个文件”→ 旅行.mp4、← 回封面.png）、2r（放大后标签“适应”→“125%”、图片 240 → 300px）、2s（PDF canvas 1248×1248、页码 1 / 1、无 iframe）、2t（代码 `.hljs-keyword` = "package"、行号 5 行、Markdown h1“说明”+ 2 项列表）。截图 02o/02r/02s/02t 已目视：遮罩、图片、PDF "Hello" 页、代码高亮与行号都正常。
+- 构建时修的两个真问题：① overlay 重构脚本吃掉了“下一个文件”按钮的 `</button>`（tsc 报错定位）；② harness 的 MIME 表缺 `.mjs` 导致 PDF worker 起不来（见 F）。③ 桩列表多了 说明.md 后，同步多选“全选本页”断言从 12 改成 13（检查脚本的改动，不进应用代码）。
+- 诚实缺口：PDF.js 的 `zydrive-preview://` 取数与 `?url` worker 在真机 mygo webview 里还没验过（harness 走 data: URL + 静态服务，与真机路径不同）；`navigator.clipboard` 在 mygo 自定义 scheme 下是否可用没验过（复制失败时会如实 toast，不静默）；图片缩放的宽高过渡是特意破例（transform/opacity 规则之外，只作用于单张 img、拖动时关掉）；视频/音频的倍速与全屏只在桩里点过，真机播放体验待用户验；overlay 的焦点陷阱与 Space/方向键只在桩浏览器里跑过，真机键盘行为待验；网格缩略图、Toast 悬停计时、Inspector "类型：文件"兜底等 v0.13.0 的缺口原样保留。

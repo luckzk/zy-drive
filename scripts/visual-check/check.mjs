@@ -24,7 +24,11 @@ const CHROMIUM = existsSync(LOCAL_CHROMIUM) ? LOCAL_CHROMIUM : '/opt/meta-chromi
 const SHOTS = path.resolve(process.argv[2] ?? path.join(path.dirname(fileURLToPath(import.meta.url)), 'shots'))
 mkdirSync(SHOTS, { recursive: true })
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' }
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png' }
+// .mjs 必须给 text/javascript：PDF.js worker 是 module worker，
+// 浏览器拒绝非 JS MIME 的 worker 脚本（v0.14.0：没这一项时 PDF
+// overlay 永远渲染不出 canvas）。Go 自身的 mime 表本来就有
+// .mjs → text/javascript，真机 mygo 资产服务不受影响。
 
 // 测试桩：Bind 返回空数据，让 App 走零网盘空态。只看布局不看数据。
 // VISUAL_MOUNTS=1 时注入三条假网盘（仅检查脚本里有，不进前端代码），
@@ -81,6 +85,7 @@ const STUB_NODES = [
   { ref: '备份.zip', path: '/备份.zip', name: '备份.zip', isDir: false, size: 9876543, modTime: '2026-11-20T10:00:00Z' },
   { ref: 'main.go', path: '/main.go', name: 'main.go', isDir: false, size: 1234, modTime: '2026-11-20T10:00:00Z' },
   { ref: '笔记.txt', path: '/笔记.txt', name: '笔记.txt', isDir: false, size: 567, modTime: '2026-11-20T10:00:00Z' },
+  { ref: '说明.md', path: '/说明.md', name: '说明.md', isDir: false, size: 890, modTime: '2026-11-20T10:00:00Z' },
   { ref: '未知.xyz', path: '/未知.xyz', name: '未知.xyz', isDir: false, size: 890, modTime: '2026-11-20T10:00:00Z' },
   { ref: '合同.docx', path: '/合同.docx', name: '合同.docx', isDir: false, size: 67890, modTime: '2026-11-20T10:00:00Z' },
 ]
@@ -193,6 +198,8 @@ const STUB = `(() => {
       if (method === 'DesktopService.PreviewText') {
         const ref = args[1] || ''
         if (/\.go$/i.test(ref)) return { text: 'package main\\n\\n// hello from the stub\\nfunc main() {}\\n', truncated: false, size: 1234 }
+        // v0.14.0：Markdown 桩给真标题 + 真列表，断言认渲染结果。
+        if (/\.md$/i.test(ref)) return { text: '# 说明\\n\\n这是一份说明。\\n\\n- 第一点\\n- 第二点\\n', truncated: false, size: 890 }
         return { text: 'line one\\nline two\\n', truncated: false, size: 1234 }
       }
       if (method === 'DesktopService.OpenWithSystemApp') return '/Users/zy/Library/Caches/com.luckzk.zy-drive/preview/stubkey_' + (args[1] || 'file').split('/').pop()
@@ -1736,6 +1743,207 @@ try {
     }
   }
 
+  // 2o–2t. 全屏预览 overlay（v0.14.0）：双击文件打开、Esc 关
+  // 闭、箭头/方向键切换、图片缩放、PDF.js 渲染、代码高亮 +
+  // 行号、Markdown 渲染。桩列表里按名找行（双击会先触发两
+  // 次单击选中行，无害）；overlay 打开后焦点在 overlay 根节
+  // 点上，所以 Esc / 方向键直接发给页面即可。
+  const rowIdxByName = (name) =>
+    page.evaluate((n) => {
+      const rows = [...document.querySelectorAll('.file-table tbody tr')]
+      return rows.findIndex((r) => r.textContent?.includes(n))
+    }, name)
+  const openOverlayByName = async (name) => {
+    const idx = await rowIdxByName(name)
+    if (idx === -1) {
+      failures.push(`找不到“${name}”行（overlay 断言）`)
+      return false
+    }
+    await page.locator('.file-table tbody tr').nth(idx).dblclick()
+    await page.waitForTimeout(800)
+    return true
+  }
+  const closeOverlayByEsc = async () => {
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(500)
+    if (await page.evaluate(() => !!document.querySelector('.preview-overlay'))) {
+      failures.push('按 Esc 后 overlay 没有关闭')
+    }
+  }
+
+  // 2o. 双击图片打开 overlay：盖满窗口、深色遮罩、标题是文
+  // 件名、图片真渲染出来（桩是 240×120 品牌绿 PNG data URL）。
+  if (process.env.VISUAL_MOUNTS) {
+    if (await openOverlayByName('封面.png')) {
+      const ov = await page.evaluate(() => {
+        const el = document.querySelector('.preview-overlay')
+        if (!el) return { found: false }
+        const r = el.getBoundingClientRect()
+        const cs = getComputedStyle(el)
+        const img = el.querySelector('.preview-image-wrap img')
+        return {
+          found: true,
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+          vw: window.innerWidth,
+          vh: window.innerHeight,
+          bg: cs.backgroundColor,
+          title: el.querySelector('.preview-title')?.textContent ?? '',
+          imgNatural: img ? img.naturalWidth : -1,
+          hasTopbar: !!el.querySelector('.preview-topbar'),
+          hasToolbar: !!el.querySelector('.preview-toolbar'),
+          hasInfoBtn: !!el.querySelector('button[aria-label="文件信息"]'),
+        }
+      })
+      console.log('overlay open:', JSON.stringify(ov))
+      if (!ov.found) failures.push('双击图片后全屏预览没有打开（.preview-overlay）')
+      if (ov.found && (ov.w !== ov.vw || ov.h !== ov.vh)) failures.push(`overlay 没有盖满窗口：${ov.w}×${ov.h}，视口 ${ov.vw}×${ov.vh}`)
+      if (ov.found && ov.bg !== 'rgba(17, 17, 17, 0.92)') failures.push(`overlay 遮罩应是 #111111 92%（rgba(17,17,17,0.92)），实测 ${ov.bg}`)
+      if (ov.found && ov.title !== '封面.png') failures.push(`overlay 标题应是“封面.png”，实测 ${JSON.stringify(ov.title)}`)
+      if (ov.found && ov.imgNatural !== 240) failures.push(`overlay 里图片没有真渲染出来（naturalWidth 应是 240），实测 ${ov.imgNatural}`)
+      if (ov.found && (!ov.hasTopbar || !ov.hasToolbar || !ov.hasInfoBtn)) failures.push('overlay 缺顶栏 / 底部工具条 / 信息按钮')
+      await page.screenshot({ path: path.join(SHOTS, '02o-overlay.png') })
+      // 2p. Esc 关闭（和 2o 同一次打开里测，省一次双击）。
+      await closeOverlayByEsc()
+    }
+  }
+
+  // 2q. 箭头按钮 / 方向键切换文件：按当前目录顺序走，不包
+  // 含文件夹；切到视频（桩是无效字节）只认标题——降级面板
+  // 是预期行为，不认视频元素。
+  if (process.env.VISUAL_MOUNTS) {
+    if (await openOverlayByName('封面.png')) {
+      await page.getByRole('button', { name: '下一个文件' }).click()
+      await page.waitForTimeout(600)
+      const titleNext = await page.evaluate(() => document.querySelector('.preview-title')?.textContent ?? '')
+      if (titleNext !== '旅行.mp4') failures.push(`点“下一个文件”后标题应是“旅行.mp4”，实测 ${JSON.stringify(titleNext)}`)
+      await page.keyboard.press('ArrowLeft')
+      await page.waitForTimeout(600)
+      const titlePrev = await page.evaluate(() => document.querySelector('.preview-title')?.textContent ?? '')
+      if (titlePrev !== '封面.png') failures.push(`按 ← 后标题应回到“封面.png”，实测 ${JSON.stringify(titlePrev)}`)
+      await closeOverlayByEsc()
+    }
+  }
+
+  // 2r. 图片缩放：工具条“放大”后缩放标签从“适应”变
+  // “125%”（桩图 240×120，比容器小，fit 系数是 1），图
+  // 片实际宽度也跟着变大。
+  if (process.env.VISUAL_MOUNTS) {
+    if (await openOverlayByName('封面.png')) {
+      const before = await page.evaluate(() => ({
+        label: document.querySelector('.preview-toolbar .preview-tb-label')?.textContent ?? '',
+        imgW: document.querySelector('.preview-image-wrap img')?.clientWidth ?? -1,
+      }))
+      await page.getByRole('button', { name: '放大' }).click()
+      await page.waitForTimeout(500)
+      const after = await page.evaluate(() => ({
+        label: document.querySelector('.preview-toolbar .preview-tb-label')?.textContent ?? '',
+        imgW: document.querySelector('.preview-image-wrap img')?.clientWidth ?? -1,
+      }))
+      console.log('image zoom:', JSON.stringify({ before, after }))
+      if (before.label !== '适应') failures.push(`图片初始缩放标签应是“适应”，实测 ${JSON.stringify(before.label)}`)
+      if (after.label !== '125%') failures.push(`点放大后缩放标签应是“125%”，实测 ${JSON.stringify(after.label)}`)
+      if (!(after.imgW > before.imgW)) failures.push(`点放大后图片应变大：${before.imgW} → ${after.imgW}`)
+      await page.screenshot({ path: path.join(SHOTS, '02r-zoom.png') })
+      await closeOverlayByEsc()
+    }
+  }
+
+  // 2s. PDF.js 渲染：双击 PDF 后 overlay 里是 canvas（不是
+  // iframe），canvas 真有尺寸；页码显示 1 / 1。
+  if (process.env.VISUAL_MOUNTS) {
+    if (await openOverlayByName('行程.pdf')) {
+      let rendered = false
+      try {
+        await page.waitForFunction(
+          () => {
+            const c = document.querySelector('.preview-pdf canvas')
+            return c && c.width > 0 && c.height > 0
+          },
+          { timeout: 8000 },
+        )
+        rendered = true
+      } catch {
+        rendered = false
+      }
+      const pdf = await page.evaluate(() => {
+        const el = document.querySelector('.preview-overlay')
+        const canvas = el?.querySelector('.preview-pdf canvas')
+        return {
+          hasCanvas: !!canvas,
+          canvasW: canvas ? canvas.width : -1,
+          canvasH: canvas ? canvas.height : -1,
+          hasIframe: !!el?.querySelector('iframe'),
+          pageInput: el?.querySelector('.preview-page-input')?.value ?? '',
+          pageLabels: [...(el?.querySelectorAll('.preview-tb-label') ?? [])].map((e) => e.textContent),
+        }
+      })
+      console.log('pdf overlay:', JSON.stringify(pdf))
+      if (!pdf.hasCanvas) failures.push('PDF overlay 里没有 canvas（应是 PDF.js 渲染，不是 iframe）')
+      if (pdf.hasIframe) failures.push('PDF overlay 里还有 iframe（v0.14.0 应换成 PDF.js）')
+      if (!rendered || !(pdf.canvasW > 0 && pdf.canvasH > 0)) failures.push(`PDF canvas 没有渲染出页面：${pdf.canvasW}×${pdf.canvasH}`)
+      if (pdf.pageInput !== '1') failures.push(`PDF 页码输入应是 1，实测 ${JSON.stringify(pdf.pageInput)}`)
+      if (!pdf.pageLabels.includes('/ 1')) failures.push(`PDF 应显示总页数“/ 1”，实测 ${JSON.stringify(pdf.pageLabels)}`)
+      await page.screenshot({ path: path.join(SHOTS, '02s-pdf.png') })
+      await closeOverlayByEsc()
+    }
+  }
+
+  // 2t. 代码高亮 + 行号、Markdown 渲染：Go 文件里
+  // `package` 应是 .hljs-keyword，行号 5 行（桩文本 4 行 +
+  // 末尾空行）；Markdown 桩渲染出 h1“说明”与 2 项列表。
+  if (process.env.VISUAL_MOUNTS) {
+    if (await openOverlayByName('main.go')) {
+      let highlighted = false
+      try {
+        await page.waitForFunction(() => !!document.querySelector('.preview-code-body .hljs-keyword'), { timeout: 5000 })
+        highlighted = true
+      } catch {
+        highlighted = false
+      }
+      const code = await page.evaluate(() => {
+        const el = document.querySelector('.preview-overlay')
+        const body = el?.querySelector('.preview-code-body')
+        return {
+          hasKeyword: !!body?.querySelector('.hljs-keyword'),
+          keywordText: body?.querySelector('.hljs-keyword')?.textContent ?? '',
+          gutterLines: el?.querySelectorAll('.preview-code-gutter > div').length ?? 0,
+          hasTitleOrComment: !!body?.querySelector('.hljs-title, .hljs-comment'),
+        }
+      })
+      console.log('code overlay:', JSON.stringify(code))
+      if (!highlighted || !code.hasKeyword) failures.push('代码预览没有语法高亮（.hljs-keyword）')
+      if (code.keywordText !== 'package') failures.push(`高亮的关键字应是“package”，实测 ${JSON.stringify(code.keywordText)}`)
+      if (code.gutterLines !== 5) failures.push(`代码行号应有 5 行，实测 ${code.gutterLines}`)
+      if (!code.hasTitleOrComment) failures.push('代码预览没有高亮出函数名/注释（.hljs-title / .hljs-comment）')
+      await page.screenshot({ path: path.join(SHOTS, '02t-code.png') })
+      await closeOverlayByEsc()
+    }
+    if (await openOverlayByName('说明.md')) {
+      let mdRendered = false
+      try {
+        await page.waitForFunction(() => !!document.querySelector('.preview-md h1'), { timeout: 5000 })
+        mdRendered = true
+      } catch {
+        mdRendered = false
+      }
+      const md = await page.evaluate(() => {
+        const el = document.querySelector('.preview-overlay')
+        const m = el?.querySelector('.preview-md')
+        return {
+          h1: m?.querySelector('h1')?.textContent ?? '',
+          items: [...(m?.querySelectorAll('ul li') ?? [])].map((li) => li.textContent),
+        }
+      })
+      console.log('markdown overlay:', JSON.stringify(md))
+      if (!mdRendered) failures.push('Markdown 没有渲染出 h1（.preview-md h1）')
+      if (md.h1 !== '说明') failures.push(`Markdown 应渲染出 h1“说明”，实测 ${JSON.stringify(md.h1)}`)
+      if (md.items.length !== 2) failures.push(`Markdown 列表应有 2 项，实测 ${JSON.stringify(md.items)}`)
+      await page.screenshot({ path: path.join(SHOTS, '02t-markdown.png') })
+      await closeOverlayByEsc()
+    }
+  }
+
   // 3. 同步任务页：先列已保存任务（零任务空态）
   await page.locator('.nav-item', { hasText: '同步任务' }).click()
   await page.waitForTimeout(600)
@@ -1863,12 +2071,12 @@ try {
     console.log('multi shift:', JSON.stringify(ms))
     if (ms.count !== 4) failures.push(`Shift 连选后多选应为 4 项，实测 ${ms.count}`)
     if (ms.summary !== '已选 4 项') failures.push(`Shift 连选后清单应显示“已选 4 项”，实测 ${JSON.stringify(ms.summary)}`)
-    // 全选本页：12 行全选。
+    // 全选本页：13 行全选（v0.14.0：桩列表多了 说明.md，从 12 变 13）。
     await srcPane.locator('label', { hasText: '全选本页' }).click()
     await page.waitForTimeout(300)
     ms = await multiState()
     console.log('multi select-all:', JSON.stringify(ms))
-    if (ms.count !== 12) failures.push(`全选本页后多选应为 12 项，实测 ${ms.count}`)
+    if (ms.count !== 13) failures.push(`全选本页后多选应为 13 项，实测 ${ms.count}`)
     // 清空选择：清单消失。
     await srcPane.getByRole('button', { name: '清空选择', exact: true }).click()
     await page.waitForTimeout(300)

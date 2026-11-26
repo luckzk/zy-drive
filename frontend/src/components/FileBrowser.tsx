@@ -22,6 +22,7 @@ import ContextMenu, { type ContextMenuEntry } from './ContextMenu'
 import FileTable from './FileTable'
 import FileGrid from './FileGrid'
 import Inspector from './Inspector'
+import PreviewOverlay from './PreviewOverlay'
 import { revealLabel } from './PreviewPane'
 import UploadTargetDialog from './UploadTargetDialog'
 
@@ -122,6 +123,16 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
   // “历史版本…”菜单项把 nonce +1：Inspector 展开高级页并
   // 直接拉取版本列表（见 Inspector openVersionsNonce）。
   const [versionsOpenNonce, setVersionsOpenNonce] = useState(0)
+  // 全屏预览 overlay（v0.14.0）：打开的文件在当前目录的文件
+  // （不含文件夹）里的下标；切换文件时 Inspector 的选中也跟
+  // 着走。overlayFiles 由 nodes 现算；目录刷新导致下标失效
+  // 时 overlay 不渲染（渲染处守卫）。
+  const [overlayIdx, setOverlayIdx] = useState<number | null>(null)
+  const overlayFiles = nodes.filter((n) => !n.isDir)
+  const openOverlay = (n: Node) => {
+    const i = overlayFiles.findIndex((x) => nodeKey(x) === nodeKey(n))
+    if (i >= 0) setOverlayIdx(i)
+  }
   // 跨盘移动的收尾轮询（见 startMoveCleanupPoll）：与上传轮询
   // 各用一个计时器，卸载时都要清掉。
   const movePollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -218,7 +229,7 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
           else setSelected(single)
         },
       })
-      if (!single.isDir) items.push({ label: '预览', onClick: () => setSelected(single) })
+      if (!single.isDir) items.push({ label: '预览', onClick: () => openOverlay(single) })
     }
     items.push({ label: '下载', onClick: () => void handleBatchDownload(refs) })
     items.push({
@@ -515,6 +526,7 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
     setCrumbs([])
     setSelected(null)
     setChecked(new Set())
+    setOverlayIdx(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mount.id])
 
@@ -673,6 +685,7 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
     },
     onOpen: openDir,
     onContextMenu: handleContextMenu,
+    onPreview: openOverlay,
   }
 
   return (
@@ -858,7 +871,7 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
         {batchMsg && <div className="notice-box" style={{ marginTop: 8, fontSize: 13 }}>{batchMsg}</div>}
         {batchError && <div className="error-box" style={{ marginTop: 8, fontSize: 13 }}>{batchError}</div>}
       </div>
-      {selected && <Inspector node={selected} mount={mount} closing={inspectorClosing} onClose={closeInspector} openAdvancedNonce={inspectorOpenNonce} openVersionsNonce={versionsOpenNonce} onChanged={() => void load()} onToast={onToast} />}
+      {selected && <Inspector node={selected} mount={mount} closing={inspectorClosing} onClose={closeInspector} openAdvancedNonce={inspectorOpenNonce} openVersionsNonce={versionsOpenNonce} onChanged={() => void load()} onToast={onToast} onFullscreen={() => openOverlay(selected)} />}
       {copyMount && (
         <UploadTargetDialog
           mount={copyMount}
@@ -952,6 +965,23 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
             void handleUpload(pendingPaths, targetRef)
           }}
           onCancel={() => setPendingPaths(null)}
+        />
+      )}
+      {/* Fullscreen preview overlay (v0.14.0): files only, in
+          current-directory order; switching files also moves the
+          Inspector selection. Guarded: if a refresh shrank the
+          list under the overlay, it simply doesn't render. */}
+      {overlayIdx !== null && overlayFiles[overlayIdx] && (
+        <PreviewOverlay
+          mount={mount}
+          files={overlayFiles}
+          index={overlayIdx}
+          onNavigate={(i) => {
+            setOverlayIdx(i)
+            setSelected(overlayFiles[i])
+          }}
+          onClose={() => setOverlayIdx(null)}
+          onToast={onToast}
         />
       )}
     </div>
