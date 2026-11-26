@@ -132,7 +132,15 @@ const STUB = `(() => {
       if (method === 'DesktopService.DeleteCustomOAuthApp') return null
       if (method === 'DesktopService.BeginOAuth') return { authUrl: 'https://www.dropbox.com/oauth2/authorize?client_id=x&response_type=code&redirect_uri=http://localhost:54321&state=stub-state', state: 'stub-state' }
       if (method === 'DesktopService.PollOAuthCallback') return { status: 'done', code: 'stub-code-1' }
-      if (method === 'DesktopService.ExchangeOAuthCode') return { accessToken: 'stub-access', refreshToken: 'stub-refresh' }
+      if (method === 'DesktopService.ExchangeOAuthCode') {
+        // 真实的 Dropbox 会拒绝空 client_id（invalid_client）；
+        // 桩也必须拒绝，否则向导的自动换取用错 Client ID 也测
+        // 不出来（2026-11-26：轮询回调的过期闭包里 linkClientId
+        // 还是 ''，手动换取读的是新 state，所以能成功）。
+        window.__lastExchange = args
+        if (!args[1]) throw new Error('stub: empty client_id — Dropbox rejects this')
+        return { accessToken: 'stub-access', refreshToken: 'stub-refresh' }
+      }
       if (method === 'DesktopService.CancelOAuth') return null
       if (method === 'DesktopService.TestMountConfig') return null
       if (method === 'DesktopService.TestMount') {
@@ -514,6 +522,87 @@ try {
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
 
+    // 1e. MEGA 表单（v0.9.2）：三处 UI 修正——测试通过变绿、
+    // 凭证说明改问号悬浮提示、输入框焦点绿环左侧不再被裁。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    await page.locator('.provider-card', { hasText: 'MEGA' }).first().click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const megaInputs = page.locator('.dialog input')
+    await megaInputs.nth(0).fill('mega002@vlog.gs')
+    await megaInputs.nth(2).fill('mega002@vlog.gs')
+    await megaInputs.nth(3).fill('stub-mega-password')
+    await page.getByRole('button', { name: '测试连接', exact: true }).click()
+    await page.waitForTimeout(500)
+    const megaPassed = await page.evaluate(() => {
+      const d = document.querySelector('.dialog')
+      if (!d) return { found: false }
+      const box = d.querySelector('.success-box')
+      const tip = d.querySelector('.help-tip')
+      const bubble = d.querySelector('.help-tip-bubble')
+      const cs = box ? getComputedStyle(box) : null
+      const text = d.textContent ?? ''
+      return {
+        found: true,
+        hasSuccessBox: !!box,
+        successBg: cs ? cs.backgroundColor : null,
+        successText: box?.textContent?.trim() ?? null,
+        hasHelpTip: !!tip,
+        bubbleText: bubble?.textContent?.trim() ?? null,
+        hasPassedLine: text.includes('已通过测试，点保存即存为已验证。'),
+        // 凭证说明不应再单独占一行灰底长条
+        hasStandaloneCredBox: [...d.querySelectorAll('.notice-box')].some((b) => b.textContent?.includes('凭证只保存在你这台 Mac 上')),
+      }
+    })
+    console.log('mega passed state:', JSON.stringify(megaPassed))
+    if (!megaPassed.hasSuccessBox) failures.push('MEGA 测试通过后没有绿底 success-box（应为绿色提醒）')
+    if (megaPassed.successBg !== 'rgb(240, 253, 244)') failures.push(`success-box 背景应为 rgb(240, 253, 244)，实测 ${megaPassed.successBg}`)
+    if (!megaPassed.hasHelpTip) failures.push('MEGA 通过后“已通过测试”文末没有“?”悬浮提示')
+    if (megaPassed.bubbleText !== '凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。') failures.push(`“?”气泡文字不对，实测 ${JSON.stringify(megaPassed.bubbleText)}`)
+    if (!megaPassed.hasPassedLine) failures.push('MEGA 测试通过后没有“已通过测试，点保存即存为已验证。”')
+    if (megaPassed.hasStandaloneCredBox) failures.push('凭证说明还单独占一行灰底长条（应已收进“?”气泡）')
+    // 悬停“?”：气泡应出现。
+    await page.locator('.dialog .help-tip').hover()
+    await page.waitForTimeout(300)
+    const tipVisible = await page.evaluate(() => {
+      const b = document.querySelector('.help-tip-bubble')
+      if (!b) return { found: false }
+      const cs = getComputedStyle(b)
+      return { found: true, opacity: cs.opacity, visibility: cs.visibility }
+    })
+    console.log('mega help-tip hover:', JSON.stringify(tipVisible))
+    if (tipVisible.opacity !== '1' || tipVisible.visibility !== 'visible') failures.push(`悬停“?”后气泡没有出现，实测 ${JSON.stringify(tipVisible)}`)
+    await page.screenshot({ path: path.join(SHOTS, '01e-wizard-mega-passed.png') })
+    // 焦点绿环不被裁：点邮箱输入框，2px outline 左右都应完整
+    // 可见——输入框左缘离 .dialog-body 内容区左缘至少 2px
+    // （outline-offset 0，outline 向外 2px），顶缘同理。
+    await page.locator('.dialog input[type="email"]').click()
+    await page.waitForTimeout(200)
+    const focusClip = await page.evaluate(() => {
+      const body = document.querySelector('.dialog-body')
+      const input = document.querySelector('.dialog input[type="email"]')
+      if (!body || !input) return { found: false }
+      const b = body.getBoundingClientRect()
+      const r = input.getBoundingClientRect()
+      const cs = getComputedStyle(input)
+      return {
+        found: true,
+        outlineWidth: cs.outlineWidth,
+        outlineColor: cs.outlineColor,
+        leftGap: r.left - b.left,
+        topGap: r.top - b.top,
+      }
+    })
+    console.log('mega input focus:', JSON.stringify(focusClip))
+    if (focusClip.outlineColor !== 'rgb(86, 225, 108)') failures.push(`邮箱输入框焦点 outline 应为品牌绿 rgb(86, 225, 108)，实测 ${focusClip.outlineColor}`)
+    if (focusClip.found && focusClip.leftGap < 2) failures.push(`邮箱输入框左缘离内容区左缘只有 ${focusClip.leftGap}px，2px 焦点 outline 左侧会被裁掉`)
+    if (focusClip.found && focusClip.topGap < 2) failures.push(`邮箱输入框顶缘离内容区顶缘只有 ${focusClip.topGap}px，2px 焦点 outline 顶部会被裁掉`)
+    await page.screenshot({ path: path.join(SHOTS, '01f-wizard-mega-focus.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+
     // 1d. OneDrive 向导（V0.6.0）：OneDrive 必须可选（不再标
     // V0.2），第 2 步是 OAuth 授权码流程——有 Client ID、
     // “生成授权链接”、Azure 门户的建应用指引和 Refresh Token。
@@ -751,12 +840,16 @@ try {
         hasPasteBox: inputs.some((i) => (i.getAttribute('placeholder') ?? '').includes('code=')),
         nextDisabled: nextBtn ? nextBtn.disabled : null,
         nextHint: text.includes('还差一步：请填写名字。'),
+        // 自动换取必须用生成链接时的那个 Client ID（内置官方
+        // 应用 ID），不能是空串。
+        exchangeClientId: (window.__lastExchange ?? [])[1] ?? null,
       }
     })
-    console.log('oneclick auto:', JSON.stringify({ opened: autoFlow.openedUrls, hasTestPassed: autoFlow.hasTestPassed, hasTokenMsg: autoFlow.hasTokenMsg, hasPasteBox: autoFlow.hasPasteBox, nextDisabled: autoFlow.nextDisabled }))
+    console.log('oneclick auto:', JSON.stringify({ opened: autoFlow.openedUrls, hasTestPassed: autoFlow.hasTestPassed, hasTokenMsg: autoFlow.hasTokenMsg, hasPasteBox: autoFlow.hasPasteBox, nextDisabled: autoFlow.nextDisabled, exchangeClientId: autoFlow.exchangeClientId }))
     if (!autoFlow.found) failures.push('一键授权后对话框不见了')
     if (!autoFlow.openedUrls?.some((u) => u.includes('dropbox.com/oauth2/authorize'))) failures.push('点“打开浏览器授权”后没有自动打开浏览器授权页（window.open 没被调用）')
     if (!autoFlow.hasTokenMsg) failures.push('自动回调后没有显示“Token 已换取成功”')
+    if (autoFlow.exchangeClientId !== 'zydrive-builtin-id') failures.push(`自动换取用的 Client ID 不对，应为内置官方应用 ID 'zydrive-builtin-id'，实测 ${JSON.stringify(autoFlow.exchangeClientId)}`)
     if (!autoFlow.hasTestPassed) failures.push('自动换到 Token 后没有在授权组件内自动测试连接（应显示“连接测试通过”）')
     if (!autoFlow.hasLinkTime) failures.push('授权链接旁没有显示生成时间（code 只有 10 分钟有效）')
     if (autoFlow.hasPasteBox) failures.push('手动粘贴框默认是展开的（应默认折叠，只在“手动粘贴”入口里）')

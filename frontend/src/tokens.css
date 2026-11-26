@@ -410,11 +410,37 @@ button {
   border: 1px solid #fecaca; background: #fef2f2; color: #991b1b;
   border-radius: 12px; padding: 12px 16px; margin-bottom: 12px; font-size: 14px;
 }
+.success-box {
+  border: 1px solid #86efac; background: #f0fdf4; color: #166534;
+  border-radius: 12px; padding: 12px 16px; margin-bottom: 12px; font-size: 14px;
+}
 .notice-box {
   border: 1px solid var(--border); background: var(--card);
   border-radius: 12px; padding: 12px 16px; margin-bottom: 12px; font-size: 14px;
   color: var(--ink-secondary);
 }
+
+/* ---- 问号悬浮提示 ----
+   小圆圈“?”，鼠标悬停或键盘聚焦时在图标上方弹出说明气泡。
+   气泡朝上弹：弹窗底部是操作栏，朝下弹会被挡住；放在
+   .dialog-body 里，气泡向上有整张表单的空间，不会被裁。 */
+.help-tip {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px; margin-left: 6px; vertical-align: -3px;
+  border: 1px solid var(--border); border-radius: 50%;
+  color: var(--ink-secondary); font-size: 11px; line-height: 1; cursor: help;
+  background: var(--paper); flex-shrink: 0;
+}
+.help-tip:hover, .help-tip:focus-visible { border-color: var(--brand); color: var(--brand); outline: none; }
+.help-tip-bubble {
+  position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+  width: 250px; padding: 8px 12px; border-radius: 8px; z-index: 60;
+  background: var(--ink); color: var(--paper); font-size: 12px; line-height: 1.6; font-weight: 400;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18); text-align: left; white-space: normal;
+  opacity: 0; visibility: hidden; transition: opacity 150ms var(--ease), visibility 150ms;
+  pointer-events: none;
+}
+.help-tip:hover .help-tip-bubble, .help-tip:focus-visible .help-tip-bubble { opacity: 1; visibility: visible; }
 
 /* ---- 弹窗 ---- */
 .dialog-backdrop {
@@ -435,7 +461,7 @@ button {
    body has a thin scrollbar in the app's own palette. Other
    dialogs keep the old whole-dialog scroll. */
 .dialog-flex { display: flex; flex-direction: column; overflow: hidden; }
-.dialog-flex .dialog-body { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+.dialog-flex .dialog-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px; scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
 .dialog-flex .dialog-actions { position: static; flex-shrink: 0; margin-top: 16px; }
 .dialog h1 { margin-top: 0; }
 .dialog-actions {

@@ -245,7 +245,7 @@ function OAuthCodeFlow({
         </div>
       )}
       {authTest !== 'idle' && (
-        <div className={authTest === 'passed' ? 'notice-box' : authTest === 'failed' ? 'error-box' : 'notice-box'}>
+        <div className={authTest === 'passed' ? 'success-box' : authTest === 'failed' ? 'error-box' : 'notice-box'}>
           {authTest === 'testing' ? '正在测试连接…' : authTestMsg}
           {authTest !== 'testing' && (
             <div style={{ marginTop: 8 }}>
@@ -257,6 +257,17 @@ function OAuthCodeFlow({
         </div>
       )}
     </>
+  )
+}
+
+// “?”悬浮提示：鼠标悬停或键盘聚焦时在图标上方弹出说明气泡。
+// 气泡朝上弹：弹窗底部是操作栏，朝下弹会被挡住。
+function HelpTip({ text }: { text: string }) {
+  return (
+    <span className="help-tip" tabIndex={0} aria-label={text}>
+      ?
+      <span className="help-tip-bubble">{text}</span>
+    </span>
   )
 }
 
@@ -358,6 +369,15 @@ export default function AddMountDialog({
   const pollTimer = useRef<number | null>(null)
   const pollCount = useRef(0)
   const oauthStateRef = useRef('')
+  // Link credentials ref (2026-11-26): same stale-closure class
+  // as oauthState (fixed 2026-11-25) — the poll interval is
+  // created inside genAuthLink, in the render BEFORE
+  // setLinkClientId takes effect, so the exchangeCode the poll
+  // calls still sees linkClientId === '' and the provider
+  // rejects the auto-exchange with an empty Client ID; the
+  // manual button reads the fresh state, which is why it works.
+  const linkClientIdRef = useRef('')
+  const linkClientSecretRef = useRef('')
   // The step the dialog was on before this render: the step-2
   // reset effect below must NOT run when the user comes back
   // from step 3 (confirm) — they only went back to fix the
@@ -813,6 +833,8 @@ export default function AddMountDialog({
       oauthStateRef.current = start.state
       setLinkClientId(id.trim())
       setLinkClientSecret(secret)
+      linkClientIdRef.current = id.trim()
+      linkClientSecretRef.current = secret
       setLinkAt(Date.now())
       setOauthMsg('已在浏览器里打开授权页：点允许后会自动跳回、自动换 Token、自动测试连接。')
       startWaiting(start.state)
@@ -845,8 +867,13 @@ export default function AddMountDialog({
       // The exchange uses the Client ID / Secret the link was
       // built with — the one-click flow never fills the form
       // fields, so reading them here would exchange with "".
-      const useClientId = linkClientId || clientId.trim()
-      const useSecret = linkClientId ? linkClientSecret : clientSecret
+      // The link credentials come from the ref first: the poll
+      // callback that triggers the auto-exchange was created in
+      // the render before setLinkClientId took effect, so the
+      // state there is still '' (see the ref comment above).
+      const linkId = linkClientIdRef.current || linkClientId
+      const useClientId = linkId || clientId.trim()
+      const useSecret = linkId ? (linkClientSecretRef.current || linkClientSecret) : clientSecret
       // The state comes from the caller (the poll passes the
       // flow's own state) or the ref — NEVER from the
       // `oauthState` state variable: the poll callback was created
@@ -1532,13 +1559,17 @@ export default function AddMountDialog({
             )}
 
             {formError && <div className="error-box">{formError}</div>}
-            {testMsg && <div className={testState === 'passed' ? 'notice-box' : 'error-box'}>{testMsg}</div>}
+            {testMsg && <div className={testState === 'passed' ? 'success-box' : 'error-box'}>{testMsg}</div>}
             <p className="muted">
-              {testState === 'passed' && testedKey === JSON.stringify(buildInput())
-                ? '已通过测试，点保存即存为已验证。'
-                : '测试通过 → 点保存即存为已验证；没测或测试失败也能保存，会标成“未验证”，之后在设置页 → 网盘 → 重新测试。'}
+              {testState === 'passed' && testedKey === JSON.stringify(buildInput()) ? (
+                <>
+                  已通过测试，点保存即存为已验证。
+                  <HelpTip text="凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。" />
+                </>
+              ) : (
+                '测试通过 → 点保存即存为已验证；没测或测试失败也能保存，会标成“未验证”，之后在设置页 → 网盘 → 重新测试。'
+              )}
             </p>
-            <div className="notice-box">凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。</div>
             </div>
             <div className="dialog-actions">
               {!reauthMount && (

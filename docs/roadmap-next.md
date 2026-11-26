@@ -4,6 +4,7 @@
 > 版本基线：本地 v0.8.4（GitHub head b8498fa9）；v0.8.5 改动在工作区，未推送。
 > **v0.9.0 落地（2026-11-25）：本文件第 3 节的五项已全部做完，见文末“附：v0.9.0 落地记录”。**
 > **v0.9.1 落地（2026-11-25）：单文件断点续传（Drime 先行）、Box/pCloud/MEGA 三家新驱动、文件预览两档，见文末“附：v0.9.1 落地记录”。**
+> **v0.9.2 补丁（2026-11-26）：MEGA 表单三处 UI 修正（测试通过变绿、凭证说明改问号悬浮提示、输入框焦点绿环左侧裁剪修复）+ Dropbox 一键授权自动换取 bug 修复，见文末“附：v0.9.2 补丁”。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -143,6 +144,13 @@ v0.9.0 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 visual-check 本轮还修了两个测试本身的缺陷（UI 是对的，截图为证）：① `hasText: 'Box'` 子串匹配到了 Dropbox 卡（Playwright hasText 不区分大小写）——改锚定正则点名字元素；② “一键授权还没配置”只在选中一键卡时才渲染，Box/pCloud 默认选“自己的应用”——改断言灰卡副标题“这个网盘的官方应用还没注册好”。另：桩里不能出现无法解析的 URL——视频/PDF 若给 `zydrive-preview://`，headless Chromium 的鼠标输入会被卡死（单开视频或单开 PDF 没事，两个都开过再关 Inspector，连侧栏导航都点不动，刷新页面也恢复不了；DOM 点击能导航，说明应用没坏，是鼠标输入本身被卡住）——现桩里视频/音频/PDF 全部用 data-URL（视频是无效字节、照样走降级分支）。这只是桩环境的怪癖，真机上 scheme 已注册。
 
 v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2（新增的 Box/pCloud/MEGA 与所有一键授权流程全是 mock）；pCloud 欧洲区换 Token 端点待真实欧洲账号验证；断点续传只有 Drime；`zydrive-preview://` 与 Quick Look/system-open 需 Mac 实测；同步冲突仍只有 keep-both 且静默；空源目录不同步；检查更新未接；开机启动需打包后真机验证；英文只覆盖导航/顶栏/设置页。
+
+## 附：v0.9.2 补丁（2026-11-26，用户在 Mac 上测 v0.9.1 时截图反馈的三处）
+
+1. **测试通过变绿**：密钥类表单（MEGA 等）的连接测试通过后，状态条原来是灰底 notice-box，现改成绿底 success-box（边框 #86efac / 底 #f0fdf4 / 字 #166534，与 error-box 同一套路）；OAuth 授权组件里通过态也同步改绿。
+2. **凭证说明改问号悬浮提示**：原来单独占一行的灰底长条“凭证只保存在你这台 Mac 上（加密存储），不会上传到任何地方。”已删，改成“已通过测试，点保存即存为已验证。”文末的“?”圆圈图标，鼠标悬停或键盘聚焦时在图标上方弹出气泡显示这段文字。OAuth 表单那边的同一段文字先没动——那边没有“已通过测试”这行字，问号没地方挂，等用户说再改。
+3. **输入框焦点绿环左侧被裁**：根因是 `.dialog-flex .dialog-body` 只留了右侧 4px 内边距、左侧 0，`overflow-y: auto` 的滚动容器把 2px 焦点 outline 左侧裁掉了，右侧靠 4px 内边距保住了——左右不对称，看起来就是左侧绿被挡住。改成四边 4px 内边距（select 的 outline-offset 1px 也需要 3px 空间），根治。
+4. **Dropbox 一键授权后不自动换 Token（2026-11-26，用户报：浏览器显示“授权成功”白页面，手动换取能成功）**：根因是过期闭包——轮询 interval 在 genAuthLink 里创建，那时 setLinkClientId 还没生效，轮询回调里 exchangeCode 读到的 linkClientId 还是 ''，自动换取拿空 Client ID 去换，Dropbox 拒了；手动点“换取 Token”读的是已更新的 state，所以能成功。和 2026-11-25 修的 oauthState 过期闭包同一类 bug，那次只修了 state，漏了 linkClientId/linkClientSecret。修法同款：加 linkClientIdRef/linkClientSecretRef，genAuthLink 里同步写 ref，exchangeCode 优先读 ref。验证方法：先让检查桩的 ExchangeOAuthCode 像真 Dropbox 一样拒空 client_id，跑出复现（自动换取 client_id 为 ''、无 Token）；修完再跑，自动换取 client_id 为 'zydrive-builtin-id'、Token 与自动测试都通过，检查里加了该断言，防回归。
 
 ## 附：文件去重设计（2026-11-25，用户：各云去重逻辑不同，可能需要给每个云单独做）
 
