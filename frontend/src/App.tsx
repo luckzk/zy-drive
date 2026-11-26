@@ -210,6 +210,9 @@ export default function App() {
           onGroupsChanged={() => void loadMounts()}
           onAddMount={() => setShowAddMount(true)}
           onRemoveMount={() => void loadMounts()}
+          // v0.11.0：拖拽排序松手时先乐观更新本地顺序（Sidebar
+          // 内部算好新数组直接 setMounts），再调后端确认。
+          onMountsReordered={(next) => setMounts(next)}
         />
 
         <main style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

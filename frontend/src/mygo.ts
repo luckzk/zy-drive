@@ -269,6 +269,12 @@ export interface Mount {
    * never affect tokens, caches or sync.
    */
   group?: string;
+  /**
+   * SortOrder is the mount's position inside its group (v0.11.0,
+   * sidebar drag-sort): 0-based, dense 0..n-1 per group. Only
+   * meaningful inside a group; ListMounts orders by it.
+   */
+  sortOrder: number;
   caps: Caps;
   status: MountStatus;
   /**
@@ -853,6 +859,12 @@ export const DesktopService = {
    * others — see internal/app/quotas.go).
    */
   mountQuotas: bind<[], (MountQuota | null)[]>("DesktopService.MountQuotas", () => []),
+  /**
+   * MoveMount moves a mount to a position inside a group (v0.11.0,
+   * sidebar drag-sort): index is clamped to the target group, the
+   * displaced mounts shift down, moving to the same spot is a no-op.
+   */
+  moveMount: bind<[string, string, number], Mount | null>("DesktopService.MoveMount", (id: string, group: string, index: number) => [id, group, index]),
   /**
    * MoveNodes moves the selection to a folder on the same or another
    * mount (v0.10.0, right-click menu). Same mount renames in place;

@@ -7,6 +7,7 @@
 > **v0.9.2 补丁（2026-11-26）：MEGA 表单三处 UI 修正（测试通过变绿、凭证说明改问号悬浮提示、输入框焦点绿环左侧裁剪修复）+ Dropbox 一键授权自动换取 bug 修复，见文末“附：v0.9.2 补丁”。**
 > **v0.9.3 补丁（2026-11-26，已推，提交 b3892ed9）：MEGA 挂载加载失败的诊断与恢复——LoadMounts 记真实错误、会话失效标 auth_expired、文件浏览重试走 TestMount，见文末“附：v0.9.3 补丁”。根因后经用户确认是 MEGA 账号被锁（重置密码后恢复，旧会话继续有效），不是代码 bug。**
 > **v0.10.0（2026-11-26，未推）：主页交互优化——长按拖拽网盘换分组 + 文件右键菜单（删除/重命名/移动，三个新后端方法），见文末“附：v0.10.0”。另修了一个共享样式真 bug：`.dialog-actions` 的 sticky 底栏在短对话框里会盖住文案行下半截。**
+> **v0.11.0（2026-11-26，未推）：侧栏网盘排序 + 拖拽丝滑化——长按拖拽可改顺序（第 8 个拖到第 4 个、其余下移带过渡动画），不只是换分组；新增 `sort_order` 字段（迁移 v24/v25）与 `MoveMount` 后端方法，见文末“附：v0.11.0”。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -273,3 +274,33 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 
 - go vet 全过；go test ./... 全过（21 个包；新增 `TestMoveNodesCrossMountEmptyFolder`，fileops 测试共 8 个）；npm 构建 JS 428.36 kB / gzip 132.32 kB；make build 三二进制均报 0.10.0；visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2h（右键菜单：菜单含复制到…/移动到…/重命名/删除；删除确认框回收站文案；点取消菜单关闭；移动到…打开目标框）与 2i（长按 450ms 进拖拽态、拖到“个人”组后 UpdateMountGroup 被调到 `["m-s3", "个人"]`、卡片换组）断言段，桩补了 UpdateMountGroup/DeleteNodes/RenameNode/MoveNodes。
 - 诚实缺口：真机长按手感（400ms 是否顺手、误触率）需用户 Mac 实测；跨盘移动大文件耗时与收尾轮询（2s 间隔、30 分钟上限）在真机大文件上未验证；嵌套空子文件夹跨盘移动会丢（BatchCopy 本来就不复制空目录）；重命名/删除/移动的真实账号端到端仍是 mock 契约测试 + 本地盘测试，未在 Dropbox/Drive 等真账号上跑过。
+
+## 附：v0.11.0（2026-11-26，侧栏排序 + 拖拽丝滑化；未推，等用户确认）
+
+用户 2026-11-26 13:08 反馈 v0.10.0 的拖拽“不是很丝滑”，并且要的不仅是换分组，还要改顺序：“比如我拖动 8，是可以放到 4 的位置，然后剩下的向下移动，有过渡动画。”
+
+### A. 排序字段与 MoveMount（后端）
+
+- 迁移 v24：mounts 表加 `sort_order INTEGER NOT NULL DEFAULT 0`；迁移 v25 回填：按 created_at 顺序给每组内现有盘依次编号（同 created_at 时按 id 排），现有顺序不变。两个迁移是因为框架每条迁移只执行一条 SQL。
+- `ListMounts` 改成 `ORDER BY sort_order ASC, created_at ASC`。`sort_order` 只在组内有意义（每组内从 0 连续编号）；全局顺序由每组内的 sort_order 决定，前端按组过滤渲染。
+- 新方法 `MoveMount(ctx, id, group string, index int) (*domain.Mount, error)`（`internal/app/accounts.go`，仿照 UpdateMountGroup 的内存 + DB 双写）：把一个盘移到目标分组内的第 index 个位置，index 夹取到 [0, 目标组盘数]。同组内移动时被挤开的盘依次后移（8→4 则原 4..7 变成 5..8）；跨组时源组收拢、目标组腾出位置；移到空分组即 index 0；移到同一位置是 no-op（不写库，UpdatedAt 不变）。DB 层 `UpdateMountOrders`（`internal/cache/mounts.go`）一个事务批量重编号，只写变了的行；`UpdateMountGroup` 改成追加到目标组末尾（同组是 no-op）；新增挂载默认追加到组末尾（sort_order = 组内 max+1）；删盘后同组内后面的盘收拢（保持 0..n-1 连续）。
+- 绑进 DesktopService（bind.go），`frontend/src/mygo.ts` 重新生成，`frontend/src/api/client.ts` 加 `moveMount` wrapper。Go 测试（`internal/app/mountorder_test.go`、`internal/cache/migrate_test.go`）：同组 8→4 顺序与后移、跨组两组都对、空分组、index 越界夹取、同位 no-op 不改 updated_at、重启后顺序保持、删盘收拢、新盘追加到末尾、v23 库升级回填。
+
+### B. 可排序的拖拽（前端，Sidebar.tsx 重写）
+
+- 触发不变：按住卡片 400ms 且移动 ≤6px 才进拖拽态；单击仍选中；垃圾桶按钮区不启动拖拽；Esc/落空（同位松手）取消。长按等待期间卡片给轻微按下态（scale 0.98 + 阴影加深，`.mount-card.pressing`），等待不感觉死滞。
+- 丝滑跟手：拖拽中原卡片留在原位占位（`visibility: hidden`，不触发布局重排），一个 `cloneNode(true)` 的克隆（`position: fixed`，`transition: none`）跟随指针；位置更新走 rAF 循环自续 + 直接改 DOM style，拖拽中不经过 React state——v0.10.0 每 mousemove 都 setState 是“不丝滑”最可能的根因。rAF 循环必须自续：只靠 pointermove 驱动的话，指针停在边缘等自动滚动时就没帧可跑、滚动会卡住（检查里实测复现过一次）。克隆提起来态（半透明 + 阴影 + 轻微放大），拖拽中禁文本选中。stagger 的 rise 动画会盖住 JS 直写的 transform：原卡片靠 `.sidebar.dragging` 关动画，克隆在 body 下、必须在 `.mount-card.dragging` 上直接写 `animation: none`。
+- 插入位置指示：按指针 Y 在扁平化的卡片列表（各组卡片按渲染顺序，含组头区域）里算最近的插入缝隙；在该缝隙处画一条 2px 品牌绿插入线（`.insert-line`，fixed 定位，JS 直写 top/left/width）；插入点所在的分组即目标分组（线落在哪个分组的区域内就进哪个分组；空分组的组头下方可落点，index 0；“未分组”同样可落）。落点变化时插入线实时跟随。v0.10.0 的“拖到分组行换组”被位置插入统一替代，分组行绿虚线框高亮已去掉。
+- 其余卡片下移过渡：被插入线挤开的卡片按插入点用 transform 平移让位（下移时插入点之后的卡片上移填原位，上移时插入点之前的卡片下移让位），走 `.mount-card` 已有的 transform 200ms 过渡（cubic-bezier(0.22,1,0.36,1)），不瞬间跳变；只有插入点变化时才改 transform，不每帧重写。侧栏滚动时几何重测（rect 是视口坐标）；指针贴近上下沿 48px 时自动滚动（每帧 12px），把上方/下方的分组带进视野。
+- 提交：松手时克隆先用 200ms 动画落进最终位置（无变化时回原位），再乐观更新本地顺序（App 的 setMounts 经 `onMountsReordered` 传进来，Sidebar 内部按渲染顺序算好新数组；`flushSync` 同步提交，与清掉拖拽内联 transform 在同一任务内完成，中间没有一帧会画出“旧顺序 + 已清 transform”的闪跳），然后调 `api.moveMount(id, group, index)`；失败时 friendlyError 提示 + `onGroupsChanged()` 重拉回滚。
+- 检查联动修（v0.11.0 暴露的顺序假设）：4b5 原地重新授权段原来点列表第一个“重新授权”按钮、默认它是 S3 网盘；2i/2j 拖拽改了顺序后第一行变成 Dropbox 网盘，对话框里没有桶名、填表超时。改成按名字找“我的 R2”那行点——顺序会变，测试不能再假设列表首行是谁。
+
+### Demo v8 对比结论
+
+- 对齐：侧栏结构（分组 + 数量徽标 + 卡片 + 容量条）、品牌绿 #56E16C、200ms cubic-bezier(0.22,1,0.36,1) 过渡、卡片提起态的阴影，与原型一致。
+- 有意偏离（用户亲定）：原型拖拽是握柄式（`.mdrag` ⠿ + 原生 HTML5 draggable，`title="拖到其他分组可以移动"`），只能换分组、不能改组内顺序；v0.11.0 按用户 2026-11-26 13:08 的要求做长按启动 + 组内排序（插入线定位置、其余卡片下移让位），分组行绿虚线高亮（原型 `.mgroup.dragover`）被插入线替代，握柄没做（v0.10.0 已按用户 11:39 的决定去掉握柄）。
+
+### 验证（2026-11-26）
+
+- go vet 全过；go test ./... 全过（21 个包；`TestBatchDownloadLocalEndToEnd` 在整包并行跑时失败过一次——下载 .part 重命名报 no such file，单独重跑通过、整包重跑也通过，判定为并行负载下的 flake，与排序改动无关；已知 flaky 的 TestRunnerRetryOnce 这次没抖）；npm 构建 JS 434.07 kB / gzip 134.31 kB；make build 三二进制均报 0.11.0；visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1；挂载模式连跑两次都过），新增 2i 改写（长按 450ms 进拖拽态、插入线随指针移动、拖到“个人”组首后 MoveMount 被调到 `["m-s3", "个人", 0]`、卡片换组排组首）与 2j（组内排序：长按最后一张拖到组首，MoveMount 被调到 `["m-long", "个人", 0]`、组内顺序真的变了；拖拽中克隆 transform 随指针连续变化），桩补了 MoveMount（按渲染顺序重排，与乐观更新一致）。
+- 诚实缺口：真机长按手感（400ms 是否顺手、误触率）与拖拽丝滑度仍需用户 Mac 实测；卡片高度不一致时（超长名、带/不带容量条）插入线对齐只在桩数据上看过，真实挂载组合未验证；自动滚动速度（12px/帧）是拍脑袋定的，没在真机上调过；排序的真实账号端到端仍是 mock 契约测试，未在真账号上跑过。

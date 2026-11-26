@@ -90,8 +90,8 @@ func upsertMount(db sqlExecer, m *domain.Mount, config map[string]string) error 
 	}
 	if _, err := db.Exec(`INSERT INTO mounts
 		(id, display_name, provider, account_id, root_ref, root_label, caps_json,
-		 status, group_name, config_json, verified, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 status, group_name, sort_order, config_json, verified, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			display_name=excluded.display_name, provider=excluded.provider,
 			account_id=excluded.account_id, root_ref=excluded.root_ref,
@@ -101,7 +101,7 @@ func upsertMount(db sqlExecer, m *domain.Mount, config map[string]string) error 
 			verified=excluded.verified,
 			updated_at=excluded.updated_at`,
 		m.ID, m.DisplayName, string(m.Provider), m.AccountID, m.RootRef, m.RootLabel,
-		string(capsJSON), string(m.Status), m.Group, string(configJSON),
+		string(capsJSON), string(m.Status), m.Group, m.SortOrder, string(configJSON),
 		boolToInt(m.Verified),
 		created, updated); err != nil {
 		return fmt.Errorf("cache: save mount: %w", err)
@@ -109,18 +109,54 @@ func upsertMount(db sqlExecer, m *domain.Mount, config map[string]string) error 
 	return nil
 }
 
-// UpdateMountGroup changes only the group of a saved mount row.
+// UpdateMountGroup changes only the group of a saved mount row,
+// appending it at the end of the new group (sort_order = max+1
+// there). Moving to the same group is a no-op: the position is
+// untouched. Callers that reorder (MoveMount) use
+// UpdateMountOrders instead — this is the rename/delete-migration
+// path, where "append at the end" is the only sane placement.
 func (db *DB) UpdateMountGroup(id, group string) error {
-	_, err := db.SQL.Exec(`UPDATE mounts SET group_name = ?, updated_at = ?
-		WHERE id = ?`, group, time.Now().UTC().Format(time.RFC3339), id)
+	_, err := db.SQL.Exec(`UPDATE mounts SET group_name = ?, sort_order = (
+			SELECT COALESCE(MAX(sort_order), -1) + 1 FROM mounts WHERE group_name = ?
+		), updated_at = ?
+		WHERE id = ? AND group_name != ?`,
+		group, group, time.Now().UTC().Format(time.RFC3339), id, group)
 	return err
 }
 
-// ListMounts returns all saved mounts in creation order.
+// MountOrder is one mount's (group, sort_order) assignment, as
+// written by the MoveMount renumbering.
+type MountOrder struct {
+	ID        string
+	Group     string
+	SortOrder int
+}
+
+// UpdateMountOrders rewrites group + sort_order for the given
+// mounts in one transaction (the MoveMount renumbering: the moved
+// mount plus every mount whose position shifted in either group).
+func (db *DB) UpdateMountOrders(orders []MountOrder) error {
+	tx, err := db.SQL.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, o := range orders {
+		if _, err := tx.Exec(`UPDATE mounts SET group_name = ?, sort_order = ?, updated_at = ?
+			WHERE id = ?`, o.Group, o.SortOrder, now, o.ID); err != nil {
+			return fmt.Errorf("cache: update mount order: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// ListMounts returns all saved mounts in sidebar order: sort_order
+// inside each group (dense 0..n-1), creation order as tie-break.
 func (db *DB) ListMounts() ([]PersistedMount, error) {
 	rows, err := db.SQL.Query(`SELECT id, display_name, provider, account_id,
-		root_ref, root_label, caps_json, status, group_name, config_json, verified, created_at, updated_at
-		FROM mounts ORDER BY created_at ASC`)
+		root_ref, root_label, caps_json, status, group_name, sort_order, config_json, verified, created_at, updated_at
+		FROM mounts ORDER BY sort_order ASC, created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("cache: list mounts: %w", err)
 	}
@@ -132,7 +168,7 @@ func (db *DB) ListMounts() ([]PersistedMount, error) {
 		var verified int
 		var created, updated string
 		if err := rows.Scan(&m.ID, &m.DisplayName, &provider, &m.AccountID,
-			&m.RootRef, &m.RootLabel, &capsJSON, &status, &m.Group, &configJSON,
+			&m.RootRef, &m.RootLabel, &capsJSON, &status, &m.Group, &m.SortOrder, &configJSON,
 			&verified,
 			&created, &updated); err != nil {
 			return nil, fmt.Errorf("cache: list mounts: %w", err)
@@ -161,12 +197,20 @@ func (db *DB) ListMounts() ([]PersistedMount, error) {
 
 // DeleteMount removes a mount row and its cached listings/cursors.
 // It never touches cloud data; the caller also deletes the secret.
+// The rest of the group closes ranks (sort_order > the deleted
+// one shifts down by 1), so sort_order stays dense 0..n-1.
 func (db *DB) DeleteMount(id string) error {
 	tx, err := db.SQL.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
+	var group string
+	var sortOrder int
+	err = tx.QueryRow(`SELECT group_name, sort_order FROM mounts WHERE id = ?`, id).Scan(&group, &sortOrder)
+	if err != nil && err != sql.ErrNoRows {
+		return fmt.Errorf("cache: delete mount: %w", err)
+	}
 	for _, q := range []string{
 		`DELETE FROM mounts WHERE id = ?`,
 		`DELETE FROM nodes WHERE mount_id = ?`,
@@ -174,6 +218,12 @@ func (db *DB) DeleteMount(id string) error {
 		`DELETE FROM cursors WHERE mount_id = ?`,
 	} {
 		if _, err := tx.Exec(q, id); err != nil {
+			return fmt.Errorf("cache: delete mount: %w", err)
+		}
+	}
+	if err == nil {
+		if _, err := tx.Exec(`UPDATE mounts SET sort_order = sort_order - 1
+			WHERE group_name = ? AND sort_order > ?`, group, sortOrder); err != nil {
 			return fmt.Errorf("cache: delete mount: %w", err)
 		}
 	}

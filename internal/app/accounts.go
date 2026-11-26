@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/luckzk/zy-drive/internal/auth"
+	"github.com/luckzk/zy-drive/internal/cache"
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
 )
@@ -218,6 +219,17 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
+	// New mounts go at the end of their group (sort_order =
+	// max+1 there; the first mount in a group gets 0). The same
+	// value is what upsertMount persists, so memory and SQLite
+	// agree without a reload.
+	sortOrder := -1
+	for _, h := range a.mounts {
+		if h.Mount.Group == m.Group && h.Mount.SortOrder > sortOrder {
+			sortOrder = h.Mount.SortOrder
+		}
+	}
+	m.SortOrder = sortOrder + 1
 	// MEGA: the probe just logged in with the password — export
 	// the session now and store THAT, never the password (see
 	// exportMegaSession). A failed export aborts the save.
@@ -689,6 +701,9 @@ func (a *App) ListMounts() []*domain.Mount {
 		out = append(out, h.Mount)
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID < out[j].ID
 		}
@@ -699,11 +714,15 @@ func (a *App) ListMounts() []*domain.Mount {
 
 // RemoveMount unregisters a mount and deletes its local records
 // (mount row, cached listings, encrypted credential blob). It never
-// deletes cloud data: the files stay where they are.
+// deletes cloud data: the files stay where they are. The rest of
+// the group closes ranks, in memory and in SQLite, so sort_order
+// stays dense.
 func (a *App) RemoveMount(id string) error {
-	if _, ok := a.mounts[id]; !ok {
+	h, ok := a.mounts[id]
+	if !ok {
 		return fmt.Errorf("app: unknown mount %q", id)
 	}
+	group, sortOrder := h.Mount.Group, h.Mount.SortOrder
 	delete(a.mounts, id)
 	if a.DB != nil {
 		if err := a.DB.DeleteMount(id); err != nil {
@@ -711,6 +730,11 @@ func (a *App) RemoveMount(id string) error {
 		}
 		// Best effort: a local mount has no secret row.
 		_ = a.DB.DeleteSecret(secretIDFor(id))
+	}
+	for _, h2 := range a.mounts {
+		if h2.Mount.Group == group && h2.Mount.SortOrder > sortOrder {
+			h2.Mount.SortOrder--
+		}
 	}
 	return nil
 }
@@ -917,18 +941,108 @@ func (a *App) decryptMountCreds(accountID string) (mountCredentials, bool, error
 
 // UpdateMountGroup changes a mount's sidebar group, in memory and in
 // SQLite, so the group survives a restart together with the mount.
+// The mount is appended at the end of the new group; moving to the
+// same group is a no-op. (Drag-sort uses MoveMount, which places
+// the mount at an exact index instead.)
 func (a *App) UpdateMountGroup(id, group string) error {
 	h, ok := a.mounts[id]
 	if !ok {
 		return fmt.Errorf("app: unknown mount %q", id)
 	}
+	if h.Mount.Group == group {
+		return nil
+	}
+	sortOrder := -1
+	for _, h2 := range a.mounts {
+		if h2.Mount.Group == group && h2.Mount.SortOrder > sortOrder {
+			sortOrder = h2.Mount.SortOrder
+		}
+	}
 	h.Mount.Group = group
+	h.Mount.SortOrder = sortOrder + 1
 	h.Mount.UpdatedAt = time.Now().UTC()
 	a.mounts[id] = h
 	if a.DB != nil {
 		return a.DB.UpdateMountGroup(id, group)
 	}
 	return nil
+}
+
+// MoveMount moves a mount to the index-th position of group
+// (0-based, clamped to [0, len(group)]), in memory and in SQLite.
+// Inside a group the displaced mounts shift down: dragging the
+// 8th mount to the 4th position pushes the old 4th..7th to
+// 5th..8th. Across groups the source group closes ranks and the
+// target group makes room; moving to an empty group is index 0.
+// Moving to the same position is a no-op: nothing is written and
+// UpdatedAt is untouched.
+func (a *App) MoveMount(ctx context.Context, id, group string, index int) (*domain.Mount, error) {
+	_ = ctx
+	h, ok := a.mounts[id]
+	if !ok {
+		return nil, fmt.Errorf("app: unknown mount %q", id)
+	}
+	// Current members per group, in sort_order order.
+	members := map[string][]*domain.Mount{}
+	for _, m := range a.ListMounts() {
+		members[m.Group] = append(members[m.Group], m)
+	}
+	srcGroup := h.Mount.Group
+	src := members[srcGroup]
+	cur := -1
+	for i, m := range src {
+		if m.ID == id {
+			cur = i
+			break
+		}
+	}
+	if cur < 0 {
+		return nil, fmt.Errorf("app: mount %q not in its group", id)
+	}
+	dst := members[group]
+	if group == srcGroup {
+		dst = append(dst[:cur:cur], dst[cur+1:]...)
+	}
+	if index < 0 {
+		index = 0
+	}
+	if index > len(dst) {
+		index = len(dst)
+	}
+	if group == srcGroup && index == cur {
+		return h.Mount, nil
+	}
+	newDst := make([]*domain.Mount, 0, len(dst)+1)
+	newDst = append(newDst, dst[:index]...)
+	newDst = append(newDst, h.Mount)
+	newDst = append(newDst, dst[index:]...)
+	// Renumber the affected groups densely 0..n-1; collect the
+	// rows whose (group, sort_order) actually changed.
+	now := time.Now().UTC()
+	var orders []cache.MountOrder
+	renumber := func(g string, list []*domain.Mount) {
+		for i, m := range list {
+			if m.Group != g || m.SortOrder != i {
+				m.Group = g
+				m.SortOrder = i
+				m.UpdatedAt = now
+				orders = append(orders, cache.MountOrder{ID: m.ID, Group: g, SortOrder: i})
+			}
+		}
+	}
+	if group == srcGroup {
+		renumber(group, newDst)
+	} else {
+		newSrc := append(src[:cur:cur], src[cur+1:]...)
+		renumber(srcGroup, newSrc)
+		renumber(group, newDst)
+	}
+	if a.DB != nil {
+		if err := a.DB.UpdateMountOrders(orders); err != nil {
+			return nil, err
+		}
+	}
+	return h.Mount, nil
 }
 
 // probeRoot is the one cheap connection probe every save/test

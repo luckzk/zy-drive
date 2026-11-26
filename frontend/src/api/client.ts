@@ -89,6 +89,7 @@ export const api = {
   setDefaultAgent: (id: string) => DesktopService.setDefaultAgent(id),
   testAgent: (id: string) => DesktopService.testAgent(id),
   updateMountGroup: (id: string, group: string) => DesktopService.updateMountGroup(id, group),
+  moveMount: (id: string, group: string, index: number) => DesktopService.moveMount(id, group, index),
   updateMountRoot: (id: string, bucket: string, prefix: string) => DesktopService.updateMountRoot(id, bucket, prefix),
   mkdir: (mountID: string, ref: string) => DesktopService.mkdir(mountID, ref),
   addMount: (input: AddMountInput) => DesktopService.addMount(input),

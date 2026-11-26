@@ -211,6 +211,21 @@ var migrations = []string{
 	// domain.Transfer.DeleteSource). Default 0: every transfer
 	// queued before this column existed was a plain copy.
 	`ALTER TABLE transfers ADD COLUMN delete_source INTEGER NOT NULL DEFAULT 0`,
+	// v24 (2026-11-26, sidebar drag-sort): per-group position of a
+	// mount, 0-based and dense 0..n-1 inside its group. The
+	// backfill (v25) numbers existing mounts by creation order, so
+	// the visible order does not change on upgrade.
+	`ALTER TABLE mounts ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0`,
+	// v25 (2026-11-26, sidebar drag-sort backfill): number each
+	// mount by how many mounts in the same group were created
+	// before it (created_at, then id as tie-break) — the same
+	// order the sidebar showed before sort_order existed.
+	`UPDATE mounts SET sort_order = (
+		SELECT COUNT(*) FROM mounts m2
+		WHERE m2.group_name = mounts.group_name
+		  AND (m2.created_at < mounts.created_at
+		    OR (m2.created_at = mounts.created_at AND m2.id < mounts.id))
+	)`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.

@@ -241,6 +241,13 @@ func (s *DesktopService) ExchangeOAuthCode(ctx context.Context, provider domain.
 	return s.app.ExchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL)
 }
 
+// MoveMount moves a mount to a position inside a group (v0.11.0,
+// sidebar drag-sort): index is clamped to the target group, the
+// displaced mounts shift down, moving to the same spot is a no-op.
+func (s *DesktopService) MoveMount(ctx context.Context, id, group string, index int) (*domain.Mount, error) {
+	return s.app.MoveMount(ctx, id, group, index)
+}
+
 // UpdateMountGroup changes a mount's sidebar group.
 func (s *DesktopService) UpdateMountGroup(id, group string) error {
 	return s.app.UpdateMountGroup(id, group)

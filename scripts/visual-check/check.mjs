@@ -227,6 +227,30 @@ const STUB = `(() => {
         if (m) m.group = args[1]
         return null
       }
+      // v0.11.0 排序桩：记录调用参数，并按渲染顺序（分组
+      // 默认 sort × 组内数组顺序，未分组最后）把卡片插到
+      // (group, index) 处——与前端 reorderMounts / 后端
+      // MoveMount 语义一致，松手后重拉看到的顺序才与乐观
+      // 更新一致。
+      if (method === 'DesktopService.MoveMount') {
+        window.__lastMoveMount = args
+        const [id, group, index] = args
+        const m = __mockMounts.find((x) => x.id === id)
+        if (!m) throw new Error('stub: unknown mount')
+        const groupOrder = [...new Set(__mockMounts.map((x) => x.group))].sort()
+        if (groupOrder.includes('')) groupOrder.push(groupOrder.splice(groupOrder.indexOf(''), 1)[0])
+        const renderOrder = groupOrder.flatMap((g) => __mockMounts.filter((x) => x.group === g))
+        const rest = renderOrder.filter((x) => x.id !== id)
+        let flat = 0
+        for (const g of groupOrder) {
+          const members = rest.filter((x) => x.group === g)
+          if (g === group) { flat += Math.min(index, members.length); break }
+          flat += members.length
+        }
+        rest.splice(flat, 0, { ...m, group })
+        __mockMounts = rest
+        return { ...m, group }
+      }
       if (method === 'DesktopService.DeleteNodes') {
         window.__lastDelete = args
         return { done: args[1], failed: [], transfers: [] }
@@ -1368,47 +1392,137 @@ try {
     await page.waitForTimeout(400)
   }
 
-  // 2i. 长按拖拽换分组（v0.10.0，VISUAL_MOUNTS）：按住“工作”
-  // 组的第一张网盘卡片（我的 R2）450ms 进入拖拽态
-  // （.mount-card.dragging），拖到“个人”分组行松手 →
-  // UpdateMountGroup 被调到（mountId + 新分组），卡片随之换组。
-  // 注意：分组按名字 Unicode 排序，“个人”排在最前——不能
-  // 拿侧栏第一张卡片当源（它已在“个人”组，拖过去是同组 no-op）。
+  // 拖拽测试共用：分步移动指针（每步都经过 pointermove，
+  // 拖拽态的插入点才能跟上）；返回后指针停在 (tx, ty)。
+  async function stepMove(fromX, fromY, tx, ty, steps = 10) {
+    for (let i = 1; i <= steps; i++) {
+      await page.mouse.move(fromX + (tx - fromX) * i / steps, fromY + (ty - fromY) * i / steps)
+      await page.waitForTimeout(30)
+    }
+  }
+
+  // 2i. 长按拖拽跨组排序（v0.11.0，VISUAL_MOUNTS）：按住“工作”
+  // 组的第一张网盘卡片（我的 R2）450ms 进入拖拽态（跟随指针
+  // 的是 body 下的克隆 .mount-card.dragging），拖到“个人”组
+  // 第一张卡上方松手 → MoveMount 被调到 (m-s3, '个人', 0)，
+  // 卡片随之换组并排到组首；拖拽中插入线出现且随指针移动。
+  // 注意：分组按名字默认 sort（Unicode），“个人”排在最前——
+  // 不能拿侧栏第一张卡片当源（它已在“个人”组）。
   if (process.env.VISUAL_MOUNTS) {
     const firstCard = page.locator('[data-group="工作"] .mount-card').first()
-    // “工作”组按 Unicode 排序在最后，卡片可能在侧栏可视区
-    // 之外：先滚到可见，否则按住点落在视口外、拖拽起不来。
+    // “工作”组在最后，卡片可能在侧栏可视区之外：先滚到可见，
+    // 否则按住点落在视口外、拖拽起不来。
     await firstCard.scrollIntoViewIfNeeded()
     const draggedName = (await firstCard.locator('.mount-name').textContent())?.trim() ?? ''
     const cardBox = await firstCard.boundingBox()
-    const personalGroup = page.locator('[data-group="个人"]')
-    const groupBox = await personalGroup.boundingBox()
-    if (!cardBox || !groupBox) {
-      failures.push('长按拖拽测试：找不到网盘卡片或“个人”分组行')
+    const targetCard = page.locator('[data-group="个人"] .mount-card').first()
+    if (!cardBox) {
+      failures.push('长按拖拽测试：找不到“工作”组网盘卡片')
     } else {
-      await page.mouse.move(cardBox.x + cardBox.width / 2, cardBox.y + cardBox.height / 2)
+      let curX = cardBox.x + cardBox.width / 2
+      let curY = cardBox.y + cardBox.height / 2
+      await page.mouse.move(curX, curY)
       await page.mouse.down()
       await page.waitForTimeout(450)
       const dragging = await page.evaluate(() => !!document.querySelector('.mount-card.dragging'))
       if (!dragging) failures.push('按住网盘卡片 450ms 后没有进入拖拽态（.mount-card.dragging）')
       await page.screenshot({ path: path.join(SHOTS, '02i-drag-group.png') })
-      // 分步移动到目标分组行中心（每步都经过 pointermove，
-      // 拖拽态的 dropGroup 才能跟上）。
-      const steps = 10
-      for (let i = 1; i <= steps; i++) {
-        await page.mouse.move(
-          cardBox.x + cardBox.width / 2 + (groupBox.x + groupBox.width / 2 - (cardBox.x + cardBox.width / 2)) * i / steps,
-          cardBox.y + cardBox.height / 2 + (groupBox.y + groupBox.height / 2 - (cardBox.y + cardBox.height / 2)) * i / steps,
-        )
-        await page.waitForTimeout(30)
+      // 目标（“个人”组首）在视口上方时：指针先停在顶部边缘，
+      // 等自动滚动把目标组带进视野（最多 3s）。
+      let targetBox = await targetCard.boundingBox()
+      if (targetBox && targetBox.y < 40) {
+        await page.mouse.move(curX, 24)
+        curY = 24
+        let ok = false
+        for (let i = 0; i < 15; i++) {
+          await page.waitForTimeout(200)
+          targetBox = await targetCard.boundingBox()
+          if (targetBox && targetBox.y >= 80) { ok = true; break }
+        }
+        if (!ok) failures.push('拖拽中自动滚动没把“个人”组带进视野')
+      }
+      if (targetBox) {
+        const tx = targetBox.x + targetBox.width / 2
+        // 先移到组首上方（index 0），记插入线位置；再移到
+        // 第三张卡上方（index 2），插入线应随之下移约一张卡
+        // 高（相邻插入点的线位置几乎重合，故不用 index 1）。
+        await stepMove(curX, curY, tx, targetBox.y - 2)
+        curX = tx; curY = targetBox.y - 2
+        await page.waitForTimeout(150)
+        const lineTop0 = await page.evaluate(() => document.querySelector('.insert-line')?.getBoundingClientRect().top ?? null)
+        if (lineTop0 === null) failures.push('拖拽中插入线（.insert-line）没有出现')
+        const thirdCard = page.locator('[data-group="个人"] .mount-card').nth(2)
+        const thirdBox = await thirdCard.boundingBox()
+        if (thirdBox) {
+          await stepMove(curX, curY, tx, thirdBox.y - 2)
+          curX = tx; curY = thirdBox.y - 2
+          await page.waitForTimeout(150)
+          const lineTop2 = await page.evaluate(() => document.querySelector('.insert-line')?.getBoundingClientRect().top ?? null)
+          if (lineTop0 !== null && lineTop2 !== null && lineTop2 <= lineTop0 + 30) failures.push(`插入线没有随指针下移（index 0 处 ${lineTop0}，index 2 处 ${lineTop2}）`)
+          // 移回组首再松手（重测：此时组首卡未被挤开，位置是自然位置）。
+          targetBox = await targetCard.boundingBox()
+          if (targetBox) {
+            await stepMove(curX, curY, tx, targetBox.y - 2)
+            curY = targetBox.y - 2
+            await page.waitForTimeout(150)
+          }
+        }
       }
       await page.mouse.up()
       await page.waitForTimeout(600)
-      const lastGroup = await page.evaluate(() => window.__lastGroupUpdate ?? null)
-      console.log('last group update:', JSON.stringify(lastGroup))
-      if (!lastGroup || lastGroup[1] !== '个人') failures.push(`拖到“个人”分组后 UpdateMountGroup 没被调到，实测 ${JSON.stringify(lastGroup)}`)
+      const lastMove = await page.evaluate(() => window.__lastMoveMount ?? null)
+      console.log('last move mount:', JSON.stringify(lastMove))
+      if (!lastMove || lastMove[0] !== 'm-s3' || lastMove[1] !== '个人' || lastMove[2] !== 0) failures.push(`拖到“个人”组首后 MoveMount 没被调到 (m-s3, 个人, 0)，实测 ${JSON.stringify(lastMove)}`)
       const personalText = await page.evaluate(() => document.querySelector('[data-group="个人"]')?.textContent ?? '')
       if (draggedName && !personalText.includes(draggedName)) failures.push(`拖拽后“${draggedName}”没出现在“个人”分组里`)
+    }
+  }
+
+  // 2j. 组内排序（v0.11.0，VISUAL_MOUNTS）：2i 之后“个人”组
+  // 是 [我的 R2, Dropbox, OneDrive, Drime, 超长名]。长按最后
+  // 一张（超长名）拖到组首松手 → MoveMount 被调到
+  // (m-long, '个人', 0)，组内顺序真的变了；拖拽中跟随的克隆
+  // 位置由 transform 驱动（指针移动后 transform 连续变化）。
+  if (process.env.VISUAL_MOUNTS) {
+    const cards = page.locator('[data-group="个人"] .mount-card')
+    const lastCard = cards.last()
+    await lastCard.scrollIntoViewIfNeeded()
+    const lastBox = await lastCard.boundingBox()
+    if (!lastBox) {
+      failures.push('组内排序测试：找不到“个人”组最后一张卡片')
+    } else {
+      let curX = lastBox.x + lastBox.width / 2
+      let curY = lastBox.y + lastBox.height / 2
+      await page.mouse.move(curX, curY)
+      await page.mouse.down()
+      await page.waitForTimeout(450)
+      const dragging = await page.evaluate(() => !!document.querySelector('.mount-card.dragging'))
+      if (!dragging) failures.push('组内排序：按住卡片 450ms 后没有进入拖拽态')
+      // transform 跟手：指针移到两个不同 Y，克隆的 transform
+      // 应连续变化（rAF + 直写 style，不走 React 重渲染）。
+      const readTransform = () => page.evaluate(() => document.querySelector('.mount-card.dragging')?.style.transform ?? '')
+      await stepMove(curX, curY, curX, curY - 60)
+      curY -= 60
+      await page.waitForTimeout(120)
+      const t1 = await readTransform()
+      await stepMove(curX, curY, curX, curY - 60)
+      curY -= 60
+      await page.waitForTimeout(120)
+      const t2 = await readTransform()
+      if (!t1 || !t2 || t1 === t2) failures.push(`拖拽中卡片 transform 没有随指针连续变化（${t1} → ${t2}）`)
+      // 移到组首上方松手（重测：此时组首卡未被挤开）。
+      const headBox = await cards.first().boundingBox()
+      if (headBox) {
+        await stepMove(curX, curY, headBox.x + headBox.width / 2, headBox.y - 2)
+        await page.waitForTimeout(150)
+      }
+      await page.mouse.up()
+      await page.waitForTimeout(600)
+      const lastMove = await page.evaluate(() => window.__lastMoveMount ?? null)
+      console.log('last move mount (2j):', JSON.stringify(lastMove))
+      if (!lastMove || lastMove[0] !== 'm-long' || lastMove[1] !== '个人' || lastMove[2] !== 0) failures.push(`组内拖到首位后 MoveMount 没被调到 (m-long, 个人, 0)，实测 ${JSON.stringify(lastMove)}`)
+      const firstName = await page.evaluate(() => document.querySelector('[data-group="个人"] .mount-card .mount-name')?.textContent?.trim() ?? '')
+      if (!firstName.startsWith('这是一个特别特别长的网盘名字')) failures.push(`组内排序后“个人”组首不是超长名卡片，实测“${firstName}”`)
     }
   }
 
@@ -1961,10 +2075,12 @@ try {
   // 4b5. 原地重新授权（V0.9.0，VISUAL_MOUNTS）：点“重新授权”
   // 后对话框标题是“重新授权：<名字>”，走完保存后还是同一个
   // 网盘（侧栏里没有多出一个），任务/分组/缓存都在——不是新建。
+  // 注意：按名字找“我的 R2”那行点——2i/2j 拖拽改了顺序，
+  // 不能再假设列表第一行是 S3 网盘（v0.11.0 修）。
   if (process.env.VISUAL_MOUNTS) {
     const sidebarBefore = await page.locator('.sidebar').textContent()
     const mountCountBefore = (sidebarBefore?.match(/我的 R2/g) ?? []).length
-    await page.locator('.settings-card', { hasText: '已添加的网盘' }).getByRole('button', { name: '重新授权' }).first().click()
+    await page.locator('.settings-card', { hasText: '已添加的网盘' }).locator('.agent-row', { hasText: '我的 R2' }).getByRole('button', { name: '重新授权' }).click()
     await page.waitForTimeout(500)
     const reauthDialog = await page.evaluate(() => {
       const d = document.querySelector('.dialog')

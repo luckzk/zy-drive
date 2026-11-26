@@ -83,7 +83,11 @@ type Mount struct {
 	// Group is the sidebar group this mount belongs to (2026-11-24
 	// decision). "" means "未分组". Groups are display-only: they
 	// never affect tokens, caches or sync.
-	Group  string      `json:"group,omitempty"`
+	Group string `json:"group,omitempty"`
+	// SortOrder is the mount's position inside its group (v0.11.0,
+	// sidebar drag-sort): 0-based, dense 0..n-1 per group. Only
+	// meaningful inside a group; ListMounts orders by it.
+	SortOrder int `json:"sortOrder"`
 	Caps   Caps        `json:"caps"`
 	Status MountStatus `json:"status"`
 	// Verified is whether the mount passed a connection probe at
