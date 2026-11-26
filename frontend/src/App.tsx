@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // App — desktop shell (mygo Web frontend mode), rebuilt from the
 // user-confirmed UI Demo (v8, 2026-11-24). Layout:
-//   top: ZyDrive + search (Ctrl+K) + 新建同步
+//   top: ZyDrive + search (Ctrl+K) — sync creation lives on the
+//         Sync Tasks page (v0.13.0: the header 新建同步 button was
+//         removed; it duplicated the page's own 创建同步任务 button)
 //   left: navigation + mounts grouped + Agent summary card (kept on
 //         every page, including the sync dual-pane)
 //   middle: file browsing (Inspector on demand) / sync jobs (scheme A
@@ -23,6 +25,7 @@ import { Skeleton } from './components/motion'
 import Sidebar, { type Page } from './components/Sidebar'
 import FileBrowser from './components/FileBrowser'
 import TransferDock from './components/TransferDock'
+import ToastHost, { type ToastItem } from './components/Toasts'
 import CommandPalette from './components/CommandPalette'
 import AddMountDialog from './components/AddMountDialog'
 import SyncJobsPage from './pages/SyncJobs'
@@ -50,6 +53,18 @@ export default function App() {
   const [showPalette, setShowPalette] = useState(false)
   const [showAddMount, setShowAddMount] = useState(false)
   const [reauthMount, setReauthMount] = useState<Mount | null>(null)
+  // Toasts (v0.13.0, top-right): transient confirmations such as
+  // "已在文件管理器中打开 … 所在位置。" — at most three at once,
+  // oldest dropped first.
+  const [toasts, setToasts] = useState<ToastItem[]>([])
+  const toastId = useRef(0)
+  const pushToast = useCallback((message: string) => {
+    const id = ++toastId.current
+    setToasts((prev) => [...prev.slice(-2), { id, message }])
+  }, [])
+  const dismissToast = useCallback((id: number) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id))
+  }, [])
   // Settings live here because theme/language apply app-wide the
   // moment they change (Settings page edits them through these
   // handlers, which save + apply immediately).
@@ -155,10 +170,6 @@ export default function App() {
     setPage('browse')
   }
 
-  const goCreateSync = () => {
-    setPage('sync')
-  }
-
   // Theme/language change from the Settings page: apply immediately
   // (whole app follows, no restart). The Settings page owns saving:
   // it persists the draft after calling these, so there is exactly
@@ -191,9 +202,6 @@ export default function App() {
           onFocus={() => setShowPalette(true)}
           readOnly
         />
-        <button className="btn-primary" onClick={goCreateSync}>
-          {t(lang, 'newSync')}
-        </button>
       </header>
 
       <div className="app-body">
@@ -210,6 +218,7 @@ export default function App() {
           onGroupsChanged={() => void loadMounts()}
           onAddMount={() => setShowAddMount(true)}
           onRemoveMount={() => void loadMounts()}
+          onRefreshQuota={() => void loadQuotas()}
           // v0.11.0：拖拽排序松手时先乐观更新本地顺序（Sidebar
           // 内部算好新数组直接 setMounts），再调后端确认。
           onMountsReordered={(next) => setMounts(next)}
@@ -250,8 +259,7 @@ export default function App() {
                     key={activeMount.id}
                     mount={activeMount}
                     mounts={mounts}
-                    quota={quotas[activeMount.id]}
-                    onRefreshQuota={() => void loadQuotas()}
+                    onToast={pushToast}
                   />
                 ) : null}
               </>
@@ -280,6 +288,8 @@ export default function App() {
       </div>
 
       <TransferDock transfers={transfers} onRetry={() => void loadTransfers()} />
+
+      <ToastHost toasts={toasts} onDismiss={dismissToast} />
 
       {showPalette && (
         <CommandPalette

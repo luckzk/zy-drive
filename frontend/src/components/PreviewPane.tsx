@@ -126,7 +126,7 @@ export function revealLabel(): string {
   return '在文件管理器中显示'
 }
 
-export default function PreviewPane({ mountID, node }: { mountID: string; node: Node }) {
+export default function PreviewPane({ mountID, node, onToast }: { mountID: string; node: Node; onToast?: (message: string) => void }) {
   const tier = tierOf(node)
   const [url, setUrl] = useState<string | null>(null)
   const [text, setText] = useState<string | null>(null)
@@ -207,7 +207,9 @@ export default function PreviewPane({ mountID, node }: { mountID: string; node: 
     setOpenedMsg(null)
     try {
       await api.revealInFinder(mountID, node.ref)
-      setOpenedMsg('已在文件管理器中打开所在位置。')
+      // v0.13.0: this confirmation is a top-right toast now, not
+      // an inline message under the preview.
+      onToast?.('已在文件管理器中打开所在位置。')
     } catch (e) {
       setError(friendlyError(e))
       setStatus('error')

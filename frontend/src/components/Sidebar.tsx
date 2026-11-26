@@ -17,7 +17,7 @@ import type { AgentStatus, Mount, MountQuota } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { t, type Lang } from '../lib/i18n'
 import { Skeleton, staggerStyle } from '../components/motion'
-import { BrandLogo, IconPencil, IconTrash, NavIcon } from './icons'
+import { BrandLogo, IconPencil, IconRefresh, IconTrash, NavIcon } from './icons'
 import { mountStatusLabel } from '../lib/format'
 import QuotaBar from './QuotaBar'
 
@@ -38,6 +38,7 @@ export default function Sidebar({
   onGroupsChanged,
   onAddMount,
   onRemoveMount,
+  onRefreshQuota,
   onMountsReordered,
 }: {
   page: Page
@@ -52,6 +53,9 @@ export default function Sidebar({
   onGroupsChanged: () => void
   onAddMount: () => void
   onRemoveMount: (id: string) => void
+  // v0.13.0：悬停卡片上的“刷新容量”（批量重拉全部容量；主
+  // 面板里的重复容量行已删，这里是唯一的容量刷新入口）。
+  onRefreshQuota?: () => void
   // v0.11.0：拖拽排序松手后乐观更新顺序。App 把 setMounts
   // 直接传进来；后端确认后 Sidebar 仍调 onGroupsChanged 重拉。
   onMountsReordered?: (next: Mount[]) => void
@@ -83,17 +87,21 @@ export default function Sidebar({
   const [deleting, setDeleting] = useState<string | null>(null)
   const [removingMount, setRemovingMount] = useState<string | null>(null)
   const [removingBusy, setRemovingBusy] = useState(false)
-  // 长按拖拽排序（v0.11.0，重写 v0.10.0 的换组拖拽）：按住卡片
-  // 400ms 且移动 ≤6px 进入拖拽；拖拽中原卡片留在原位
-  // （visibility: hidden 占位），一个 fixed 克隆跟随指针；其余
-  // 卡片按插入点用 transform 平移让位（200ms 过渡，走
-  // .mount-card 已有的 transition），插入点处画一条 2px 品牌绿
-  // 插入线；松手时克隆先动画落进最终位置，再乐观更新顺序并调
-  // MoveMount 提交。位置更新走 rAF 节流 + 直接写 DOM style，
-  // 拖拽中不经过 React state——v0.10.0 每 mousemove 都 setState
-  // 是“不丝滑”最可能的根因。原生 draggable 做不了长按启动，
-  // 所以用指针事件自实现；克隆是 fixed 定位，侧栏滚动也不影响
-  // 跟手，几何在滚动时重测。
+  // 长按拖拽排序（v0.11.0，重写 v0.10.0 的换组拖拽；v0.12.0
+  // 分组标题跟随 + 丝滑化）：按住卡片 400ms 且移动 ≤6px 进入
+  // 拖拽；拖拽中原卡片留在原位（visibility: hidden 占位），一
+  // 个 fixed 克隆跟随指针；其余卡片与落在原位↔插入点之间的
+  // 分组标题按插入点用 transform 平移让位（200ms 过渡，走
+  // .mount-card / .group-row 已有的 transition，改目标值即平
+  // 滑改向、不瞬跳），插入点处画一条 2px 品牌绿插入线（top
+  // 也走 200ms 过渡、随插入点滑动）；松手时克隆先动画落进最
+  // 终位置，再乐观更新顺序并调 MoveMount 提交。位置更新走
+  // rAF 节流 + 直接写 DOM style，拖拽中不经过 React state——
+  // v0.10.0 每 mousemove 都 setState 是“不丝滑”最可能的根因。
+  // 几何只量未位移坐标（滚动重测时减掉已有 shift），否则滚
+  // 动中插入点会跳。原生 draggable 做不了长按启动，所以用指
+  // 针事件自实现；克隆是 fixed 定位，侧栏滚动也不影响跟手，
+  // 几何在滚动时重测。
   const LONG_PRESS_MS = 400
   const DRAG_TOLERANCE_PX = 6
   const CARD_GAP_PX = 6 // .mount-card 的 margin-bottom
@@ -124,6 +132,13 @@ export default function Sidebar({
     geom: DragGeom
     target: DragTarget | null
     shifts: Map<string, number>
+    // 分组标题的位移（v0.12.0）：与 shifts 同理，key 是组名；
+    // applyInsertion 里按插入点算，clearShifts 时一并清掉。
+    headerShifts: Map<string, number>
+    // 插入线是否已定位过：第一次定位不走 transition（从 auto
+    // 的 top 过渡会让线从页面顶部扫过来），之后 top 变化走
+    // 200ms 过渡、线随插入点滑动而不是瞬跳。
+    linePlaced: boolean
     cardHeight: number
     cardLeft: number
     cardWidth: number
@@ -141,25 +156,31 @@ export default function Sidebar({
   const suppressClickRef = useRef(false)
 
   // 侧栏几何：卡片按渲染顺序、分组按渲染顺序。拖拽开始时量
-  // 一次，滚动时重测（rect 是视口坐标，滚了就变）。
-  const measureGeometry = (): DragGeom | null => {
+  // 一次，滚动时重测（rect 是视口坐标，滚了就变）。重测发生
+  // 在拖拽中时卡片/标题可能正带着位移 transform：量出来的是
+  // 视觉位置，必须减掉已有的 shift 才能回到“未位移坐标”，
+  // 否则 computeTarget 拿带位移的中点算插入点，滚着滚着目标
+  // 就跳了（FLIP 的 measure 必须是同一坐标系）。
+  const measureGeometry = (shifts?: Map<string, number>, headerShifts?: Map<string, number>): DragGeom | null => {
     const aside = sidebarRef.current
     if (!aside) return null
     const groupOf = (id: string) => mounts.find((m) => m.id === id)?.group ?? ''
     const cards: CardGeom[] = [...aside.querySelectorAll<HTMLElement>('[data-mount-id]')].map((el) => {
       const r = el.getBoundingClientRect()
       const id = el.getAttribute('data-mount-id') ?? ''
-      return { id, group: groupOf(id), top: r.top, bottom: r.bottom, mid: (r.top + r.bottom) / 2, left: r.left, width: r.width }
+      const shift = shifts?.get(id) ?? 0
+      return { id, group: groupOf(id), top: r.top - shift, bottom: r.bottom - shift, mid: (r.top + r.bottom) / 2 - shift, left: r.left, width: r.width }
     })
     const spans: GroupSpan[] = orderedGroups.map((g) => {
       const header = aside.querySelector<HTMLElement>(`[data-group-header="${CSS.escape(g)}"]`)
       const hr = header?.getBoundingClientRect()
+      const hShift = headerShifts?.get(g) ?? 0
       const members = cards.filter((c) => c.group === g)
       return {
         group: g,
-        top: hr ? hr.top : (members[0]?.top ?? 0),
-        bottom: members.length > 0 ? members[members.length - 1].bottom : (hr ? hr.bottom + 12 : 0),
-        headerBottom: hr ? hr.bottom : 0,
+        top: hr ? hr.top - hShift : (members[0]?.top ?? 0),
+        bottom: members.length > 0 ? members[members.length - 1].bottom : (hr ? hr.bottom - hShift + 12 : 0),
+        headerBottom: hr ? hr.bottom - hShift : 0,
       }
     })
     return { cards, spans, flatOrder: cards.map((c) => c.id) }
@@ -190,6 +211,16 @@ export default function Sidebar({
   // 按插入点让位：被拖卡片仍占着原位（hidden），所以
   // 下移时 (oldFlat, newFlat] 的卡片上移填原位，上移时
   // [newFlat, oldFlat) 的卡片下移让出插入点；其余不动。
+  // 分组标题跟卡片一起走（v0.12.0）：标题是视觉序列里的
+  // 一项，落在“原位 ↔ 插入点”之间的标题跟同一方向的卡片
+  // 平移同一个 h（卡高 + 间距），标题才不会跟成员脱节。
+  // 用两套扁平坐标判定：firstFlat 是原顺序里该组首张卡的
+  // 序号（定标题在被拖卡片之前还是之后），rFirst 是去掉被
+  // 拖卡片后该组首张剩余卡的序号（定标题在插入缝之前还是
+  // 之后）——只用一套会在跨组 index 0 处差一张卡。
+  // 让位只改 shift 变化了的元素：transform 已有 200ms 过渡，
+  // 改目标值就是平滑改向，不会瞬跳；插入线 top 同样走 200ms
+  // 过渡（见 tokens.css 的 .insert-line），第一次定位除外。
   // 插入线画在插入缝隙中点（上下两张卡视觉边沿的中点）。
   const applyInsertion = (d: DragInfo, target: DragTarget) => {
     const { cards, flatOrder } = d.geom
@@ -209,6 +240,26 @@ export default function Sidebar({
           if (el) el.style.transform = shift ? `translateY(${shift}px)` : ''
         }
       }
+      // 分组标题：下移时标题在被拖卡片之后（firstFlat >
+      // oldFlat）且在插入缝之前（rFirst <= newFlat）才上移；
+      // 上移时标题在插入缝之后（rFirst > newFlat）且在被拖
+      // 卡片之前（firstFlat <= oldFlat）才下移。目标组自己
+      // 的标题不动（缝就在它下面），被拖卡片所在组的标题在
+      // 下移出组时不动——缝不在它下面。
+      let acc = 0
+      for (const s of d.geom.spans) {
+        const firstFlat = acc
+        acc += cards.filter((c) => c.group === s.group).length
+        const rFirst = firstFlat - (firstFlat > oldFlat ? 1 : 0)
+        let shift = 0
+        if (target.newFlat > oldFlat && firstFlat > oldFlat && rFirst <= target.newFlat) shift = -h
+        else if (target.newFlat < oldFlat && rFirst > target.newFlat && firstFlat <= oldFlat) shift = h
+        if ((d.headerShifts.get(s.group) ?? 0) !== shift) {
+          d.headerShifts.set(s.group, shift)
+          const el = aside.querySelector<HTMLElement>(`[data-group-header="${CSS.escape(s.group)}"]`)
+          if (el) el.style.transform = shift ? `translateY(${shift}px)` : ''
+        }
+      }
     }
     const line = lineRef.current
     if (line) {
@@ -216,7 +267,7 @@ export default function Sidebar({
       let y: number
       if (inGroup.length === 0) {
         const span = d.geom.spans.find((s) => s.group === target.group)
-        y = (span?.headerBottom ?? 0) + 6
+        y = (span?.headerBottom ?? 0) + (d.headerShifts.get(target.group) ?? 0) + 6
       } else if (target.index === 0) {
         const next = inGroup[0]
         y = next.top + (d.shifts.get(next.id) ?? 0) - CARD_GAP_PX / 2
@@ -228,9 +279,15 @@ export default function Sidebar({
         const next = inGroup[target.index]
         y = (prev.bottom + (d.shifts.get(prev.id) ?? 0) + next.top + (d.shifts.get(next.id) ?? 0)) / 2
       }
+      if (!d.linePlaced) line.style.transition = 'none'
       line.style.top = `${y - 1}px`
       line.style.left = `${d.cardLeft}px`
       line.style.width = `${d.cardWidth}px`
+      if (!d.linePlaced) {
+        void line.offsetHeight
+        line.style.transition = ''
+        d.linePlaced = true
+      }
     }
     d.target = target
   }
@@ -239,6 +296,9 @@ export default function Sidebar({
     const aside = sidebarRef.current
     if (!aside) return
     aside.querySelectorAll<HTMLElement>('[data-mount-id]').forEach((el) => {
+      el.style.transform = ''
+    })
+    aside.querySelectorAll<HTMLElement>('[data-group-header]').forEach((el) => {
       el.style.transform = ''
     })
   }
@@ -275,7 +335,7 @@ export default function Sidebar({
       else if (d.pointerY > r.bottom - EDGE_SCROLL_PX) aside.scrollTop += EDGE_SCROLL_STEP
       if (aside.scrollTop !== d.lastScrollTop) {
         d.lastScrollTop = aside.scrollTop
-        const geom = measureGeometry()
+        const geom = measureGeometry(d.shifts, d.headerShifts)
         if (geom) d.geom = geom
       }
     }
@@ -353,7 +413,7 @@ export default function Sidebar({
 
   const onMountPointerDown = (m: Mount) => (e: React.PointerEvent) => {
     if (e.button !== 0) return
-    if ((e.target as HTMLElement).closest('.mount-remove')) return
+    if ((e.target as HTMLElement).closest('.mount-hover-actions')) return
     if (dragRef.current) return
     const startX = e.clientX
     const startY = e.clientY
@@ -454,6 +514,8 @@ export default function Sidebar({
       geom: { cards: [], spans: [], flatOrder: [] },
       target: null,
       shifts: new Map(),
+      headerShifts: new Map(),
+      linePlaced: false,
       cardHeight: 0,
       cardLeft: 0,
       cardWidth: 0,
@@ -761,17 +823,33 @@ export default function Sidebar({
                       </div>
                       <QuotaBar quota={quotas?.[m.id]} compact />
                     </div>
-                    <button
-                      className="icon-btn mount-remove"
-                      title="移除网盘"
-                      aria-label="移除网盘"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setRemovingMount(m.id)
-                      }}
-                    >
-                      <IconTrash />
-                    </button>
+                    {/* v0.13.0：悬停才出现的操作列——刷新容量 +
+                        移除网盘。两个按钮共用一个绝对定位容器，
+                        位置见 tokens.css .mount-hover-actions。 */}
+                    <div className="mount-hover-actions">
+                      <button
+                        className="icon-btn mount-refresh"
+                        title="刷新容量"
+                        aria-label="刷新容量"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRefreshQuota?.()
+                        }}
+                      >
+                        <IconRefresh />
+                      </button>
+                      <button
+                        className="icon-btn mount-remove"
+                        title="移除网盘"
+                        aria-label="移除网盘"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setRemovingMount(m.id)
+                        }}
+                      >
+                        <IconTrash />
+                      </button>
+                    </div>
                   </div>
                   {removingMount === m.id && (
                     <div className="card" style={{ padding: 12, margin: '4px 0 8px 12px' }}>

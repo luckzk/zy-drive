@@ -428,6 +428,11 @@ func (p *Provider) Search(ctx context.Context, query string) ([]domain.Node, err
 					out = append(out, nodeToDomain(c, child))
 				}
 			} else if c.Type() == nodeFolder {
+				// Folders match by name too (not just files):
+				// an empty folder would otherwise never show up.
+				if strings.Contains(strings.ToLower(c.Name()), q) {
+					out = append(out, nodeToDomain(c, child))
+				}
 				if err := walk(ctx, c, child); err != nil {
 					return err
 				}

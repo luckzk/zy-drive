@@ -388,6 +388,21 @@ func (s *DesktopService) MoveNodes(ctx context.Context, srcMount string, refs []
 	return s.app.MoveNodes(ctx, srcMount, refs, dstMount, dstRef)
 }
 
+// ListVersions returns the version history of one file (v0.12.0):
+// one node per version, oldest first, each carrying its version id
+// in Extra["versionId"]. Only mounts whose driver implements
+// storage.Versioner offer this (Caps.SupportsVersions).
+func (s *DesktopService) ListVersions(ctx context.Context, mountID, ref string) ([]domain.Node, error) {
+	return s.app.ListVersions(ctx, mountID, ref)
+}
+
+// RestoreVersion restores one version as the new head version
+// (v0.12.0). The restored version stays in the history, so a
+// restore is undoable by restoring the previous head.
+func (s *DesktopService) RestoreVersion(ctx context.Context, mountID, ref, versionID string) error {
+	return s.app.RestoreVersion(ctx, mountID, ref, versionID)
+}
+
 // RetryTransfer re-queues one failed/cancelled transfer; finished
 // files are never re-done (batch-level resume, V0.9.0).
 func (s *DesktopService) RetryTransfer(ctx context.Context, id string) (*domain.Transfer, error) {

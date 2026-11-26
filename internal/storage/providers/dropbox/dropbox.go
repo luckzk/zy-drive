@@ -124,6 +124,7 @@ type dbxEntry struct {
 	PathDisplay    string `json:"path_display"`
 	PathLower      string `json:"path_lower"`
 	ID             string `json:"id"`
+	Rev            string `json:"rev"`
 	Size           int64  `json:"size"`
 	ClientModified string `json:"client_modified"`
 	ServerModified string `json:"server_modified"`
@@ -470,6 +471,50 @@ func (p *Provider) Rename(ctx context.Context, src, dst string) error {
 		map[string]any{"from_path": normRef(src), "to_path": normRef(dst), "autorename": false}, &out)
 }
 
+// Copy implements storage.Copier via copy_v2: a same-account
+// server-side copy — the bytes never leave Dropbox. It never
+// deletes the source: moves delete it themselves, after the copy
+// succeeded.
+func (p *Provider) Copy(ctx context.Context, src, dst string) error {
+	var out map[string]any
+	return p.rpc(ctx, "Copy", "/2/files/copy_v2",
+		map[string]any{"from_path": normRef(src), "to_path": normRef(dst), "autorename": false}, &out)
+}
+
+// Versions implements storage.Versioner via list_revisions: the
+// entries are the file's older revisions, oldest first. Each
+// version node names the same file and carries the revision id in
+// Extra["versionId"] — Restore needs exactly that id.
+func (p *Provider) Versions(ctx context.Context, ref string) ([]domain.Node, error) {
+	var resp struct {
+		Entries   []dbxEntry `json:"entries"`
+		IsDeleted bool       `json:"is_deleted"`
+	}
+	if err := p.rpc(ctx, "Versions", "/2/files/list_revisions",
+		map[string]any{"path": normRef(ref), "limit": 100}, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Node, 0, len(resp.Entries))
+	for _, e := range resp.Entries {
+		n := e.node()
+		if n.Extra == nil {
+			n.Extra = map[string]string{}
+		}
+		n.Extra["versionId"] = e.Rev
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// Restore implements storage.Versioner via files/restore: the
+// named revision becomes the new head, and the old head stays in
+// the revision history, so a restore is itself undoable.
+func (p *Provider) Restore(ctx context.Context, ref, versionID string) error {
+	var e dbxEntry
+	return p.rpc(ctx, "Restore", "/2/files/restore",
+		map[string]any{"path": normRef(ref), "rev": versionID}, &e)
+}
+
 // Delete removes one node (Dropbox moves it to trash by default).
 func (p *Provider) Delete(ctx context.Context, ref string) error {
 	var out map[string]any
@@ -617,4 +662,6 @@ var (
 	_ storage.Sharer      = (*Provider)(nil)
 	_ storage.Thumber     = (*Provider)(nil)
 	_ storage.QuotaSource = (*Provider)(nil)
+	_ storage.Versioner   = (*Provider)(nil)
+	_ storage.Copier      = (*Provider)(nil)
 )

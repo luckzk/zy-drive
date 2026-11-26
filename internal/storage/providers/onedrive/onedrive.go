@@ -32,9 +32,15 @@
 //     replace), then PUT 5 MiB chunks (a multiple of 320 KiB) to
 //     the pre-authenticated uploadUrl with Content-Range and NO
 //     Authorization header. Final chunk returns the driveItem.
-//     Unknown size is buffered up to 4 MiB, then spooled to a temp
-//     file so the session gets an exact total (same pattern as
-//     Drime). OneDrive's per-file ceiling is 250 GB.
+//     A chunk PUT that answers 409 resourceModified (or 404/410,
+//     session gone) is not a failure on its own: the driver first
+//     checks whether the file is already complete on the server
+//     (size, and SHA-1 when the server carries one) and otherwise
+//     resumes from the session's nextExpectedRanges, restarting
+//     with a fresh session when the old one is dead and the source
+//     can be re-read. Unknown size is buffered up to 4 MiB, then
+//     spooled to a temp file so the session gets an exact total
+//     (same pattern as Drime). OneDrive's per-file ceiling is 250 GB.
 //   - Mkdir: POST /me/drive/items/{parentId}/children
 //     {name, folder:{}, @microsoft.graph.conflictBehavior:"fail"};
 //     a 409 is re-checked (already exists = success).
@@ -84,7 +90,10 @@ package onedrive
 import (
 	"bytes"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -121,6 +130,17 @@ const (
 	maxPathLen = 400
 	// chunkAttempts is the per-chunk PUT budget on the session URL.
 	chunkAttempts = 3
+	// maxChunkConflicts is the number of 409 resourceModified (or
+	// 404/410 session-gone) recoveries allowed per upload session
+	// before giving up: a chunk that keeps conflicting is a real
+	// problem (e.g. the file keeps changing on OneDrive), not a
+	// lost response, so the upload fails instead of looping.
+	maxChunkConflicts = 3
+	// maxSessionRestarts is the number of fresh upload sessions a
+	// single Upload may start after the first one dies mid-upload.
+	// One restart is enough to recover from an expired session;
+	// more would risk re-uploading a large file in a loop.
+	maxSessionRestarts = 1
 )
 
 // graphPolicy is the retry discipline for Graph API calls: network
@@ -797,13 +817,44 @@ func (p *Provider) simpleUpload(ctx context.Context, ref, parentID, name string,
 }
 
 // sessionUpload runs the createUploadSession -> PUT chunks flow
-// for files over 4 MiB. Chunks are 5 MiB (a multiple of the 320 KiB
-// alignment Graph requires); the final chunk returns the driveItem.
-// A chunk PUT carries no Authorization header: the uploadUrl is
-// already pre-authenticated, and sending a bearer token with it
-// can 401. This driver keeps no resume state across restarts: a
-// failed session is abandoned server-side (it expires on its own).
+// for files over 4 MiB. See sessionUploadAttempt for the 409
+// recovery: a chunk PUT that conflicts is verified and resumed,
+// never reported as a failure for a file that is already there.
 func (p *Provider) sessionUpload(ctx context.Context, ref, parentID, name string, r io.Reader, size int64) (domain.Node, error) {
+	return p.sessionUploadAttempt(ctx, ref, parentID, name, r, size, 0)
+}
+
+// sessionUploadAttempt runs one upload session: create it, then PUT
+// 5 MiB chunks (a multiple of the 320 KiB alignment Graph
+// requires); the final chunk returns the driveItem. A chunk PUT
+// carries no Authorization header: the uploadUrl is already
+// pre-authenticated, and sending a bearer token with it can 401.
+// This driver keeps no resume state across restarts: a failed
+// session is abandoned server-side (it expires on its own).
+//
+// A 409 resourceModified on a chunk PUT is NOT a final failure.
+// The usual cause is a retried chunk: putChunk retries a chunk
+// whose first attempt landed but whose response was lost, so the
+// second PUT's range no longer matches the session — the chunk,
+// or the whole file, is already on the server. Recovery, in
+// order (the same re-check pattern as Mkdir's 409 handling):
+//
+//  1. verifyUploadComplete: if the target already holds the whole
+//     file (size, and SHA-1 when the server carries one), the
+//     upload is a success.
+//  2. queryUploadSession: ask the session for nextExpectedRanges
+//     and resume from the offset the server expects, with the
+//     SAME session — re-sending only the unwritten tail of the
+//     chunk that conflicted, never blind-retrying the same PUT.
+//  3. If the session is dead (GET 404/410), restartSessionOrFail
+//     starts a fresh session from the beginning, but only when the
+//     source can be re-read; a forward-only reader fails with a
+//     clear error instead of a false success or a loop.
+//
+// Recovery is capped (maxChunkConflicts per session, at most
+// maxSessionRestarts fresh sessions), so a persistently conflicting
+// upload always terminates with an error.
+func (p *Provider) sessionUploadAttempt(ctx context.Context, ref, parentID, name string, r io.Reader, size int64, restarts int) (domain.Node, error) {
 	body := map[string]any{
 		"item": map[string]any{
 			"@microsoft.graph.conflictBehavior": "replace",
@@ -822,55 +873,237 @@ func (p *Provider) sessionUpload(ctx context.Context, ref, parentID, name string
 		return domain.Node{}, p.wrap("Upload", fmt.Errorf("onedrive: createUploadSession returned no uploadUrl"))
 	}
 	buf := make([]byte, chunkSize)
-	var offset int64
+	hash := sha1.New()
+	var offset, bytesRead int64
+	var conflicts int
+	var pending []byte // unwritten tail of an already-read chunk
+	var pendingLast bool
 	for {
-		n, readErr := io.ReadFull(r, buf)
-		if n > 0 {
-			last := readErr == io.EOF || readErr == io.ErrUnexpectedEOF || offset+int64(n) >= size
-			it, done, err := p.putChunk(ctx, session.UploadURL, offset, buf[:n], size, last)
-			if err != nil {
+		var chunk []byte
+		var chunkOffset int64
+		var last bool
+		var readErr error
+		if pending != nil {
+			chunk, chunkOffset, last = pending, offset, pendingLast
+			pending = nil
+		} else {
+			n, rerr := io.ReadFull(r, buf)
+			readErr = rerr
+			if n > 0 {
+				hash.Write(buf[:n])
+				bytesRead += int64(n)
+				chunk = buf[:n]
+				chunkOffset = offset
+				last = readErr == io.EOF || readErr == io.ErrUnexpectedEOF || offset+int64(n) >= size
+			} else if readErr == io.EOF {
+				if offset == 0 {
+					// Empty file through the session path: one
+					// zero-length final chunk.
+					chunk, chunkOffset, last = []byte{}, 0, true
+				} else {
+					return domain.Node{}, p.wrap("Upload", fmt.Errorf("onedrive: upload session ended without completion"))
+				}
+			} else if readErr != nil {
+				return domain.Node{}, p.wrap("Upload", readErr)
+			} else {
+				// io.ReadFull with a non-empty buffer never
+				// returns (0, nil); treat it as a broken source
+				// rather than spinning.
+				return domain.Node{}, p.wrap("Upload", fmt.Errorf("onedrive: upload source returned no data without an error"))
+			}
+		}
+		it, done, err := p.putChunk(ctx, session.UploadURL, chunkOffset, chunk, size, last)
+		if err != nil {
+			var conflict *chunkConflictError
+			var gone *chunkSessionGoneError
+			isConflict := errors.As(err, &conflict)
+			isGone := !isConflict && errors.As(err, &gone)
+			if !isConflict && !isGone {
 				return domain.Node{}, err
 			}
-			if done {
-				if it.Size != size {
-					return domain.Node{}, p.wrap("Upload", fmt.Errorf(
-						"onedrive: size mismatch after upload: OneDrive says %d, local is %d",
-						it.Size, size))
-				}
-				p.mu.Lock()
-				p.idMap[cleanRef(ref)] = it.ID
-				p.mu.Unlock()
-				return it.node(ref), nil
+			conflicts++
+			if conflicts > maxChunkConflicts {
+				return p.restartSessionOrFail(ctx, ref, parentID, name, r, size, restarts,
+					fmt.Errorf("onedrive: chunk upload at offset %d failed repeatedly (%d recoveries spent)", chunkOffset, maxChunkConflicts))
 			}
-			offset += int64(n)
-		}
-		if readErr == io.EOF {
-			if offset == 0 {
-				// Empty file through the session path: one
-				// zero-length final chunk.
-				it, done, err := p.putChunk(ctx, session.UploadURL, 0, []byte{}, size, true)
-				if err != nil {
-					return domain.Node{}, err
-				}
-				if done {
+			// 1. The file may already be complete on the server:
+			// a retried chunk PUT can conflict after its first
+			// attempt landed and completed the file but the
+			// response was lost. Verify before anything else.
+			if node, ok := p.verifyUploadComplete(ctx, ref, size, hex.EncodeToString(hash.Sum(nil)), bytesRead); ok {
+				if id := node.Extra["onedriveId"]; id != "" {
 					p.mu.Lock()
-					p.idMap[cleanRef(ref)] = it.ID
+					p.idMap[cleanRef(ref)] = id
 					p.mu.Unlock()
-					return it.node(ref), nil
 				}
+				return node, nil
 			}
+			// A 404/410 from the chunk PUT already says the
+			// session is gone: no status query can revive it.
+			if isGone {
+				return p.restartSessionOrFail(ctx, ref, parentID, name, r, size, restarts,
+					fmt.Errorf("onedrive: upload session is gone (chunk PUT returned 404/410)"))
+			}
+			// 2. Ask the live session where it stands and resume
+			// from there with the SAME session.
+			expected, dead, qerr := p.queryUploadSession(ctx, session.UploadURL)
+			if qerr != nil {
+				return domain.Node{}, qerr
+			}
+			if dead {
+				return p.restartSessionOrFail(ctx, ref, parentID, name, r, size, restarts,
+					fmt.Errorf("onedrive: upload session expired during upload"))
+			}
+			end := chunkOffset + int64(len(chunk))
+			switch {
+			case expected == end:
+				// The whole chunk already landed; only its
+				// response was lost. Carry on with the next
+				// chunk — the bytes are already consumed from
+				// the reader.
+				offset = expected
+			case expected > chunkOffset && expected < end:
+				// Part of the chunk landed; re-send only the
+				// unwritten tail, at the offset the server
+				// expects. The bytes are still in buf.
+				pending = chunk[expected-chunkOffset:]
+				pendingLast = last
+				offset = expected
+			case expected == chunkOffset:
+				// Nothing of this chunk landed; the server still
+				// expects exactly this range, so re-send it
+				// once with the corrected expectation. A repeat
+				// conflict spends another recovery from the
+				// capped budget above, so this cannot loop.
+				pending = chunk
+				pendingLast = last
+			default:
+				return domain.Node{}, p.wrap("Upload", fmt.Errorf(
+					"onedrive: upload session expects offset %d, but the upload is at %d: cannot resume", expected, chunkOffset))
+			}
+			continue
+		}
+		if done {
+			if it.Size != size {
+				return domain.Node{}, p.wrap("Upload", fmt.Errorf(
+					"onedrive: size mismatch after upload: OneDrive says %d, local is %d",
+					it.Size, size))
+			}
+			p.mu.Lock()
+			p.idMap[cleanRef(ref)] = it.ID
+			p.mu.Unlock()
+			return it.node(ref), nil
+		}
+		if len(chunk) == 0 {
+			// The empty file's single zero-length chunk was
+			// accepted without completing the upload: the
+			// session cannot finish this file.
 			return domain.Node{}, p.wrap("Upload", fmt.Errorf("onedrive: upload session ended without completion"))
 		}
-		if readErr != nil && readErr != io.ErrUnexpectedEOF {
+		offset = chunkOffset + int64(len(chunk))
+		if readErr != nil && readErr != io.EOF && readErr != io.ErrUnexpectedEOF {
 			return domain.Node{}, p.wrap("Upload", readErr)
 		}
 	}
+}
+
+// verifyUploadComplete checks whether the target already holds the
+// complete file, for the 409 recovery path. It only reports success
+// when the whole file was read (bytesRead == size, so hashHex is
+// the SHA-1 of the complete file) and the server item has the
+// expected size — and, when the server carries a SHA-1, the same
+// hash. A size-only match against an earlier, different file of
+// the same name must never pass as success. Any lookup failure
+// means "not verified", never an error: the caller falls through
+// to the session resume.
+func (p *Provider) verifyUploadComplete(ctx context.Context, ref string, size int64, hashHex string, bytesRead int64) (domain.Node, bool) {
+	if bytesRead != size {
+		return domain.Node{}, false
+	}
+	node, err := p.Stat(ctx, ref)
+	if err != nil {
+		return domain.Node{}, false
+	}
+	if node.IsDir || node.Size != size {
+		return domain.Node{}, false
+	}
+	if node.HashKind == "sha1" && node.Hash != "" && node.Hash != hashHex {
+		return domain.Node{}, false
+	}
+	return node, true
+}
+
+// queryUploadSession asks a live upload session where it stands. It
+// GETs the pre-authenticated uploadUrl (no Authorization header,
+// like the chunk PUTs) and parses nextExpectedRanges. dead is true
+// when the session is gone (404/410): the caller must start a fresh
+// session instead of resuming this one.
+func (p *Provider) queryUploadSession(ctx context.Context, uploadURL string) (expected int64, dead bool, err error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uploadURL, nil)
+	if err != nil {
+		return 0, false, p.wrap("Upload", err)
+	}
+	resp, err := p.plain.Do(req)
+	if err != nil {
+		return 0, false, p.wrap("Upload", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		return 0, true, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return 0, false, p.wrap("Upload", p.readError(resp))
+	}
+	var status struct {
+		NextExpectedRanges []string `json:"nextExpectedRanges"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		return 0, false, p.wrap("Upload", err)
+	}
+	if len(status.NextExpectedRanges) == 0 {
+		return 0, false, p.wrap("Upload", fmt.Errorf("onedrive: upload session returned no nextExpectedRanges"))
+	}
+	// Ranges look like "5242880-" or "0-1048575"; the first range's
+	// start is where the server wants the upload to continue.
+	first := status.NextExpectedRanges[0]
+	startStr, _, _ := strings.Cut(first, "-")
+	expected, err = strconv.ParseInt(strings.TrimSpace(startStr), 10, 64)
+	if err != nil || expected < 0 {
+		return 0, false, p.wrap("Upload", fmt.Errorf("onedrive: upload session returned an unparsable nextExpectedRanges %q", first))
+	}
+	return expected, false, nil
+}
+
+// restartSessionOrFail starts the upload over with a fresh session
+// when the current one can no longer be resumed — but only when the
+// source can be re-read from the beginning. A forward-only reader
+// that is already part-consumed cannot restart: failing clearly
+// beats silently reporting success or looping forever. At most
+// maxSessionRestarts fresh sessions are started per Upload.
+func (p *Provider) restartSessionOrFail(ctx context.Context, ref, parentID, name string, r io.Reader, size int64, restarts int, cause error) (domain.Node, error) {
+	if restarts >= maxSessionRestarts {
+		return domain.Node{}, p.wrap("Upload", fmt.Errorf("%w: no fresh-session restart is left", cause))
+	}
+	rs, ok := r.(io.Seeker)
+	if !ok {
+		return domain.Node{}, p.wrap("Upload", fmt.Errorf("%w: upload cannot resume from a non-seekable source (the reader cannot be re-read from the beginning), please retry the upload", cause))
+	}
+	if _, err := rs.Seek(0, io.SeekStart); err != nil {
+		return domain.Node{}, p.wrap("Upload", fmt.Errorf("%w: upload cannot resume: seeking the source back to the beginning failed: %v", cause, err))
+	}
+	return p.sessionUploadAttempt(ctx, ref, parentID, name, r, size, restarts+1)
 }
 
 // putChunk PUTs one fragment to the session uploadUrl. A 202 means
 // "accepted, send the next range"; 200/201 carries the finished
 // driveItem. Retries (up to chunkAttempts) honour Retry-After when
 // present. No Authorization header is ever sent here.
+//
+// A 409 resourceModified is NOT retried and NOT a plain failure:
+// it is returned as a *chunkConflictError so sessionUpload can
+// verify the target and resume from the server's nextExpectedRanges
+// instead of blind-retrying the same chunk. A 404/410 (the session
+// is gone) is likewise returned typed, as *chunkSessionGoneError.
 func (p *Provider) putChunk(ctx context.Context, uploadURL string, offset int64, chunk []byte, total int64, last bool) (driveItem, bool, error) {
 	var lastErr error
 	for attempt := 0; attempt < chunkAttempts; attempt++ {
@@ -936,12 +1169,61 @@ func (p *Provider) putChunk(ctx context.Context, uploadURL string, offset int64,
 				}
 				continue
 			}
-			// Any other status (e.g. 404/410 session expired) is
-			// final: retrying the same chunk cannot fix it.
+			// 409 resourceModified: the chunk's range no longer
+			// matches what the session expects — the chunk may
+			// already be written (a retried PUT whose first
+			// attempt landed but whose response was lost) or the
+			// session's bound item changed. Never blind-retry the
+			// same chunk: return a typed conflict so
+			// sessionUpload can verify the target and resume from
+			// the server's nextExpectedRanges instead.
+			if resp.StatusCode == http.StatusConflict && graphErrorCode(data) == "resourceModified" {
+				return driveItem{}, false, p.wrap("Upload", &chunkConflictError{msg: lastErr.Error()})
+			}
+			// 404/410: the session is gone (it completed and was
+			// deleted, or it expired). The file may already be
+			// complete, so this is typed too — sessionUpload
+			// verifies the target before restarting.
+			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+				return driveItem{}, false, p.wrap("Upload", &chunkSessionGoneError{msg: lastErr.Error()})
+			}
+			// Any other status is final: retrying the same chunk
+			// cannot fix it.
 			return driveItem{}, false, p.wrap("Upload", lastErr)
 		}
 	}
 	return driveItem{}, false, p.wrap("Upload", fmt.Errorf("onedrive: chunk at offset %d failed after %d attempts: %w", offset, chunkAttempts, lastErr))
+}
+
+// chunkConflictError is returned by putChunk when the server
+// answers a chunk PUT with 409 resourceModified: the chunk's range
+// no longer matches the session's expected ranges. sessionUpload
+// recovers from it (verify the target, then resume from the
+// server's nextExpectedRanges); it is never a blind retry.
+type chunkConflictError struct{ msg string }
+
+func (e *chunkConflictError) Error() string { return e.msg }
+
+// chunkSessionGoneError is returned by putChunk when the server
+// answers a chunk PUT with 404/410: the upload session no longer
+// exists. sessionUpload recovers from it (verify the target, then
+// restart with a fresh session when the source can be re-read).
+type chunkSessionGoneError struct{ msg string }
+
+func (e *chunkSessionGoneError) Error() string { return e.msg }
+
+// graphErrorCode pulls the error.code out of a Graph error body
+// ({"error":{"code":...}}); "" when the body carries no code.
+func graphErrorCode(data []byte) string {
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(data, &body); err != nil {
+		return ""
+	}
+	return body.Error.Code
 }
 
 // Mkdir creates a folder. A folder that already exists is success:

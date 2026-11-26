@@ -106,6 +106,19 @@ type Sharer interface {
 	Share(ctx context.Context, ref string) (url string, err error)
 }
 
+// Copier is the optional same-mount server-side copy interface.
+// Copy duplicates src to dst without downloading and re-uploading:
+// the bytes never leave the provider (S3 CopyObject, Dropbox
+// copy_v2). The transfer path uses it only when source and
+// destination are the SAME mount and the provider implements it;
+// cross-mount copies keep streaming OpenRead -> Upload, and
+// drivers without it (Drive, OneDrive, local, ...) fall back to
+// the same streaming path. Copy must not delete the source —
+// moves delete it themselves, after the copy succeeded.
+type Copier interface {
+	Copy(ctx context.Context, src, dst string) error
+}
+
 // Versioner is the optional history-versions interface.
 type Versioner interface {
 	Versions(ctx context.Context, ref string) ([]domain.Node, error)

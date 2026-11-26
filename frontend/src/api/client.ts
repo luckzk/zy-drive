@@ -127,6 +127,12 @@ export const api = {
   renameNode: (mountID: string, srcRef: string, newName: string) => DesktopService.renameNode(mountID, srcRef, newName),
   moveNodes: (srcMount: string, refs: string[], dstMount: string, dstRef: string) =>
     DesktopService.moveNodes(srcMount, refs, dstMount, dstRef),
+  // V0.12.0 file history: list versions (oldest first; each node
+  // carries its version id in extra.versionId) and restore one as
+  // the new head. Only mounts with caps.supportsVersions offer this.
+  listVersions: async (mountID: string, ref: string) => nonNull(await DesktopService.listVersions(mountID, ref)),
+  restoreVersion: (mountID: string, ref: string, versionID: string) =>
+    DesktopService.restoreVersion(mountID, ref, versionID),
   retryTransfer: (id: string) => DesktopService.retryTransfer(id),
   retryFailedTransfers: () => DesktopService.retryFailedTransfers(),
   pushJobToAgent: (jobID: string) => DesktopService.pushJobToAgent(jobID),

@@ -489,6 +489,15 @@ func TestMegaSearch(t *testing.T) {
 	if len(nodes) != 1 {
 		t.Fatalf("Search pdf: got %d nodes, want 1", len(nodes))
 	}
+	// Folders whose names match are returned too, not just files
+	// (an empty folder would otherwise never show up).
+	nodes, err = p.Search(ctx, "docs")
+	if err != nil {
+		t.Fatalf("Search docs: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].Name != "docs" || !nodes[0].IsDir {
+		t.Fatalf("Search docs: got %v, want [docs folder]", nodes)
+	}
 }
 
 func TestMegaShare(t *testing.T) {

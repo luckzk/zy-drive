@@ -828,6 +828,100 @@ func (p *Provider) Share(ctx context.Context, ref string) (string, error) {
 	return f.WebViewLink, nil
 }
 
+// Versions implements storage.Versioner via revisions.list.
+// Every version node names the same file (Ref/Path/Name of the
+// head) and carries the revision id in Extra["versionId"] —
+// Restore needs exactly that id, and generic code never reads
+// Extra (see provider-capabilities.md §三.6). Revisions come
+// back oldest first; the list is returned in that order.
+func (p *Provider) Versions(ctx context.Context, ref string) ([]domain.Node, error) {
+	id, err := p.resolve(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	var out []domain.Node
+	pageToken := ""
+	for {
+		u := p.apiBase + "/drive/v3/files/" + url.PathEscape(id) + "/revisions" +
+			"?fields=" + url.QueryEscape("nextPageToken,revisions(id,modifiedTime,size,md5Checksum)") +
+			"&pageSize=100"
+		if pageToken != "" {
+			u += "&pageToken=" + url.QueryEscape(pageToken)
+		}
+		var resp struct {
+			NextPageToken string `json:"nextPageToken"`
+			Revisions     []struct {
+				ID           string `json:"id"`
+				ModifiedTime string `json:"modifiedTime"`
+				Size         int64  `json:"size,string,omitempty"`
+				MD5Checksum  string `json:"md5Checksum"`
+			} `json:"revisions"`
+		}
+		if err := p.getJSON(ctx, "Versions", u, &resp); err != nil {
+			return nil, err
+		}
+		for _, r := range resp.Revisions {
+			n := domain.Node{
+				Ref:   id,
+				Path:  cleanRef(ref),
+				Name:  path.Base(cleanRef(ref)),
+				Size:  r.Size,
+				Extra: map[string]string{"versionId": r.ID},
+			}
+			if r.MD5Checksum != "" {
+				n.Hash = r.MD5Checksum
+				n.HashKind = "md5"
+			}
+			if t, err := time.Parse(time.RFC3339, r.ModifiedTime); err == nil {
+				n.ModTime = t
+			}
+			out = append(out, n)
+		}
+		if resp.NextPageToken == "" {
+			break
+		}
+		pageToken = resp.NextPageToken
+	}
+	return out, nil
+}
+
+// Restore implements storage.Versioner for Drive. Drive API v3
+// has NO server-side restore endpoint — the revisions resource
+// only offers get/list/update/delete (verified against the v3
+// reference: developers.google.com/drive/v3/reference, REST
+// Resource v3.revisions). So restore downloads the revision
+// (revisions.get alt=media) and re-uploads it over the same file,
+// which creates a new head version; the old head stays in the
+// revision history, so a restore is itself undoable by restoring
+// the previous head. Google-native files (Docs/Sheets/Slides)
+// have no downloadable revision bytes — alt=media fails for
+// them, and the error surfaces as-is instead of a silent no-op.
+func (p *Provider) Restore(ctx context.Context, ref, versionID string) error {
+	id, err := p.resolve(ctx, ref)
+	if err != nil {
+		return err
+	}
+	u := p.apiBase + "/drive/v3/files/" + url.PathEscape(id) +
+		"/revisions/" + url.PathEscape(versionID) + "?alt=media"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return p.wrap("Restore", err)
+	}
+	resp, err := p.do(ctx, "Restore", req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return p.wrap("Restore", err)
+	}
+	if _, err := p.Upload(ctx, ref, bytes.NewReader(data), int64(len(data))); err != nil {
+		return err
+	}
+	return nil
+}
+
 // Thumbnail implements storage.Thumber via the file's thumbnailLink.
 func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
 	id, err := p.resolve(ctx, ref)
@@ -905,4 +999,5 @@ var (
 	_ storage.Sharer      = (*Provider)(nil)
 	_ storage.Thumber     = (*Provider)(nil)
 	_ storage.QuotaSource = (*Provider)(nil)
+	_ storage.Versioner   = (*Provider)(nil)
 )

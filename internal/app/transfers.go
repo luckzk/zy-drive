@@ -169,11 +169,12 @@ func (a *App) BatchDownload(ctx context.Context, mountID string, refs []string, 
 }
 
 // BatchCopy enqueues one cross-cloud copy per selected file into
-// dstRef on dstMount (folders keep their structure). Copies stream
-// through io.Pipe and never touch local disk (see executeCopy). A
-// selection whose destination is the file itself is skipped:
-// copying a file onto itself would truncate the source while it
-// is being read.
+// dstRef on dstMount (folders keep their structure). Cross-mount
+// copies stream through io.Pipe and never touch local disk (see
+// executeCopy); same-mount copies on a Copier driver (S3, Dropbox)
+// run server-side instead, with no download at all. A selection
+// whose destination is the file itself is skipped: copying a file
+// onto itself would truncate the source while it is being read.
 func (a *App) BatchCopy(ctx context.Context, srcMount string, refs []string, dstMount, dstRef string) (*BatchResult, error) {
 	if len(refs) == 0 {
 		return nil, fmt.Errorf("app: 请先选要复制的文件或文件夹")
@@ -546,6 +547,28 @@ func (a *App) executeCopy(ctx context.Context, t *domain.Transfer, report func(d
 	dst, err := a.ProviderFor(t.DstMount)
 	if err != nil {
 		return err
+	}
+	// Same-mount server-side copy (v0.12.0): when source and
+	// destination are the same mount and its driver implements
+	// storage.Copier (S3 CopyObject, Dropbox copy_v2), the bytes
+	// never leave the provider — no download, no re-upload, no
+	// local staging. Cross-mount copies, and drivers without a
+	// Copier, keep the streaming OpenRead -> Upload fallback below.
+	// DeleteSource (moves) still runs after a successful copy,
+	// exactly like the streaming path.
+	if t.SrcMount == t.DstMount {
+		if cp, ok := dst.(storage.Copier); ok {
+			if err := cp.Copy(ctx, t.SrcRef, t.DstRef); err != nil {
+				return err
+			}
+			if t.DeleteSource {
+				if err := src.Delete(ctx, t.SrcRef); err != nil {
+					return fmt.Errorf("app: 已复制到目标，但删除源文件失败（源文件还在）：%w", err)
+				}
+			}
+			report(t.Size, 0)
+			return nil
+		}
 	}
 	rc, err := src.OpenRead(ctx, t.SrcRef)
 	if err != nil {

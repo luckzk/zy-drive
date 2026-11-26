@@ -1060,38 +1060,48 @@ try {
     if (sidebar2) await sidebar2.screenshot({ path: path.join(SHOTS, '02c-sidebar-group-hover.png') })
   }
 
-  // 2e. 网盘卡片的删除按钮（VISUAL_MOUNTS）：平时隐藏，悬停卡片
-  // 才出现；必须是内联 SVG 图标，不是 emoji；hover 变危险红。
+  // 2e. 网盘卡片的悬停操作列（VISUAL_MOUNTS，v0.13.0：刷新容量
+  // + 删除共用一个 .mount-hover-actions 容器，平时隐藏，悬停
+  // 卡片才出现；两个按钮都是内联 SVG 图标，不是 emoji；hover
+  // 变危险红）。容器本身是绝对定位（不占布局）。
   if (process.env.VISUAL_MOUNTS) {
     const mountRemove = await page.evaluate(() => {
       const card = document.querySelector('.mount-card')
+      const col = card?.querySelector('.mount-hover-actions')
       const btn = card?.querySelector('.mount-remove')
-      if (!card || !btn) return { found: false }
-      const cs = getComputedStyle(btn)
+      const refresh = card?.querySelector('.mount-refresh')
+      if (!card || !col || !btn || !refresh) return { found: false }
+      const cs = getComputedStyle(col)
       return {
         found: true,
         displayBefore: cs.display,
+        colAbsolute: cs.position === 'absolute',
         hasSvg: !!btn.querySelector('svg'),
         text: btn.textContent.trim(),
         title: btn.getAttribute('title'),
+        refreshHasSvg: !!refresh.querySelector('svg'),
+        refreshTitle: refresh.getAttribute('title'),
       }
     })
     console.log('mount remove (before hover):', JSON.stringify(mountRemove))
-    if (!mountRemove.found) failures.push('找不到网盘卡片的删除按钮（.mount-remove）')
-    if (mountRemove.found && mountRemove.displayBefore !== 'none') failures.push(`网盘删除按钮平时应隐藏，实测 display=${mountRemove.displayBefore}`)
+    if (!mountRemove.found) failures.push('找不到网盘卡片的悬停操作列（.mount-hover-actions，内含 .mount-remove + .mount-refresh）')
+    if (mountRemove.found && mountRemove.displayBefore !== 'none') failures.push(`网盘悬停操作列平时应隐藏，实测 display=${mountRemove.displayBefore}`)
+    if (mountRemove.found && !mountRemove.colAbsolute) failures.push('网盘悬停操作列应为绝对定位（不占布局）')
     if (mountRemove.found && !mountRemove.hasSvg) failures.push('网盘删除按钮应是内联 SVG 图标，不是 emoji/文字')
     if (mountRemove.found && mountRemove.text !== '') failures.push(`网盘删除按钮里不应有文字/emoji，实测 ${JSON.stringify(mountRemove.text)}`)
     if (mountRemove.found && mountRemove.title !== '移除网盘') failures.push(`网盘删除按钮 title 应为“移除网盘”，实测 ${JSON.stringify(mountRemove.title)}`)
+    if (mountRemove.found && !mountRemove.refreshHasSvg) failures.push('网盘刷新容量按钮应是内联 SVG 图标，不是 emoji/文字')
+    if (mountRemove.found && mountRemove.refreshTitle !== '刷新容量') failures.push(`网盘刷新容量按钮 title 应为“刷新容量”，实测 ${JSON.stringify(mountRemove.refreshTitle)}`)
     await page.hover('.mount-card').catch(() => failures.push('悬停网盘卡片失败'))
     await page.waitForTimeout(300)
     const mountRemoveHover = await page.evaluate(() => {
-      const btn = document.querySelector('.mount-card .mount-remove')
-      if (!btn) return { found: false }
-      const cs = getComputedStyle(btn)
+      const col = document.querySelector('.mount-card .mount-hover-actions')
+      if (!col) return { found: false }
+      const cs = getComputedStyle(col)
       return { found: true, displayAfter: cs.display }
     })
     console.log('mount remove (on hover):', JSON.stringify(mountRemoveHover))
-    if (mountRemoveHover.found && mountRemoveHover.displayAfter === 'none') failures.push('悬停网盘卡片后删除按钮没有出现')
+    if (mountRemoveHover.found && mountRemoveHover.displayAfter === 'none') failures.push('悬停网盘卡片后悬停操作列没有出现')
     const sidebar3 = await page.$('.sidebar')
     if (sidebar3) await sidebar3.screenshot({ path: path.join(SHOTS, '02e-sidebar-mount-hover.png') })
   }
@@ -1151,18 +1161,18 @@ try {
         const card = [...document.querySelectorAll('.mount-card')][idx]
         if (!card) return { found: false }
         const name = card.querySelector('.mount-name')
-        const btn = card.querySelector('.mount-remove')
-        if (!name || !btn) return { found: false }
+        const col = card.querySelector('.mount-hover-actions')
+        if (!name || !col) return { found: false }
         const nr = name.getBoundingClientRect()
         const cs = getComputedStyle(name)
-        const bcs = getComputedStyle(btn)
+        const ccs = getComputedStyle(col)
         return {
           found: true,
           singleLine: nr.height <= 22,
           ellipsis: cs.textOverflow === 'ellipsis' && cs.whiteSpace === 'nowrap' && cs.overflow === 'hidden',
           clipped: name.scrollWidth > name.clientWidth,
-          removeVisible: bcs.display !== 'none',
-          removeAbsolute: bcs.position === 'absolute',
+          removeVisible: ccs.display !== 'none',
+          removeAbsolute: ccs.position === 'absolute',
           title: name.getAttribute('title'),
           nameLen: name.textContent?.length ?? 0,
         }
@@ -1173,7 +1183,7 @@ try {
       if (longCheck.found && !longCheck.ellipsis) failures.push('超长网盘名没有省略号样式（nowrap + hidden + ellipsis）')
       if (longCheck.found && !longCheck.clipped) failures.push('超长网盘名没有被截断（应超出卡片宽度并省略）')
       if (longCheck.found && !longCheck.removeVisible) failures.push('悬停超长网盘名卡片后删除按钮没有出现')
-      if (longCheck.found && !longCheck.removeAbsolute) failures.push('网盘删除按钮应为绝对定位（不占布局），实测不是 absolute')
+      if (longCheck.found && !longCheck.removeAbsolute) failures.push('网盘悬停操作列应为绝对定位（不占布局），实测不是 absolute')
       if (longCheck.found && !longCheck.title) failures.push('超长网盘名没有 title 属性（悬停应显示全名）')
       const sidebar5 = await page.$('.sidebar')
       if (sidebar5) await sidebar5.screenshot({ path: path.join(SHOTS, '02g-sidebar-long-name.png') })
@@ -1523,6 +1533,206 @@ try {
       if (!lastMove || lastMove[0] !== 'm-long' || lastMove[1] !== '个人' || lastMove[2] !== 0) failures.push(`组内拖到首位后 MoveMount 没被调到 (m-long, 个人, 0)，实测 ${JSON.stringify(lastMove)}`)
       const firstName = await page.evaluate(() => document.querySelector('[data-group="个人"] .mount-card .mount-name')?.textContent?.trim() ?? '')
       if (!firstName.startsWith('这是一个特别特别长的网盘名字')) failures.push(`组内排序后“个人”组首不是超长名卡片，实测“${firstName}”`)
+    }
+  }
+
+  // 2k. 跨组拖拽时分组标题跟随（v0.12.0，VISUAL_MOUNTS）：2j
+  // 之后“个人”组是 [超长名, 我的 R2, Dropbox, OneDrive,
+  // Drime]。长按组首（超长名）拖到“存储 / 备份”组首——拖拽
+  // 中“存储 / 备份”的标题行必须跟着上移一张卡高 + 间距（被
+  // 拖卡片腾出的位置由它下面的内容顶上来），而“工作”组的
+  // 标题在插入点之后、不应动；松手后 MoveMount 被调到
+  // (m-long, '存储 / 备份', 0)。标题位移由 transform 驱动，
+  // 与卡片同一个 200ms 过渡，所以读数前等 350ms 让过渡落定。
+  if (process.env.VISUAL_MOUNTS) {
+    await page.evaluate(() => { document.querySelector('.sidebar').scrollTop = 0 })
+    await page.waitForTimeout(200)
+    const srcCard = page.locator('[data-group="个人"] .mount-card').first()
+    const srcBox = await srcCard.boundingBox()
+    const targetCard2k = page.locator('[data-group="存储 / 备份"] .mount-card').first()
+    const targetBox2k = await targetCard2k.boundingBox()
+    const headerTop = (label) => page.evaluate((l) => {
+      const el = [...document.querySelectorAll('[data-group-header]')].find((h) => h.textContent?.includes(l))
+      return el ? el.getBoundingClientRect().top : null
+    }, label)
+    if (!srcBox || !targetBox2k) {
+      failures.push('分组标题跟随测试：找不到源卡片或目标组首卡片')
+    } else {
+      const draggedName2k = (await srcCard.locator('.mount-name').textContent())?.trim() ?? ''
+      const cardH = srcBox.height + 6
+      const storageTopBefore = await headerTop('存储')
+      const workTopBefore = await headerTop('工作')
+      let curX = srcBox.x + srcBox.width / 2
+      let curY = srcBox.y + srcBox.height / 2
+      await page.mouse.move(curX, curY)
+      await page.mouse.down()
+      await page.waitForTimeout(450)
+      const dragging2k = await page.evaluate(() => !!document.querySelector('.mount-card.dragging'))
+      if (!dragging2k) failures.push('分组标题跟随测试：按住卡片 450ms 后没有进入拖拽态')
+      await stepMove(curX, curY, targetBox2k.x + targetBox2k.width / 2, targetBox2k.y - 2)
+      await page.waitForTimeout(350)
+      const storageTopDuring = await headerTop('存储')
+      const workTopDuring = await headerTop('工作')
+      console.log('header follow:', JSON.stringify({ cardH, storageTopBefore, storageTopDuring, workTopBefore, workTopDuring }))
+      if (storageTopBefore === null || storageTopDuring === null) failures.push('分组标题跟随测试：找不到“存储 / 备份”标题行')
+      else if (Math.abs((storageTopDuring - storageTopBefore) + cardH) > 4) failures.push(`跨组拖拽中“存储 / 备份”标题应上移约 ${cardH.toFixed(1)}px（一张卡高 + 间距），实测移动 ${(storageTopDuring - storageTopBefore).toFixed(1)}px`)
+      if (workTopBefore === null || workTopDuring === null) failures.push('分组标题跟随测试：找不到“工作”标题行')
+      else if (Math.abs(workTopDuring - workTopBefore) > 4) failures.push(`跨组拖拽中“工作”标题不应动（在插入点之后），实测移动 ${(workTopDuring - workTopBefore).toFixed(1)}px`)
+      await page.screenshot({ path: path.join(SHOTS, '02k-drag-header.png') })
+      await page.mouse.up()
+      await page.waitForTimeout(600)
+      const lastMove2k = await page.evaluate(() => window.__lastMoveMount ?? null)
+      console.log('last move mount (2k):', JSON.stringify(lastMove2k))
+      if (!lastMove2k || lastMove2k[0] !== 'm-long' || lastMove2k[1] !== '存储 / 备份' || lastMove2k[2] !== 0) failures.push(`拖到“存储 / 备份”组首后 MoveMount 没被调到 (m-long, 存储 / 备份, 0)，实测 ${JSON.stringify(lastMove2k)}`)
+      const storageText = await page.evaluate(() => document.querySelector('[data-group="存储 / 备份"]')?.textContent ?? '')
+      if (draggedName2k && !storageText.includes(draggedName2k)) failures.push(`拖拽后“${draggedName2k}”没出现在“存储 / 备份”分组里`)
+    }
+  }
+
+  // 2l. 命令面板居中（v0.13.0）：点顶栏搜索框弹出命令面板，面板
+  // 打开第一帧就应该已经在水平正中——v0.13.0 之前入场动画
+  // rise-sm 的 transform 会在 500ms 动画期间顶掉居中的
+  // translateX(-50%)，面板先出现在右侧、动画结束才弹回中间。
+  // 断言：打开瞬间与动画结束后的中心点都在视口正中（±4px），
+  // 且两者之间没有横向跳动。
+  {
+    await page.locator('.app-header .input').click()
+    await page.waitForTimeout(80)
+    const paletteFirst = await page.evaluate(() => {
+      const p = document.querySelector('.palette')
+      if (!p) return { found: false }
+      const r = p.getBoundingClientRect()
+      return { found: true, centerX: Math.round(r.left + r.width / 2), viewportW: window.innerWidth }
+    })
+    console.log('palette first paint:', JSON.stringify(paletteFirst))
+    await page.waitForTimeout(700)
+    const paletteSettled = await page.evaluate(() => {
+      const p = document.querySelector('.palette')
+      if (!p) return { found: false }
+      const r = p.getBoundingClientRect()
+      return { found: true, centerX: Math.round(r.left + r.width / 2), viewportW: window.innerWidth }
+    })
+    console.log('palette settled:', JSON.stringify(paletteSettled))
+    if (!paletteFirst.found) failures.push('点顶栏搜索框后命令面板没有打开（.palette）')
+    if (!paletteSettled.found) failures.push('命令面板打开后消失了（.palette）')
+    for (const [when, m] of [['打开瞬间', paletteFirst], ['动画结束', paletteSettled]]) {
+      if (m.found && Math.abs(m.centerX - m.viewportW / 2) > 4) {
+        failures.push(`命令面板${when}不在水平正中：中心 ${m.centerX}，视口中点 ${Math.round(m.viewportW / 2)}`)
+      }
+    }
+    if (paletteFirst.found && paletteSettled.found && Math.abs(paletteFirst.centerX - paletteSettled.centerX) > 4) {
+      failures.push(`命令面板打开时横向跳动：首帧中心 ${paletteFirst.centerX} → 落位 ${paletteSettled.centerX}`)
+    }
+    await page.screenshot({ path: path.join(SHOTS, '02l-palette.png') })
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(400)
+  }
+
+  // 2m. 列表/网格视图切换（v0.13.0，VISUAL_MOUNTS）：文件工具栏
+  // 右上角（刷新旁）有一组分段按钮（列表/网格）；切网格后是
+  // 卡片视图、表格消失；刷新页面后仍是网格（localStorage 持久
+  // 化）；切回列表后表格回来。
+  if (process.env.VISUAL_MOUNTS) {
+    const toggle = await page.evaluate(() => {
+      const t = document.querySelector('.view-toggle')
+      if (!t) return { found: false }
+      return {
+        found: true,
+        buttons: [...t.querySelectorAll('button')].map((b) => b.getAttribute('aria-label')),
+        listActive: t.querySelector('button[aria-label="列表视图"]')?.classList.contains('active') ?? false,
+        hasTable: !!document.querySelector('.file-table'),
+        hasGrid: !!document.querySelector('.file-grid'),
+      }
+    })
+    console.log('view toggle:', JSON.stringify(toggle))
+    if (!toggle.found) failures.push('文件工具栏没有视图切换分段按钮（.view-toggle）')
+    if (toggle.found && (!toggle.buttons?.includes('列表视图') || !toggle.buttons?.includes('网格视图'))) failures.push(`视图切换应有“列表视图/网格视图”两个按钮，实测 ${JSON.stringify(toggle.buttons)}`)
+    if (toggle.found && !toggle.listActive) failures.push('默认视图应是列表（列表按钮激活）')
+    if (toggle.found && !toggle.hasTable) failures.push('默认应显示文件表格（.file-table）')
+    if (toggle.found && toggle.hasGrid) failures.push('默认不应显示网格视图（.file-grid）')
+    await page.getByRole('button', { name: '网格视图', exact: true }).click()
+    await page.waitForTimeout(400)
+    const gridOn = await page.evaluate(() => ({
+      hasTable: !!document.querySelector('.file-table'),
+      hasGrid: !!document.querySelector('.file-grid'),
+      cards: document.querySelectorAll('.file-grid-card').length,
+      gridActive: document.querySelector('button[aria-label="网格视图"]')?.classList.contains('active') ?? false,
+    }))
+    console.log('view grid:', JSON.stringify(gridOn))
+    if (!gridOn.hasGrid || gridOn.cards === 0) failures.push('点网格视图后没有出现文件卡片（.file-grid-card）')
+    if (gridOn.hasTable) failures.push('切到网格视图后文件表格应消失')
+    if (!gridOn.gridActive) failures.push('切到网格视图后网格按钮应激活')
+    await page.screenshot({ path: path.join(SHOTS, '02m-view-grid.png') })
+    // 持久化：刷新页面后仍是网格。
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForTimeout(1000)
+    const gridPersisted = await page.evaluate(() => ({
+      hasGrid: !!document.querySelector('.file-grid'),
+      cards: document.querySelectorAll('.file-grid-card').length,
+    }))
+    console.log('view grid persisted:', JSON.stringify(gridPersisted))
+    if (!gridPersisted.hasGrid || gridPersisted.cards === 0) failures.push('刷新页面后网格视图没有保持（应从 localStorage 恢复）')
+    await page.getByRole('button', { name: '列表视图', exact: true }).click()
+    await page.waitForTimeout(400)
+    const listBack = await page.evaluate(() => ({
+      hasTable: !!document.querySelector('.file-table'),
+      hasGrid: !!document.querySelector('.file-grid'),
+    }))
+    if (!listBack.hasTable) failures.push('切回列表视图后文件表格没有回来')
+    if (listBack.hasGrid) failures.push('切回列表视图后网格视图应消失')
+  }
+
+  // 2n. 右上角 Toast（v0.13.0，VISUAL_MOUNTS）：右键菜单里点
+  // “在文件管理器中显示”后，确认消息以右上角 Toast 出现（不
+  // 再是把文件列表往下顶的 inline 提示条）；5s 自动消失；悬
+  // 停暂停计时、移走继续；X 立即关闭。
+  if (process.env.VISUAL_MOUNTS) {
+    // “在文件管理器中显示”只对文件出现（文件夹没有）——右键
+    // 第一行文件，而不是第一行（桩数据第一行是文件夹）。
+    const fileRowIdx = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.file-table tbody tr')]
+      return rows.findIndex((r) => (r.children[2]?.textContent?.trim() ?? '') !== '—')
+    })
+    if (fileRowIdx === -1) {
+      failures.push('找不到文件行（右键菜单的“在文件管理器中显示”只对文件出现）')
+    } else {
+      const firstRow2n = page.locator('.file-table tbody tr').nth(fileRowIdx)
+      await firstRow2n.click({ button: 'right' })
+      await page.waitForTimeout(400)
+      await page.getByRole('menuitem', { name: '在文件管理器中显示' }).click()
+      await page.waitForTimeout(400)
+    const toast = await page.evaluate(() => {
+      const host = document.querySelector('.toast-host')
+      const t = document.querySelector('.toast')
+      if (!host || !t) return { found: false }
+      const r = t.getBoundingClientRect()
+      return {
+        found: true,
+        text: t.textContent ?? '',
+        right: Math.round(r.right),
+        top: Math.round(r.top),
+        viewportW: window.innerWidth,
+        hasClose: !!t.querySelector('.toast-close'),
+      }
+    })
+    console.log('toast:', JSON.stringify(toast))
+    if (!toast.found) failures.push('点“在文件管理器中显示”后没有出现右上角 Toast（.toast-host .toast）')
+    if (toast.found && !toast.text.includes('已在文件管理器中打开')) failures.push(`Toast 文案不对：${JSON.stringify(toast.text)}`)
+    if (toast.found && Math.abs(toast.right - toast.viewportW) > 32) failures.push(`Toast 应贴右上角，实测右缘 ${toast.right}，视口宽 ${toast.viewportW}`)
+    if (toast.found && toast.top > 100) failures.push(`Toast 应在顶部附近，实测 top=${toast.top}`)
+    if (toast.found && !toast.hasClose) failures.push('Toast 没有 X 关闭按钮（.toast-close）')
+    await page.screenshot({ path: path.join(SHOTS, '02n-toast.png') })
+    // 悬停暂停：等 1s 后悬停，再等 4.5s（已超过 5s 总时长），
+    // Toast 仍应在；移走后剩余时间走完，Toast 消失。
+    await page.waitForTimeout(1000)
+    await page.hover('.toast')
+    await page.waitForTimeout(4500)
+    const toastPaused = await page.evaluate(() => !!document.querySelector('.toast'))
+    if (!toastPaused) failures.push('悬停 Toast 时它消失了（悬停应暂停 5s 倒计时）')
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(4500)
+    const toastGone = await page.evaluate(() => !document.querySelector('.toast'))
+    if (!toastGone) failures.push('移开鼠标后 Toast 没有自动消失（应走完剩余时间后关闭）')
     }
   }
 
@@ -2167,7 +2377,7 @@ try {
   console.log('page overflow:', JSON.stringify(overflow))
   if (overflow.overflowX) failures.push(`页面横向溢出：scrollWidth ${overflow.scrollW} > clientWidth ${overflow.clientW}`)
   if (overflow.headerBtnRight !== null && overflow.headerBtnRight > overflow.viewportW) {
-    failures.push(`顶栏“新建同步”按钮右缘超出视口：right=${overflow.headerBtnRight} > viewport=${overflow.viewportW}`)
+    failures.push(`顶栏按钮右缘超出视口：right=${overflow.headerBtnRight} > viewport=${overflow.viewportW}`)
   }
 
   // 6. 不注桩的图：Bind 失败时的人话错误态

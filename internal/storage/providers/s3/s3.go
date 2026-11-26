@@ -88,9 +88,10 @@ func New(cfg storage.Config) (storage.Provider, error) {
 	return &Provider{client: client, bucket: bucket, prefix: strings.Trim(cfg.Extra["prefix"], "/")}, nil
 }
 
-// Caps declares S3 capabilities. Version support assumes bucket
-// versioning is enabled; the UI shows the Versions menu only when the
-// bucket actually reports versions (checked by the driver at runtime).
+// Caps declares S3 capabilities. Versions and server-side copy are
+// real (Versions/Restore/Copy below); Versions() returns an empty
+// list — not an error — when the bucket has versioning off, so the
+// UI shows "no versions" instead of failing the Inspector.
 func (p *Provider) Caps() domain.Caps {
 	return domain.Caps{
 		CanMkdir: true, CanRename: true, CanDelete: true, DeleteToTrash: false,
@@ -260,19 +261,111 @@ func (p *Provider) Mkdir(ctx context.Context, ref string) error {
 // Directory rename is not a single S3 operation; callers rename files,
 // and the app layer renames directories by listing + renaming children.
 func (p *Provider) Rename(ctx context.Context, src, dst string) error {
-	srcKey, dstKey := p.key(src), p.key(dst)
-	_, err := p.client.CopyObject(ctx, &s3.CopyObjectInput{
-		Bucket:     aws.String(p.bucket),
-		Key:        aws.String(dstKey),
-		CopySource: aws.String(p.bucket + "/" + srcKey),
-	})
-	if err != nil {
-		return p.wrap("Rename", err)
+	if err := p.Copy(ctx, src, dst); err != nil {
+		return err
 	}
 	if err := p.Delete(ctx, src); err != nil {
 		return p.wrap("Rename", err)
 	}
 	return nil
+}
+
+// Copy implements storage.Copier via CopyObject: a same-bucket,
+// same-mount server-side copy — the bytes never leave S3/R2.
+// It never deletes the source: Rename and moves delete it
+// themselves, after the copy succeeded.
+func (p *Provider) Copy(ctx context.Context, src, dst string) error {
+	_, err := p.client.CopyObject(ctx, &s3.CopyObjectInput{
+		Bucket:     aws.String(p.bucket),
+		Key:        aws.String(p.key(dst)),
+		CopySource: aws.String(p.bucket + "/" + p.key(src)),
+	})
+	return p.wrapErr("Copy", err)
+}
+
+// Versions implements storage.Versioner via ListObjectVersions.
+// Each version node names the same object and carries its version
+// id in Extra["versionId"]. A bucket with versioning off (or
+// suspended) has no history to list: Versions returns an empty
+// list, not an error, so the UI can say "no versions" instead of
+// failing. Delete markers carry no bytes and are not restorable,
+// so they are skipped.
+func (p *Provider) Versions(ctx context.Context, ref string) ([]domain.Node, error) {
+	ver, err := p.client.GetBucketVersioning(ctx, &s3.GetBucketVersioningInput{
+		Bucket: aws.String(p.bucket),
+	})
+	if err != nil {
+		return nil, p.wrap("Versions", err)
+	}
+	if ver.Status != types.BucketVersioningStatusEnabled {
+		return []domain.Node{}, nil
+	}
+	key := p.key(ref)
+	paginator := s3.NewListObjectVersionsPaginator(p.client, &s3.ListObjectVersionsInput{
+		Bucket: aws.String(p.bucket),
+		Prefix: aws.String(key),
+	})
+	var out []domain.Node
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, p.wrap("Versions", err)
+		}
+		for _, v := range page.Versions {
+			// Prefix also matches longer keys ("a.txt" matches
+			// "a.txt2"); only the exact key is this file's history.
+			if aws.ToString(v.Key) != key {
+				continue
+			}
+			versionID := aws.ToString(v.VersionId)
+			if versionID == "" {
+				continue
+			}
+			out = append(out, domain.Node{
+				Ref:      ref,
+				Path:     "/" + strings.Trim(ref, "/"),
+				Name:     baseName(key),
+				Size:     aws.ToInt64(v.Size),
+				ModTime:  aws.ToTime(v.LastModified),
+				Hash:     strings.Trim(aws.ToString(v.ETag), `"`),
+				HashKind: "etag",
+				Mime:     mimeOf(key),
+				Extra:    map[string]string{"versionId": versionID},
+			})
+		}
+	}
+	return out, nil
+}
+
+// Restore implements storage.Versioner: download the named version
+// (GetObject with VersionId) and re-upload it as the current head.
+// The restored version itself stays in history, so a restore is
+// undoable by restoring the previous head. The bytes stream
+// GetObject -> transfer manager in 5 MiB parts and are never
+// buffered whole in memory; a plain PutObject cannot take this
+// unseekable stream (the SDK needs TLS for its trailing
+// checksum), which is why the transfer manager does the upload.
+func (p *Provider) Restore(ctx context.Context, ref, versionID string) error {
+	key := p.key(ref)
+	out, err := p.client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket:    aws.String(p.bucket),
+		Key:       aws.String(key),
+		VersionId: aws.String(versionID),
+	})
+	if err != nil {
+		return p.wrap("Restore", err)
+	}
+	defer out.Body.Close()
+	uploader := transfermanager.New(p.client, func(o *transfermanager.Options) {
+		o.PartSizeBytes = minPartSize
+		o.MultipartUploadThreshold = minPartSize
+	})
+	_, err = uploader.UploadObject(ctx, &transfermanager.UploadObjectInput{
+		Bucket: aws.String(p.bucket),
+		Key:    aws.String(key),
+		Body:   out.Body,
+	})
+	return p.wrapErr("Restore", err)
 }
 
 // Delete removes one object. S3 delete is permanent; the UI wording
@@ -353,4 +446,8 @@ func mimeOf(key string) string {
 // deliberately does NOT implement storage.QuotaSource, so the
 // App layer reports the mount as unlimited and the UI shows
 // "不限量" instead of a made-up number.
-var _ storage.Provider = (*Provider)(nil)
+var (
+	_ storage.Provider  = (*Provider)(nil)
+	_ storage.Copier    = (*Provider)(nil)
+	_ storage.Versioner = (*Provider)(nil)
+)

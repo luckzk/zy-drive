@@ -12,7 +12,6 @@ const DICT = {
   sync: { zh: '同步任务', en: 'Sync Jobs' },
   settings: { zh: '设置', en: 'Settings' },
   searchPlaceholder: { zh: '搜索全部网盘… (Ctrl+K)', en: 'Search all drives… (Ctrl+K)' },
-  newSync: { zh: '新建同步', en: 'New Sync' },
   drives: { zh: '网盘', en: 'Drives' },
   general: { zh: '通用', en: 'General' },
   syncDefaults: { zh: '同步默认', en: 'Sync Defaults' },

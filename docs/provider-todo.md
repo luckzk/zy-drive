@@ -20,6 +20,8 @@
 
 ### 0.1 Caps 只能由已实现的方法推导 + 测试断言（P0）
 
+进展（2026-11-26，v0.12.0）：Versions 与 ServerSideCopy 两项已断言（`contracttest.AssertCapsMatchInterfaces`，跑在每家驱动的 mock/fake 上）；其余六项（Searcher / DeltaSource / Thumber / QuotaSource / DirectURLer / ResumableUploader）未断言，待后续补。
+
 现状（已核实）：
 
 - `SupportsVersions=true` 写在 Drive、S3、Dropbox 的 Caps 里，但
@@ -67,6 +69,8 @@ MEGA（`mega.go:455`）、pCloud（`pcloud.go:893`）实现。
 
 ### 0.3 检查器“高级”从能力名清单改成功能入口（P2）
 
+进展（2026-11-26，v0.12.0）：版本已接线——检查器高级页“查看历史版本”可点、列出版本、可恢复，右键菜单也有“历史版本…”入口；分享仍未接线。
+
 现状：检查器高级页列出的能力名里有实现并不存在的项（见 0.1），
 而分享、版本两个后端已实现的能力在界面上完全没接线。
 要做：0.1 的断言通过后，检查器只列断言通过的能力；分享、版本
@@ -100,13 +104,11 @@ Versions + Restore、Thumbnail、Quota、DirectURL 全有；Caps 与实现一致
 Ref 是 ID 型，显示路径靠 parents 查询重建。
 真账号状态：mock 测试，未在真实账号上端到端跑过。
 
-- [ ] P0 Caps 改错：`SupportsVersions` 改 false，或把 revisions 接出来
-  （API 有 revisions，未接入）。二选一；建议先改 false。
+- [x] P0 Caps 改错（v0.12.0 已做）：`Versions()/Restore()` 真实现（revisions.list + alt=media 下载后重传恢复为新 head 版本；Drive v3 没有服务端恢复端点，见代码注释），Caps 的 true 现在是真的。
 - [ ] P1 字段补齐：`fileFields` 加 `createdTime`（创建时间）；
   `trashed` 已请求但未接入 Node，接入或去掉请求；
   `owners` / `shared` / `webViewLink`（已请求，未接入 Node）接入 Node。
-- [ ] P1 版本功能（二选一，与 P0 联动）：实现 `Versions()/Restore()`，
-  把 Caps 的 true 变成真的；或保持 false，版本功能不做。
+- [x] P1 版本功能（v0.12.0 已做：真实现，见 P0；Google 原生文档类文件无可下载的 revision 字节，恢复会报错，见代码注释）。
 - [ ] P1 分享接 UI：后端 `Share` 已实现，接线到右键菜单与检查器（依赖 0.3）。
 - [ ] P2 服务端复制语义：`files.copy` 存在但语义与 S3/Dropbox 的同盘复制不同，
   Caps 写 false 是对的；跨盘复制继续走流式，不用改，只需在文档里写明。
@@ -124,13 +126,11 @@ Caps 两处错：`SupportsVersions=true`（无实现）、
 另有用户待办：Dropbox App Console 勾选 `account_info.read` 后重新授权
 （旧 Token 拿不到新 scope）。
 
-- [ ] P0 Caps 改错：`SupportsVersions`、`SupportsResumableUpload` 改 false，
-  或把对应功能真做出来；`SupportsServerSideCopy` 按 0.1 处理。
+- [ ] P0 Caps 改错（v0.12.0 进展：`SupportsVersions` 已真做——list_revisions + restore；`SupportsServerSideCopy` 已真做——新增 Copier 接口接 copy_v2；`SupportsResumableUpload` 仍是宣称 true、无实现，待处理）。
 - [ ] P1 字段补齐：`client_modified` 接入为创建时间；
   `sharing_info` 接入 Node；`content_hash` 登记方言（4MB 分块 SHA-256 串联，
   Dropbox 内部专用，不可跨云比）。
-- [ ] P1 版本功能（二选一）：实现 `Versions()/Restore()`（API 有 revisions），
-  或保持 Caps false。
+- [x] P1 版本功能（v0.12.0 已做：list_revisions + restore 真实现）。
 - [ ] P1 分享接 UI：后端 `Share`（`create_shared_link_with_settings`）已实现，
   接线到右键菜单与检查器（依赖 0.3）。
 - [ ] P2 断点续传：上传会话是 4MB 片；要跨重启续传需持久化会话，
@@ -151,11 +151,8 @@ Caps 两处错：`SupportsVersions=true`（无实现）、
   `Delete`，不展开文件夹，S3 上只删掉占位对象、内容残留。
   修法：`DeleteNodes` 遇到文件夹先 List 展开再删，或 S3 驱动内按前缀批量删；
   修完补测试（`provider-capabilities.md` §四.4）。
-- [ ] P0 Caps 改错：`SupportsVersions`、`SupportsShare`、
-  `SupportsResumableUpload`、`SupportsServerSideCopy` 按 0.1 处理
-  （Share 改述为“预签名直链（仅预览）”或拆独立标志）。
-- [ ] P1 版本功能（二选一）：实现 `Versions()/Restore()`（API 有 versionId，
-  需桶开启版本控制），或保持 Caps false。
+- [ ] P0 Caps 改错（v0.12.0 进展：`SupportsVersions` 已真做——ListObjectVersions + GetObject(versionId) 恢复；`SupportsServerSideCopy` 已真做——新增 Copier 接口接 CopyObject；`SupportsResumableUpload` 仍是宣称 true、无实现，待处理；`SupportsShare` 仍按旧方案，待改述或拆标志）。
+- [x] P1 版本功能（v0.12.0 已做：ListObjectVersions + GetObject(versionId) 恢复；版本控制未开时 Versions() 返回空列表、不报错）。
 - [ ] P1 字段补齐：`StorageClass` 接入 Node；SSE / SSE-KMS 在上传参数里
   已有，接入 Caps/设置页的可见项；版本控制开启状态在挂载时提示。
 - [ ] P1 断点续传：multipart 是 5MB 片（transfermanager 迁移后切分点不变）；
@@ -275,8 +272,8 @@ lint 批刚修了一个真 bug：小文件上传 `err` 被分支内同名遮住�
 ## 待用户拍板（本文不替你定）
 
 - Drive / S3 / Dropbox 的版本功能：是把 `Versions()/Restore()` 真做出来，
-  还是把 Caps 改回 false、版本功能不做？
+  还是把 Caps 改回 false、版本功能不做？→ **已定（2026-11-26，用户拍板）：真做，v0.12.0 已落地。**
 - S3 / Dropbox 的服务端复制：是新增 `Copier` 接口接上去，还是把
-  `SupportsServerSideCopy` 改回 false、继续走流式复制？
+  `SupportsServerSideCopy` 改回 false、继续走流式复制？→ **已定（2026-11-26，用户拍板）：新增 Copier 接口接上去，v0.12.0 已落地。**
 - 断点续传：除 Drime 外的六家，是按 Drime 的做法逐家补持久化，
-  还是接受“会话内续传、无跨重启续传”，Caps 保持 false？
+  还是接受“会话内续传、无跨重启续传”，Caps 保持 false？→ 调研已完成（`~/workspace/research_notes/resumable-upload-20261126/report.md`），待用户定方案。

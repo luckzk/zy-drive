@@ -40,6 +40,7 @@ type mockSession struct {
 	name     string
 	total    int64
 	buf      []byte
+	next     int64 // contiguous bytes received from offset 0
 }
 
 type mockGraph struct {
@@ -50,6 +51,19 @@ type mockGraph struct {
 	fail429  int    // next N Graph calls fail with 429 (Retry-After: 0)
 	validTok string // accepted Bearer token
 	base     string // server URL, set after httptest.NewServer
+	// Chunk-conflict fixtures (each fires once, then clears):
+	// chunk409Final answers the chunk that completes the file with
+	// 409 resourceModified, after writing the file.
+	// chunk409Once answers the first non-final chunk with 409
+	// resourceModified, after writing its bytes.
+	// chunk409Dead answers a chunk with 409 and deletes the
+	// session, simulating an expired session.
+	// chunkGoneFinal answers the chunk that completes the file
+	// with 404, after writing the file (completed session deleted).
+	chunk409Final  bool
+	chunk409Once   bool
+	chunk409Dead   bool
+	chunkGoneFinal bool
 	// delta fixture: items reported by the token=tok1 delta call.
 	deltaChanged []string // item ids
 	deltaDeleted []string // item ids reported with the deleted facet
@@ -232,16 +246,27 @@ func (m *mockGraph) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *mockGraph) serveSession(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPut {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	sid := strings.TrimPrefix(r.URL.Path, "/session/")
 	m.mu.Lock()
 	s, ok := m.sessions[sid]
 	m.mu.Unlock()
 	if !ok {
 		m.writeErr(w, http.StatusNotFound, "resourceNotFound", "Upload session not found.")
+		return
+	}
+	// Session status: GET returns nextExpectedRanges, like Graph.
+	if r.Method == http.MethodGet {
+		m.mu.Lock()
+		next := s.next
+		m.mu.Unlock()
+		m.writeJSON(w, http.StatusOK, map[string]any{
+			"expirationDateTime": "2027-01-01T00:00:00Z",
+			"nextExpectedRanges": []string{fmt.Sprintf("%d-", next)},
+		})
+		return
+	}
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	cr := r.Header.Get("Content-Range") // "bytes start-end/total"
@@ -256,8 +281,19 @@ func (m *mockGraph) serveSession(w http.ResponseWriter, r *http.Request) {
 		s.buf = make([]byte, total)
 		s.total = total
 	}
-	copy(s.buf[start:end+1], data)
 	done := end+1 >= s.total
+	// Dead-session fixture: the chunk is lost with the session.
+	if m.chunk409Dead {
+		m.chunk409Dead = false
+		delete(m.sessions, sid)
+		m.mu.Unlock()
+		m.writeErr(w, http.StatusConflict, "resourceModified", "The resource has changed since the caller last read it; usually an eTag mismatch")
+		return
+	}
+	copy(s.buf[start:end+1], data)
+	if start == s.next {
+		s.next = end + 1
+	}
 	var buf []byte
 	var parentID, name string
 	if done {
@@ -265,15 +301,42 @@ func (m *mockGraph) serveSession(w http.ResponseWriter, r *http.Request) {
 		parentID, name = s.parentID, s.name
 		delete(m.sessions, sid)
 	}
+	final409 := done && m.chunk409Final
+	if final409 {
+		m.chunk409Final = false
+	}
+	goneFinal := done && m.chunkGoneFinal
+	if goneFinal {
+		m.chunkGoneFinal = false
+	}
+	once409 := !done && m.chunk409Once
+	if once409 {
+		m.chunk409Once = false
+	}
 	m.mu.Unlock()
-	if !done {
-		m.writeJSON(w, http.StatusAccepted, map[string]any{
-			"nextExpectedRanges": []string{fmt.Sprintf("%d-", end+1)},
-		})
+	if done {
+		it := m.addItem(name, parentID, false, buf)
+		if final409 {
+			// The file landed, but the answer is a conflict.
+			m.writeErr(w, http.StatusConflict, "resourceModified", "The resource has changed since the caller last read it; usually an eTag mismatch")
+			return
+		}
+		if goneFinal {
+			// The file landed and the session is gone.
+			m.writeErr(w, http.StatusNotFound, "resourceNotFound", "Upload session not found.")
+			return
+		}
+		m.writeJSON(w, http.StatusCreated, m.itemJSON(it))
 		return
 	}
-	it := m.addItem(name, parentID, false, buf)
-	m.writeJSON(w, http.StatusCreated, m.itemJSON(it))
+	if once409 {
+		// The bytes landed, but the answer is a conflict.
+		m.writeErr(w, http.StatusConflict, "resourceModified", "The resource has changed since the caller last read it; usually an eTag mismatch")
+		return
+	}
+	m.writeJSON(w, http.StatusAccepted, map[string]any{
+		"nextExpectedRanges": []string{fmt.Sprintf("%d-", end+1)},
+	})
 }
 
 func (m *mockGraph) serveGraph(w http.ResponseWriter, r *http.Request) {
@@ -696,6 +759,145 @@ func TestUploadUnknownSize(t *testing.T) {
 	}
 	if st.Size != int64(len(large)) {
 		t.Fatalf("Stat unkbig size=%d", st.Size)
+	}
+}
+
+// TestUploadSession409FinalChunkComplete is the reported bug: a
+// 135 MB .dmg drag-upload failed with "chunk PUT returned 409
+// Conflict (resourceModified)" although the file had landed. The
+// mock answers the final chunk with 409 after writing the file
+// (first attempt landed, its response was lost, the retry
+// conflicted). Upload must report success, with the right size and
+// hash, and the file must really be there byte for byte.
+func TestUploadSession409FinalChunkComplete(t *testing.T) {
+	p, m := newTestProvider(t, nil)
+	m.chunk409Final = true
+	ctx := context.Background()
+	large := make([]byte, (5<<20)+123)
+	for i := range large {
+		large[i] = byte(i % 251)
+	}
+	n, err := p.Upload(ctx, "big409.bin", bytes.NewReader(large), int64(len(large)))
+	if err != nil {
+		t.Fatalf("Upload with 409 on final chunk: %v", err)
+	}
+	if n.Size != int64(len(large)) {
+		t.Fatalf("Upload size=%d, want %d", n.Size, len(large))
+	}
+	wantHash := fmt.Sprintf("%x", sha1.Sum(large))
+	if n.HashKind != "sha1" || n.Hash != wantHash {
+		t.Fatalf("Upload hash kind=%q hash=%q, want sha1 %q", n.HashKind, n.Hash, wantHash)
+	}
+	rc, err := p.OpenRead(ctx, "big409.bin")
+	if err != nil {
+		t.Fatalf("OpenRead after 409: %v", err)
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(data, large) {
+		t.Fatalf("content mismatch after 409: got %d bytes", len(data))
+	}
+}
+
+// TestUploadSession409FinalChunkGone is the same lost-response shape
+// with the other status: the final chunk's retry finds the session
+// already deleted and gets 404. Upload must still report success.
+func TestUploadSession409FinalChunkGone(t *testing.T) {
+	p, m := newTestProvider(t, nil)
+	m.chunkGoneFinal = true
+	ctx := context.Background()
+	large := make([]byte, (5<<20)+9)
+	for i := range large {
+		large[i] = byte(i % 251)
+	}
+	n, err := p.Upload(ctx, "gone409.bin", bytes.NewReader(large), int64(len(large)))
+	if err != nil {
+		t.Fatalf("Upload with 404 on final chunk: %v", err)
+	}
+	if n.Size != int64(len(large)) {
+		t.Fatalf("Upload size=%d, want %d", n.Size, len(large))
+	}
+}
+
+// TestUploadSession409MidChunkResume covers the mid-upload 409: the
+// first chunk's bytes land but the PUT answers 409. The driver must
+// query the session, see the server already holds that range, and
+// continue with the next chunk instead of failing.
+func TestUploadSession409MidChunkResume(t *testing.T) {
+	p, m := newTestProvider(t, nil)
+	m.chunk409Once = true
+	ctx := context.Background()
+	large := make([]byte, (10<<20)+7) // three chunks: 5 MiB, 5 MiB, 7 B
+	for i := range large {
+		large[i] = byte(i % 251)
+	}
+	n, err := p.Upload(ctx, "resume409.bin", bytes.NewReader(large), int64(len(large)))
+	if err != nil {
+		t.Fatalf("Upload with mid-upload 409: %v", err)
+	}
+	if n.Size != int64(len(large)) {
+		t.Fatalf("Upload size=%d, want %d", n.Size, len(large))
+	}
+	rc, err := p.OpenRead(ctx, "resume409.bin")
+	if err != nil {
+		t.Fatalf("OpenRead after resume: %v", err)
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(data, large) {
+		t.Fatalf("content mismatch after resume: got %d bytes", len(data))
+	}
+}
+
+// TestUploadSession409DeadSessionRestart covers a session that dies
+// mid-upload (409 + session gone). With a seekable source the driver
+// starts a fresh session and re-uploads from the beginning.
+func TestUploadSession409DeadSessionRestart(t *testing.T) {
+	p, m := newTestProvider(t, nil)
+	m.chunk409Dead = true
+	ctx := context.Background()
+	large := make([]byte, (5<<20)+9)
+	for i := range large {
+		large[i] = byte(i % 251)
+	}
+	n, err := p.Upload(ctx, "dead409.bin", bytes.NewReader(large), int64(len(large)))
+	if err != nil {
+		t.Fatalf("Upload with dead session: %v", err)
+	}
+	if n.Size != int64(len(large)) {
+		t.Fatalf("Upload size=%d, want %d", n.Size, len(large))
+	}
+	rc, err := p.OpenRead(ctx, "dead409.bin")
+	if err != nil {
+		t.Fatalf("OpenRead after restart: %v", err)
+	}
+	data, _ := io.ReadAll(rc)
+	rc.Close()
+	if !bytes.Equal(data, large) {
+		t.Fatalf("content mismatch after restart: got %d bytes", len(data))
+	}
+}
+
+// nonSeekableReader hides Seek even though the underlying bytes
+// could be re-read: the driver must treat it as forward-only.
+type nonSeekableReader struct{ io.Reader }
+
+// TestUploadSession409DeadSessionNonSeekable is the guardrail for the
+// restart path: same dead session, but the source cannot be re-read,
+// so the upload must fail with a clear error — never a false
+// success, never a loop.
+func TestUploadSession409DeadSessionNonSeekable(t *testing.T) {
+	p, m := newTestProvider(t, nil)
+	m.chunk409Dead = true
+	ctx := context.Background()
+	large := make([]byte, (5<<20)+9)
+	src := nonSeekableReader{bytes.NewReader(large)}
+	_, err := p.Upload(ctx, "dead409ns.bin", src, int64(len(large)))
+	if err == nil {
+		t.Fatalf("Upload with dead session and non-seekable source: want an error")
+	}
+	if !strings.Contains(err.Error(), "non-seekable") {
+		t.Fatalf("err=%v, want a clear non-seekable error", err)
 	}
 }
 

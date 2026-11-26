@@ -94,6 +94,14 @@ func (w *Worker) Start(ctx context.Context) {
 		if !w.sem.Acquire(ctx) {
 			return
 		}
+		// Claim it synchronously, before the goroutine starts:
+		// the status flip inside runOne happens in that goroutine,
+		// and without this the loop above would pick the same
+		// still-Queued transfer again and dispatch it twice
+		// (spotted by the v0.12.0 Copier test: a same-mount copy
+		// ran its server-side Copy twice). runOne sets Running
+		// again on entry; the duplicate set is harmless.
+		_ = w.queue.SetStatus(next.ID, domain.TransferRunning, "")
 		go func(t *domain.Transfer) {
 			defer w.sem.Release()
 			w.runOne(ctx, t)

@@ -87,4 +87,29 @@ func Run(t *testing.T, newProvider func() (storage.Provider, error)) {
 	if caps.SupportsResumableUpload && caps.MinPartSize <= 0 {
 		t.Fatalf("contract: resumable upload declared but MinPartSize <= 0")
 	}
+
+	// 7. Caps must match the optional interfaces actually
+	// implemented (v0.12.0, provider-todo.md §0.1): a flag may only
+	// be true when the driver really has the method behind it.
+	AssertCapsMatchInterfaces(t, p)
+}
+
+// AssertCapsMatchInterfaces pins Caps to the optional interfaces
+// a provider value actually implements — no aspirational trues.
+// Scoped to Versions and server-side copy (the two capabilities
+// v0.12.0 made real); it runs on the provider value itself, so
+// unit tests need no account and no network. Drivers whose
+// Caps claim Versions must implement storage.Versioner, and vice
+// versa; same for SupportsServerSideCopy / storage.Copier.
+func AssertCapsMatchInterfaces(t *testing.T, p storage.Provider) {
+	t.Helper()
+	caps := p.Caps()
+	if _, ok := any(p).(storage.Versioner); ok != caps.SupportsVersions {
+		t.Fatalf("contract: %T Caps.SupportsVersions=%v but Versioner implemented=%v",
+			p, caps.SupportsVersions, ok)
+	}
+	if _, ok := any(p).(storage.Copier); ok != caps.SupportsServerSideCopy {
+		t.Fatalf("contract: %T Caps.SupportsServerSideCopy=%v but Copier implemented=%v",
+			p, caps.SupportsServerSideCopy, ok)
+	}
 }

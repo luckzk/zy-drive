@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,9 +20,19 @@ import (
 // mockFS is an in-memory Dropbox-shaped backend for tests. It speaks
 // just enough of API v2 to exercise the driver: no real account, no
 // real network to Dropbox.
+type mockRev struct {
+	rev      string
+	data     []byte
+	modified string
+}
+
 type mockFS struct {
 	dirs  map[string]bool   // "/a/b" -> dir exists ("" is root)
 	files map[string][]byte // "/a/b.txt" -> content
+	// revisions: path -> older contents, oldest first. An upload
+	// that overwrites a file pushes its old bytes here first.
+	revisions map[string][]mockRev
+	revSeq    int
 	// Quota controls: quotaResp overrides the get_space_usage
 	// body (default: individual 2 GiB), quotaStatus/quotaErr
 	// make it fail, quotaBody records the raw request body of
@@ -33,7 +44,26 @@ type mockFS struct {
 }
 
 func newMockFS() *mockFS {
-	return &mockFS{dirs: map[string]bool{"": true}, files: map[string][]byte{}}
+	return &mockFS{dirs: map[string]bool{"": true}, files: map[string][]byte{}, revisions: map[string][]mockRev{}}
+}
+
+// pushRevision saves p's current bytes as a new revision before an
+// overwrite replaces them (no-op for a file with no content yet).
+func (m *mockFS) pushRevision(p string) {
+	data, ok := m.files[p]
+	if !ok {
+		return
+	}
+	m.revSeq++
+	m.revisions[p] = append(m.revisions[p], mockRev{
+		rev: fmt.Sprintf("rev-%d", m.revSeq), data: data, modified: "2026-11-24T00:00:00Z",
+	})
+}
+
+func (m *mockFS) revisionJSON(p string, r mockRev) map[string]any {
+	name := p[strings.LastIndex(p, "/")+1:]
+	return map[string]any{".tag": "file", "name": name, "path_display": p, "path_lower": strings.ToLower(p),
+		"id": "id:" + p, "rev": r.rev, "size": len(r.data), "server_modified": r.modified}
 }
 
 func (m *mockFS) parent(p string) string {
@@ -154,8 +184,56 @@ func (m *mockFS) handler(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Dropbox-API-Result", `{"name":"x"}`)
 		_, _ = w.Write(data)
+	case "/2/files/list_revisions":
+		var entries []map[string]any
+		for _, r := range m.revisions[pth] {
+			entries = append(entries, m.revisionJSON(pth, r))
+		}
+		if entries == nil {
+			entries = []map[string]any{}
+		}
+		writeJSON(w, map[string]any{"entries": entries, "is_deleted": false})
+	case "/2/files/restore":
+		rev, _ := arg["rev"].(string)
+		for _, r := range m.revisions[pth] {
+			if r.rev == rev {
+				// Restoring creates a new head version: the old
+				// head becomes a revision first.
+				m.pushRevision(pth)
+				m.files[pth] = r.data
+				writeJSON(w, m.entryJSON(pth))
+				return
+			}
+		}
+		writeErr(w, http.StatusConflict, "path/not_found/")
+	case "/2/files/copy_v2":
+		from, _ := arg["from_path"].(string)
+		to, _ := arg["to_path"].(string)
+		if data, ok := m.files[from]; ok {
+			m.files[to] = data
+			m.dirs[m.parent(to)] = true
+			writeJSON(w, map[string]any{"metadata": m.entryJSON(to)})
+			return
+		}
+		if m.dirs[from] {
+			m.dirs[to] = true
+			for d := range m.dirs {
+				if strings.HasPrefix(d, from+"/") {
+					m.dirs[to+strings.TrimPrefix(d, from)] = true
+				}
+			}
+			for f, data := range m.files {
+				if strings.HasPrefix(f, from+"/") {
+					m.files[to+strings.TrimPrefix(f, from)] = data
+				}
+			}
+			writeJSON(w, map[string]any{"metadata": m.entryJSON(to)})
+			return
+		}
+		writeErr(w, http.StatusConflict, "path/not_found/")
 	case "/2/files/upload":
 		data, _ := io.ReadAll(r.Body)
+		m.pushRevision(pth)
 		m.files[pth] = data
 		m.dirs[m.parent(pth)] = true
 		writeJSON(w, m.entryJSON(pth))
@@ -170,6 +248,7 @@ func (m *mockFS) handler(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
 		commit, _ := arg["commit"].(map[string]any)
 		cp, _ := commit["path"].(string)
+		m.pushRevision(cp)
 		m.files[cp] = data
 		writeJSON(w, m.entryJSON(cp))
 	case "/2/files/search_v2":
@@ -386,5 +465,83 @@ func TestDropboxDirectURL(t *testing.T) {
 	}
 	if u != "https://dl.dropboxusercontent.com/s/tmp" {
 		t.Fatalf("DirectURL = %q, want the mock temporary link", u)
+	}
+}
+
+// TestDropboxVersionsRestoreCopy: two uploads of the same file
+// leave one revision behind; restoring it brings the old bytes
+// back as the new head (and the v2 head becomes a revision, so a
+// restore is undoable); copy_v2 duplicates server-side without
+// touching the source.
+func TestDropboxVersionsRestoreCopy(t *testing.T) {
+	p, srv := newTestProvider(t)
+	defer srv.Close()
+	ctx := t.Context()
+	if _, ok := any(p).(storage.Versioner); !ok {
+		t.Fatal("dropbox provider must implement storage.Versioner")
+	}
+	cp, ok := any(p).(storage.Copier)
+	if !ok {
+		t.Fatal("dropbox provider must implement storage.Copier")
+	}
+	if _, err := p.Upload(ctx, "a.txt", strings.NewReader("v1"), 2); err != nil {
+		t.Fatalf("Upload v1: %v", err)
+	}
+	if vs, err := p.Versions(ctx, "a.txt"); err != nil || len(vs) != 0 {
+		t.Fatalf("Versions after first upload: %v, %d versions, want 0", err, len(vs))
+	}
+	if _, err := p.Upload(ctx, "a.txt", strings.NewReader("v2"), 2); err != nil {
+		t.Fatalf("Upload v2: %v", err)
+	}
+	vs, err := p.Versions(ctx, "a.txt")
+	if err != nil {
+		t.Fatalf("Versions: %v", err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("Versions: got %d, want 1", len(vs))
+	}
+	if vs[0].Extra["versionId"] == "" {
+		t.Fatalf("version node must carry Extra[versionId], got %+v", vs[0])
+	}
+	if vs[0].Name != "a.txt" || vs[0].Size != 2 {
+		t.Fatalf("version node: %+v, want name a.txt size 2", vs[0])
+	}
+	if err := p.Restore(ctx, "a.txt", vs[0].Extra["versionId"]); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	rc, err := p.OpenRead(ctx, "a.txt")
+	if err != nil {
+		t.Fatalf("OpenRead after restore: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(got) != "v1" {
+		t.Fatalf("content after restore: %q, want %q", got, "v1")
+	}
+	vs, err = p.Versions(ctx, "a.txt")
+	if err != nil || len(vs) != 2 {
+		t.Fatalf("Versions after restore: %v, %d versions, want 2", err, len(vs))
+	}
+	if err := p.Restore(ctx, "a.txt", "rev-nope"); err == nil {
+		t.Fatal("Restore of an unknown revision must fail")
+	}
+
+	// copy_v2: the source stays, the destination has the same bytes.
+	if err := cp.Copy(ctx, "a.txt", "b.txt"); err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	for _, ref := range []string{"a.txt", "b.txt"} {
+		rc, err := p.OpenRead(ctx, ref)
+		if err != nil {
+			t.Fatalf("OpenRead %s: %v", ref, err)
+		}
+		got, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		if string(got) != "v1" {
+			t.Fatalf("OpenRead %s: %q, want %q", ref, got, "v1")
+		}
+	}
+	if err := cp.Copy(ctx, "missing.txt", "c.txt"); err == nil {
+		t.Fatal("Copy of a missing source must fail")
 	}
 }

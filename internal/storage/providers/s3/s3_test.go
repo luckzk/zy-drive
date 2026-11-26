@@ -69,16 +69,39 @@ func TestS3DirectURL(t *testing.T) {
 // for large ones. The fake answers just enough for the SDK to
 // complete both paths, and records what was stored so the test can
 // verify the round-trip.
+type fakeVersion struct {
+	id           string
+	data         []byte
+	lastModified time.Time
+}
+
 type fakeS3 struct {
 	mu            sync.Mutex
 	objects       map[string][]byte
 	uploads       map[string]map[int][]byte
 	nextUpload    int
 	multipartUsed bool
+	// Versioning: "Enabled" (default) or "Suspended" — the
+	// driver returns an empty version list when it is not
+	// Enabled, which TestS3VersionsDisabled pins.
+	versioning  string
+	versions    map[string][]fakeVersion
+	nextVersion int
 }
 
 func newFakeS3() *fakeS3 {
-	return &fakeS3{objects: map[string][]byte{}, uploads: map[string]map[int][]byte{}}
+	return &fakeS3{objects: map[string][]byte{}, uploads: map[string]map[int][]byte{},
+		versioning: "Enabled", versions: map[string][]fakeVersion{}}
+}
+
+// putVersionLocked records a new version of key (and makes it the
+// latest object). Caller holds f.mu.
+func (f *fakeS3) putVersionLocked(key string, data []byte) {
+	f.nextVersion++
+	f.versions[key] = append(f.versions[key], fakeVersion{
+		id: fmt.Sprintf("v%d", f.nextVersion), data: data, lastModified: time.Now().UTC(),
+	})
+	f.objects[key] = data
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -97,11 +120,29 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		w.Header().Set("ETag", fmt.Sprintf(`"part-%d"`, part))
 		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodPut && r.Header.Get("X-Amz-Copy-Source") != "":
+		// CopyObject: "bucket/key" -> new version at the PUT key.
+		src := strings.TrimPrefix(r.Header.Get("X-Amz-Copy-Source"), "/")
+		if i := strings.Index(src, "/"); i >= 0 {
+			src = src[i+1:]
+		}
+		f.mu.Lock()
+		data, ok := f.objects[src]
+		if ok {
+			f.putVersionLocked(key, data)
+		}
+		f.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><CopyObjectResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LastModified>%s</LastModified><ETag>"copy"</ETag></CopyObjectResult>`, time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
 	case r.Method == http.MethodPut:
 		// PutObject (single-part)
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
-		f.objects[key] = body
+		f.putVersionLocked(key, body)
 		f.mu.Unlock()
 		w.Header().Set("ETag", `"single"`)
 		w.WriteHeader(http.StatusOK)
@@ -127,7 +168,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			data = append(data, part...)
 		}
-		f.objects[key] = data
+		f.putVersionLocked(key, data)
 		delete(f.uploads, id)
 		f.multipartUsed = true
 		f.mu.Unlock()
@@ -137,6 +178,12 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// AbortMultipartUpload
 		f.mu.Lock()
 		delete(f.uploads, q.Get("uploadId"))
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodDelete:
+		// DeleteObject: S3 succeeds even for a missing key.
+		f.mu.Lock()
+		delete(f.objects, key)
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodHead:
@@ -152,7 +199,53 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodGet && q.Has("versioning"):
+		// GetBucketVersioning
+		f.mu.Lock()
+		status := f.versioning
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>%s</Status></VersioningConfiguration>`, status)
+	case r.Method == http.MethodGet && q.Has("versions"):
+		// ListObjectVersions, filtered by the requested prefix.
+		prefix := q.Get("prefix")
+		f.mu.Lock()
+		var sb strings.Builder
+		sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListVersionsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>test-bucket</Name><IsTruncated>false</IsTruncated>`)
+		for k, vs := range f.versions {
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			for i, v := range vs {
+				fmt.Fprintf(&sb, `<Version><Key>%s</Key><VersionId>%s</VersionId><IsLatest>%v</IsLatest><LastModified>%s</LastModified><ETag>"etag-%s"</ETag><Size>%d</Size><StorageClass>STANDARD</StorageClass></Version>`,
+					k, v.id, i == len(vs)-1, v.lastModified.Format("2006-01-02T15:04:05.000Z"), v.id, len(v.data))
+			}
+		}
+		sb.WriteString(`</ListVersionsResult>`)
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(sb.String()))
 	case r.Method == http.MethodGet:
+		// GetObject, optionally of one version (?versionId=).
+		if vid := q.Get("versionId"); vid != "" {
+			f.mu.Lock()
+			var data []byte
+			found := false
+			for _, v := range f.versions[key] {
+				if v.id == vid {
+					data, found = v.data, true
+				}
+			}
+			f.mu.Unlock()
+			if !found {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(data)
+			return
+		}
 		f.mu.Lock()
 		data, ok := f.objects[key]
 		f.mu.Unlock()
@@ -225,5 +318,128 @@ func TestS3UploadRoundTrip(t *testing.T) {
 	}
 	if !usedMultipart {
 		t.Fatalf("large upload did not use multipart (threshold = minPartSize)")
+	}
+}
+
+// TestS3VersionsRestore: two uploads of one key leave two versions
+// (ListObjectVersions returns every version, head included);
+// restoring the older one makes its bytes the new head, and the
+// restore itself adds a third version — so a restore is undoable.
+func TestS3VersionsRestore(t *testing.T) {
+	fake := newFakeS3()
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	p := newTestS3Provider(t, srv.URL)
+	ctx := t.Context()
+	if _, ok := any(p).(storage.Versioner); !ok {
+		t.Fatal("s3 provider must implement storage.Versioner")
+	}
+	if _, err := p.Upload(ctx, "doc.txt", strings.NewReader("v1"), 2); err != nil {
+		t.Fatalf("Upload v1: %v", err)
+	}
+	if _, err := p.Upload(ctx, "doc.txt", strings.NewReader("v2"), 2); err != nil {
+		t.Fatalf("Upload v2: %v", err)
+	}
+	vs, err := p.Versions(ctx, "doc.txt")
+	if err != nil {
+		t.Fatalf("Versions: %v", err)
+	}
+	if len(vs) != 2 {
+		t.Fatalf("Versions: got %d, want 2", len(vs))
+	}
+	for _, v := range vs {
+		if v.Extra["versionId"] == "" {
+			t.Fatalf("version node must carry Extra[versionId], got %+v", v)
+		}
+		if v.Size != 2 || v.Name != "doc.txt" {
+			t.Fatalf("version node: %+v, want name doc.txt size 2", v)
+		}
+	}
+	// The oldest version is the v1 bytes: restore the first-listed
+	// (oldest) version and read the head back.
+	oldID := vs[0].Extra["versionId"]
+	if err := p.Restore(ctx, "doc.txt", oldID); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	rc, err := p.OpenRead(ctx, "doc.txt")
+	if err != nil {
+		t.Fatalf("OpenRead after restore: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(got) != "v1" {
+		t.Fatalf("content after restore: %q, want %q", got, "v1")
+	}
+	vs, err = p.Versions(ctx, "doc.txt")
+	if err != nil || len(vs) != 3 {
+		t.Fatalf("Versions after restore: %v, %d versions, want 3", err, len(vs))
+	}
+	if err := p.Restore(ctx, "doc.txt", "v-nope"); err == nil {
+		t.Fatal("Restore of an unknown version must fail")
+	}
+}
+
+// TestS3VersionsDisabled pins the versioning-off contract: a
+// bucket without versioning has no history, so Versions returns
+// an empty list — not an error — and the UI says "no versions".
+func TestS3VersionsDisabled(t *testing.T) {
+	fake := newFakeS3()
+	fake.versioning = "Suspended"
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	p := newTestS3Provider(t, srv.URL)
+	if _, err := p.Upload(t.Context(), "doc.txt", strings.NewReader("v1"), 2); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	vs, err := p.Versions(t.Context(), "doc.txt")
+	if err != nil {
+		t.Fatalf("Versions with versioning off must not error: %v", err)
+	}
+	if len(vs) != 0 {
+		t.Fatalf("Versions with versioning off: got %d, want 0", len(vs))
+	}
+}
+
+// TestS3CopyRoundTrip: CopyObject duplicates server-side — the
+// source stays, the destination has the same bytes — and Rename
+// (Copy + Delete) still removes the source afterwards.
+func TestS3CopyRoundTrip(t *testing.T) {
+	fake := newFakeS3()
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	p := newTestS3Provider(t, srv.URL)
+	ctx := t.Context()
+	cp, ok := any(p).(storage.Copier)
+	if !ok {
+		t.Fatal("s3 provider must implement storage.Copier")
+	}
+	if _, err := p.Upload(ctx, "a.txt", strings.NewReader("hello"), 5); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	if err := cp.Copy(ctx, "a.txt", "b.txt"); err != nil {
+		t.Fatalf("Copy: %v", err)
+	}
+	for _, ref := range []string{"a.txt", "b.txt"} {
+		rc, err := p.OpenRead(ctx, ref)
+		if err != nil {
+			t.Fatalf("OpenRead %s: %v", ref, err)
+		}
+		got, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		if string(got) != "hello" {
+			t.Fatalf("OpenRead %s: %q, want %q", ref, got, "hello")
+		}
+	}
+	if err := p.Rename(ctx, "b.txt", "c.txt"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if _, err := p.Stat(ctx, "b.txt"); err == nil {
+		t.Fatal("Rename must delete the source")
+	}
+	if _, err := p.Stat(ctx, "c.txt"); err != nil {
+		t.Fatalf("Stat renamed file: %v", err)
+	}
+	if err := cp.Copy(ctx, "missing.txt", "d.txt"); err == nil {
+		t.Fatal("Copy of a missing source must fail")
 	}
 }

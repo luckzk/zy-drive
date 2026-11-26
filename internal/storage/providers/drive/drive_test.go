@@ -29,17 +29,41 @@ type mockFile struct {
 	modified string
 }
 
+// mockRevision is one saved pre-overwrite content of a file:
+// overwriting a file pushes its old bytes here, so Versions /
+// Restore have something real to return.
+type mockRevision struct {
+	id       string
+	content  []byte
+	modified string
+}
+
 type mockDrive struct {
 	files  map[string]*mockFile
 	seq    int
-	sess   map[string]*mockFile // resumable session URL id -> pending file
+	revSeq int
+	revs   map[string][]*mockRevision // file ID -> revisions, oldest first
+	sess   map[string]*mockFile       // resumable session URL id -> pending file
 	sessDB map[string][]byte
 }
 
 func newMockDrive() *mockDrive {
-	m := &mockDrive{files: map[string]*mockFile{}, sess: map[string]*mockFile{}, sessDB: map[string][]byte{}}
+	m := &mockDrive{files: map[string]*mockFile{}, revs: map[string][]*mockRevision{}, sess: map[string]*mockFile{}, sessDB: map[string][]byte{}}
 	m.files["root"] = &mockFile{id: "root", name: "My Drive", mime: folderMime, modified: "2026-11-24T00:00:00Z"}
 	return m
+}
+
+// pushRevision saves f's current bytes as a new revision before
+// an overwrite replaces them (no-op for a file with no content
+// yet — a first upload has nothing to roll back to).
+func (m *mockDrive) pushRevision(f *mockFile) {
+	if f.content == nil {
+		return
+	}
+	m.revSeq++
+	m.revs[f.id] = append(m.revs[f.id], &mockRevision{
+		id: "rev-" + strconv.Itoa(m.revSeq), content: f.content, modified: f.modified,
+	})
 }
 
 func (m *mockDrive) nextID() string {
@@ -147,6 +171,48 @@ func (m *mockDrive) handler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = w.Write([]byte("exported:" + f.name))
+	case strings.HasPrefix(p, "/drive/v3/files/") && strings.Contains(p, "/revisions"):
+		// /drive/v3/files/{id}/revisions[/{revId}]
+		rest := strings.TrimPrefix(p, "/drive/v3/files/")
+		parts := strings.Split(rest, "/")
+		id, revID := parts[0], ""
+		if len(parts) > 2 {
+			revID = parts[2]
+		}
+		f := m.files[id]
+		if f == nil || f.trashed {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"message":"not found"}}`))
+			return
+		}
+		if revID == "" {
+			// revisions.list
+			var arr []map[string]any
+			for _, r := range m.revs[id] {
+				arr = append(arr, map[string]any{
+					"id": r.id, "modifiedTime": r.modified,
+					"size": strconv.Itoa(len(r.content)), "md5Checksum": "md5-" + r.id,
+				})
+			}
+			if arr == nil {
+				arr = []map[string]any{}
+			}
+			writeJSON(w, map[string]any{"revisions": arr})
+			return
+		}
+		// revisions.get alt=media: the revision's bytes.
+		if r.URL.Query().Get("alt") != "media" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		for _, r := range m.revs[id] {
+			if r.id == revID {
+				_, _ = w.Write(r.content)
+				return
+			}
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"revision not found"}}`))
 	case strings.HasPrefix(p, "/drive/v3/files/"):
 		id := strings.TrimPrefix(p, "/drive/v3/files/")
 		id = strings.SplitN(id, "/", 2)[0]
@@ -239,6 +305,7 @@ func (m *mockDrive) handleUpload(w http.ResponseWriter, r *http.Request, existin
 	var f *mockFile
 	if existingID != "" {
 		f = m.files[existingID]
+		m.pushRevision(f)
 		f.content = data
 		f.name = name
 	} else {
@@ -268,6 +335,9 @@ func (m *mockDrive) handleSession(w http.ResponseWriter, r *http.Request, sid st
 	}
 	m.sessDB[sid] = append(m.sessDB[sid], data...)
 	if total >= 0 && int64(len(m.sessDB[sid])) >= total {
+		if old, ok := m.files[f.id]; ok {
+			m.pushRevision(old)
+		}
 		f.content = m.sessDB[sid]
 		m.files[f.id] = f
 		writeJSON(w, m.fileJSON(f))
@@ -372,5 +442,63 @@ func TestDriveQuota(t *testing.T) {
 	}
 	if used != 123456789 || total != 1099511627776 {
 		t.Fatalf("Quota: got used=%d total=%d, want 123456789 / 1099511627776", used, total)
+	}
+}
+
+// TestDriveVersionsRestore: two uploads of the same file leave one
+// revision behind; restoring it brings the old bytes back as the
+// new head (Drive v3 has no server-side restore — the driver
+// downloads the revision and re-uploads it, see Restore).
+func TestDriveVersionsRestore(t *testing.T) {
+	p, srv := newTestProvider(t)
+	defer srv.Close()
+	ctx := t.Context()
+	if _, ok := any(p).(storage.Versioner); !ok {
+		t.Fatal("drive provider must implement storage.Versioner")
+	}
+	if _, err := p.Upload(ctx, "report.txt", strings.NewReader("v1"), 2); err != nil {
+		t.Fatalf("Upload v1: %v", err)
+	}
+	if vs, err := p.Versions(ctx, "report.txt"); err != nil || len(vs) != 0 {
+		t.Fatalf("Versions after first upload: %v, %d versions, want 0", err, len(vs))
+	}
+	if _, err := p.Upload(ctx, "report.txt", strings.NewReader("v2"), 2); err != nil {
+		t.Fatalf("Upload v2: %v", err)
+	}
+	vs, err := p.Versions(ctx, "report.txt")
+	if err != nil {
+		t.Fatalf("Versions: %v", err)
+	}
+	if len(vs) != 1 {
+		t.Fatalf("Versions: got %d, want 1", len(vs))
+	}
+	if vs[0].Extra["versionId"] == "" {
+		t.Fatalf("version node must carry Extra[versionId], got %+v", vs[0])
+	}
+	if vs[0].Name != "report.txt" || vs[0].Size != 2 {
+		t.Fatalf("version node: %+v, want name report.txt size 2", vs[0])
+	}
+	if err := p.Restore(ctx, "report.txt", vs[0].Extra["versionId"]); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	rc, err := p.OpenRead(ctx, "report.txt")
+	if err != nil {
+		t.Fatalf("OpenRead after restore: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	if string(got) != "v1" {
+		t.Fatalf("content after restore: %q, want %q", got, "v1")
+	}
+	// Restoring is itself undoable: the v2 head became a revision.
+	vs, err = p.Versions(ctx, "report.txt")
+	if err != nil {
+		t.Fatalf("Versions after restore: %v", err)
+	}
+	if len(vs) != 2 {
+		t.Fatalf("Versions after restore: got %d, want 2", len(vs))
+	}
+	if err := p.Restore(ctx, "report.txt", "rev-nope"); err == nil {
+		t.Fatal("Restore of an unknown revision must fail")
 	}
 }

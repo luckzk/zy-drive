@@ -8,6 +8,8 @@
 > **v0.9.3 补丁（2026-11-26，已推，提交 b3892ed9）：MEGA 挂载加载失败的诊断与恢复——LoadMounts 记真实错误、会话失效标 auth_expired、文件浏览重试走 TestMount，见文末“附：v0.9.3 补丁”。根因后经用户确认是 MEGA 账号被锁（重置密码后恢复，旧会话继续有效），不是代码 bug。**
 > **v0.10.0（2026-11-26，未推）：主页交互优化——长按拖拽网盘换分组 + 文件右键菜单（删除/重命名/移动，三个新后端方法），见文末“附：v0.10.0”。另修了一个共享样式真 bug：`.dialog-actions` 的 sticky 底栏在短对话框里会盖住文案行下半截。**
 > **v0.11.0（2026-11-26，未推）：侧栏网盘排序 + 拖拽丝滑化——长按拖拽可改顺序（第 8 个拖到第 4 个、其余下移带过渡动画），不只是换分组；新增 `sort_order` 字段（迁移 v24/v25）与 `MoveMount` 后端方法，见文末“附：v0.11.0”。**
+> **v0.12.0（2026-11-26，未推）：版本历史真实现（Drive/S3/Dropbox）+ Copier 服务端复制（S3/Dropbox）+ OneDrive 上传 409 修复 + 拖拽分组标题跟随，见文末“附：v0.12.0”。**
+> **v0.13.0（2026-11-26，未推）：文件浏览页 UI/UX 批——命令面板居中修复、主面板去重容量、顶栏去掉“新建同步”、列表/网格切换、详情页定义列表重排、右上角 Toast，见文末“附：v0.13.0”。全屏预览 overlay（调研已定）仍在排队，见 v0.13.0 附录末尾。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -304,3 +306,96 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 
 - go vet 全过；go test ./... 全过（21 个包；`TestBatchDownloadLocalEndToEnd` 在整包并行跑时失败过一次——下载 .part 重命名报 no such file，单独重跑通过、整包重跑也通过，判定为并行负载下的 flake，与排序改动无关；已知 flaky 的 TestRunnerRetryOnce 这次没抖）；npm 构建 JS 434.07 kB / gzip 134.31 kB；make build 三二进制均报 0.11.0；visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1；挂载模式连跑两次都过），新增 2i 改写（长按 450ms 进拖拽态、插入线随指针移动、拖到“个人”组首后 MoveMount 被调到 `["m-s3", "个人", 0]`、卡片换组排组首）与 2j（组内排序：长按最后一张拖到组首，MoveMount 被调到 `["m-long", "个人", 0]`、组内顺序真的变了；拖拽中克隆 transform 随指针连续变化），桩补了 MoveMount（按渲染顺序重排，与乐观更新一致）。
 - 诚实缺口：真机长按手感（400ms 是否顺手、误触率）与拖拽丝滑度仍需用户 Mac 实测；卡片高度不一致时（超长名、带/不带容量条）插入线对齐只在桩数据上看过，真实挂载组合未验证；自动滚动速度（12px/帧）是拍脑袋定的，没在真机上调过；排序的真实账号端到端仍是 mock 契约测试，未在真账号上跑过。
+
+## 附：v0.12.0（2026-11-26，版本历史真实现 + Copier + OneDrive 409 修复 + 拖拽分组标题跟随；未推）
+
+用户 2026-11-26 拍板三件事：Drive/S3/Dropbox 的版本功能真做（不是改 Caps）、S3/Dropbox 的服务端复制接 Copier 接口；另报两个 bug：OneDrive 传 135 MB 文件报 409 却实际传上去了、拖拽时分组名称不会移动。
+
+### A. 版本历史真实现（Drive / S3 / Dropbox）
+
+- Google Drive（`internal/storage/providers/drive/drive.go`）：`Versions` 走 revisions.list（分页，取 id/modifiedTime/size/md5Checksum），版本节点带 `Extra["versionId"]`（与 OneDrive 同一约定）。`Restore` 是下载该 revision（revisions.get alt=media）再重传回同一文件、成为新 head 版本——Drive API v3 的 revisions 资源只有 get/list/update/delete，**没有服务端恢复端点**，已在代码注释里写明。Google 原生文档类文件（Docs/Sheets/Slides）没有可下载的 revision 字节，恢复会直接报错。
+- S3/R2（`internal/storage/providers/s3/s3.go`）：`Versions` 先 `GetBucketVersioning` 再 `ListObjectVersions`（按精确 key 过滤，跳过删除标记）；**桶没开版本控制时返回空列表、不报错**（代码注释与 Caps 注释都写明了）。`Restore` 是 `GetObject`（带 VersionId）再经 transfermanager 重传为新 head。`Rename` 内部的复制步骤改走新的 `Copy`。
+- Dropbox（`internal/storage/providers/dropbox/dropbox.go`）：`Versions` 走 `/2/files/list_revisions`，`Restore` 走 `/2/files/restore`（path + rev）；`dbxEntry` 加了 `Rev` 字段。
+- 契约测试（`internal/storage/contracttest/contract.go`）：新增 `AssertCapsMatchInterfaces`——`SupportsVersions ⇔ Versioner`、`SupportsServerSideCopy ⇔ Copier`，从 `Run()` 里调用（跑在每家驱动的 mock/fake 上），另有 `TestCapsMatchInterfacesAllDrivers`（8 家无网络驱动用占位凭证构造；MEGA 因 `New` 要联网登录被排除，改由 fake client 的 `Run` 覆盖）。本次只断言 Versions + ServerSideCopy 两项，其余六个可选接口未断言。
+- UI 接线：新 `internal/app/versions.go`（`ListVersions`/`RestoreVersion`，不支持的驱动报“不支持历史版本”）→ DesktopService 绑定 → `frontend/src/mygo.ts` 重新生成 → `client.ts` 加 `api.listVersions/restoreVersion`。Inspector“高级”里“查看历史版本”现在是真按钮（仅 `caps.supportsVersions` 且选中文件时显示），列出时间/大小，两步确认恢复，恢复后刷新列表与浏览视图；文件右键菜单加“历史版本…”（同一 Caps 门控），点开 Inspector 高级页并直接加载列表。没新开页面。
+
+### B. Copier 服务端复制（S3 / Dropbox）
+
+- `internal/storage/provider.go` 新增可选接口 `Copier`：`Copy(ctx, src, dst string) error`，同盘服务端复制，不删源。
+- S3（`CopyObject`）与 Dropbox（copy_v2）实现；Caps 的 `SupportsServerSideCopy=true` 现在是真的。Drive 保持 false（files.copy 语义不同）。
+- 接线（`internal/app/transfers.go` 的 `executeCopy`）：同盘 + 目标驱动实现 `Copier` 时走服务端复制（Move 的删源逻辑不变，仍在复制成功后删）；跨盘与无 Copier 的驱动保持原有流式 `OpenRead → Upload`。`BatchCopy` 注释同步更新。
+- 顺手修了一个真 bug：`internal/transfer/worker.go` 的双重派发竞态——`Start` 在 goroutine 里才把状态翻成 Running，循环可能把同一个 Queued 任务再挑出来执行两次（Copier 测试里观察到 `copyCalls == 2`）；改成启动 goroutine 前先同步置为 Running。流式复制因幂等重传大多无感，服务端复制让重复变得可数。
+
+### C. OneDrive 上传 409 修复（用户报的真 bug）
+
+- 现象：135 MB .dmg 传 OneDrive，chunk PUT 报 409 `resourceModified`（eTag 不匹配）显示失败，但文件实际已传上去，最近同步里也显示成功。
+- 根因：`putChunk` 把非 200/201/202/429/503 的状态一律当终局错误、不核实；最可能的机制是某块首次发送已落盘、响应丢了，重试再 PUT 同一 range 时服务器已持有这些字节（或文件已完整）而报 409；传输层又无自动重试，失败就立住了。
+- 修法（`internal/storage/providers/onedrive/onedrive.go`）：409 `resourceModified` 不再直接失败，改走类型化 `*chunkConflictError`（`graphErrorCode` 解析；429/503 重试行为不动，409 绝不盲重试同一块）。`sessionUpload` 拆成 wrapper + `sessionUploadAttempt`（带重启计数），冲突时按顺序恢复：① 先核实（`verifyUploadComplete`）：Stat 目标文件，仅当整文件已读完（`bytesRead == size`，增量算出的 SHA-1 才完整）且服务端在大小、以及有 SHA-1 时在 SHA-1 上都对得上才算成功，返回节点并像正常成功路径一样更新 idMap——只对大小不足以通过（防同名旧文件误判）；② 续传（`queryUploadSession`）：GET 上传 Url 取 `nextExpectedRanges`，同一会话继续——整块已落盘就前进、只写了一部分就只补没写的尾巴（仍在 buffer 里）、一块都没落就重发一次；③ 会话已死（GET 404/410）：仅当 reader 是 `io.Seeker` 时建新会话从头重传，否则报清楚的错（不可从非 seekable 源恢复）。上限：每会话最多 3 次冲突恢复、每上传最多 1 次新会话重启。
+- 另扩了一点（同类 bug 同一修法）：chunk PUT 本身返回 404/410 也走同样的核实优先恢复（丢失响应的重试可能撞上已完成并删掉的会话）。隔离在 `chunkSessionGoneError` 分支，若要收回只动那一处 + 一个测试。
+- 回归测试（fake Graph 服务端）：最终块 409 且文件完整 → 成功（断言大小、SHA-1、字节内容）；最终块 404 → 成功；中途 409 → 续传完成；死会话 + seekable 源 → 新会话重传完成；死会话 + 非 seekable 源 → 明确报错。有效性验证：只回滚 `onedrive.go`（保留新测试）重跑，5 个新测试全失败、复现出上报的原错误，再恢复。
+
+### D. 拖拽：分组标题跟随 + 丝滑化（Sidebar.tsx）
+
+- 标题跟随：`applyInsertion` 现在同时平移分组标题行。标题按两套扁平坐标判断是否移动：`firstFlat`（该组首张卡在原始顺序里的位置——标题在被拖卡片之前还是之后）与 `rFirst`（去掉被拖卡片后首张剩余卡——标题在插入缝隙之前还是之后）；下移：标题在腾出的空位与插入点之间时上移一个卡片高度 + 间隙；上移反之；目标分组自己的标题不动、插入点之后的标题不动。`DragInfo` 新增 `headerShifts`，`clearShifts` 也清标题的 transform，松手/取消后不残留。
+- 丝滑化（FLIP 式）：只有位移变了的元素才重写 transform，卡片与标题共用已有的 200ms `cubic-bezier(0.22,1,0.36,1)` transform 过渡，中途改目标时是滑过去、不是跳变；插入线的 `top` 也加了同一 200ms 过渡（首次落点用强制重排绕过，避免线从页面顶部扫进来），空分组的落线位置计入标题位移。
+- 顺手修的滚动 bug：`measureGeometry` 在自动滚动时重测几何，但读的是已被位移的 rect，导致滚动中插入点算错；现在传入位移表并减掉，几何始终是未位移坐标。长按 400ms / ≤6px、fixed 克隆、rAF 自续循环、`api.moveMount` 落点流程没动。
+- 检查新增 2k 段：长按“个人”组首张（超长名）拖到“存储 / 备份”组首，拖拽中断言“存储”标题上移了恰好一个卡高 + 间隙（实测 81px）、“工作”标题（插入点之后）没动，松手后 `MoveMount` 被调到 `["m-long", "存储 / 备份", 0]`。
+
+### Demo v8 对比结论
+
+- 本批无 Demo v8 原型对照项（原型无版本历史、无服务端复制概念、无上传冲突恢复；拖拽部分与 v0.11.0 一致，标题跟随是用户 2026-11-26 亲报的 bug）。
+
+### 验证（2026-11-26）
+
+- go vet 全过；go test ./... 全过（21 个包，一次过，无 flaky；新测试：OneDrive 409 五个、Drive/S3/Dropbox 版本恢复、S3 版本未开、Copier 同盘/回退、契约 Caps 断言、app 层版本方法）；npm 构建 JS 436.81 kB / gzip 135.07 kB；make build 三二进制均报 0.12.0；visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2k（标题跟随：存储标题 682→601、恰好 −81px，工作标题不动）。
+- 诚实缺口：新增的驱动行为全是 mock/fake 测试——Drive revisions、Dropbox list_revisions/restore、S3 ListObjectVersions（真实开版本控制的 R2 桶）、S3 经 transfermanager 的恢复、OneDrive 409 恢复，都还没在真实账号上跑过；Drive 恢复对 Google 原生文档类文件会失败（无可下载 revision）；S3 的 `Versions()` 每次列表多一次 `GetBucketVersioning` 调用，未开版本控制的桶上按钮仍显示（Caps 是静态 true），列表为空并提示“需先开启桶的版本控制”；版本 UI 只在构建层面验证过，没跑过浏览器检查（但 visual-check 三模式全过）；拖拽真机手感（长按、跟手、自动滚动速度、空分组进出）仍需用户 Mac 实测；2k 没覆盖拖进/拖出空分组。
+
+## 附：v0.13.0（2026-11-26，文件浏览页 UI/UX 批；未推）
+
+用户 2026-11-26 在 Mac 上截图反馈文件浏览页的六件事：命令面板先偏右再弹回中间、主面板容量与侧栏重复、顶栏“新建同步”放错地方、要列表/网格切换、详情页信息乱、"在 Finder 中显示"的提示要改成右上角 Toast。
+
+### A. 命令面板居中修复（tokens.css）
+
+- 根因：`.palette` 用 `left: 50% + transform: translateX(-50%)` 居中，同时挂了 `rise-sm` 入场动画；关键帧的 `transform` 在 500ms 动画期间整个替换掉居中的 `translateX(-50%)`，面板先出现在右侧、动画结束才弹回中间。
+- 修法：改成 `left: 0; right: 0; margin-inline: auto` 居中，`transform` 留给动画专用。入场/退场动画本身没动。
+- 顺带审计了其他 rise-sm 用户：`.dialog` 靠 `.dialog-backdrop` 的 flex 居中、`.dock-panel` 靠 right/bottom 定位、`.sidebar-menu`/`.context-menu` 靠 top/left 定位——都不靠 transform 居中，用 rise-sm 是安全的。审计结论写进了 tokens.css 的动画区注释。
+
+### B. 主面板去重容量（FileBrowser.tsx / Sidebar.tsx）
+
+- 删了主面板的 `.browse-quota` 整行（容量文字 + QuotaBar + “刷新容量”按钮）；侧栏卡片的容量显示不动。
+- 容量刷新有了新家：侧栏卡片悬停时出现的操作列里加了一个“刷新容量”按钮（IconRefresh），点它重拉全部容量（与原来按钮同一批调用 `loadQuotas`）。删除按钮与刷新按钮共用一个绝对定位容器 `.mount-hover-actions`（悬停/聚焦才出现，平时隐藏；触屏常显），不再是两个各自定位的按钮；长按拖拽的排除条件从 `.mount-remove` 改成容器类名。
+- 视觉检查 2e/2g 同步改成断言容器（display + absolute 定位 + 两个按钮的 SVG/title）。
+
+### C. 顶栏去掉“新建同步”（App.tsx / i18n.ts）
+
+- 删了顶栏的“新建同步”按钮与 `goCreateSync`（无他处引用）；`i18n.ts` 的 `newSync` 键一并删了。顶栏只剩 logo + 搜索框。
+- 同步新建的入口在同步任务页：`pages/SyncJobs.tsx:789` 的“创建同步任务”按钮（visual-check 3b 覆盖，本轮三模式全过即它仍能用）。
+
+### D. 列表/网格视图切换（FileBrowser.tsx / FileGrid.tsx / tokens.css）
+
+- 用户贴了另一项目的 shadcn/Base UI 分段按钮片段问能不能用：结论是不能照搬——`rounded-button` / `transition-button` / `data-slot` / Base UI tooltip / `bg-accent` 等 token 在我们 tokens.css 里不存在。按我们自己的 Drime tokens 重写了 `.view-toggle` 分段控件，只复用了两枚 lucide 图标的 SVG 路径（layout-list / layout-grid，内联）。激活态照 Demo v8 `.seg button.on`（浅灰底 + `0 1px 3px rgba(0,38,29,.12)` 阴影）；28px 小按钮上的全局 hover 上浮（translateY(-1px)）关掉了，否则会抖。片段自带的尾部 info 按钮没加——没什么可说明的。
+- 切换是真功能：列表 = 现有表格；网格 = 新 `FileGrid.tsx` 卡片（缩略图 `thumbUrl`、无缩略图时大号 FileTypeIcon + 名字 + 大小/修改时间）。两视图同一批数据、同一套 props（`listProps` 一个对象共用，不会漂移）：同一套选择、同一套右键菜单、同一套双击打开、同一套 checkbox；另给两边都补了 Enter 键（文件夹打开、文件选中；表格以前没有）。
+- 选择存在 localStorage（`zydrive.view`，默认 list），刷新后保持。位置在文件工具栏右上角（刷新按钮旁）。
+
+### E. 详情页重排（Inspector.tsx / tokens.css）
+
+- 删了详情页的“网盘容量”区（`quota` prop 与 QuotaBar import 一并去掉）；详情不再显示容量。
+- 信息从松散堆叠的 `<p>` 行改成定义列表（`.insp-kv`，照 Demo v8 `.kv`：标签左、值右、行间 1px 分隔线），分组 + 小节标题：**基本信息**（类型 / 大小（仅文件）/ 修改时间 / 路径 / 来源）、**校验值**（仅有 hash 时出现，hashKind 作标签）、预览（不动）、**高级**（折叠；“支持的能力”与“删除方式/路径最长”也改成 kv 行，版本列表与两步确认恢复逻辑不动）。
+- 字段一个没少：唯一的变化是 mime 没值时“类型”行显示“文件”（以前不显示该行），文件夹显示“文件夹”。Demo v8 的 `.v` 是 550 字重，这里全站统一 400，不加粗。
+
+### F. 右上角 Toast（Toasts.tsx / App.tsx / FileBrowser.tsx / PreviewPane.tsx）
+
+- 新 `frontend/src/components/Toasts.tsx`：`ToastHost` 挂在 App 顶层（`pushToast`/`dismissToast`，最多三条、超了丢最旧的）。样式照 Demo v8 的 toast（深底白字、圆角、阴影），位置按用户要求放右上角（原型是底部居中）。
+- 行为：一条 5s 自动消失；悬停暂停倒计时（记剩余时间，不是从头重算）、移走继续；X 立即关闭；多条上下叠放。host 本身 `pointer-events: none`，只有卡片接事件，不挡页面点击。
+- 迁移了两处“已在文件管理器中打开”：FileBrowser 的右键菜单“在 Finder 中显示”（原 inline notice-box）与 PreviewPane 的 reveal 按钮（原 `openedMsg`）；其他 `batchMsg`（批量下载/复制结果）与“已用系统应用打开”仍走原 inline 提示，没动。
+
+### G. 文件浏览功能区总整理
+
+- 面包屑行现在是：路径 crumbs + 弹性空隙 + 视图切换 + 刷新，间距与按钮分组收紧；其余页面没动。顶栏只剩 logo + 搜索后，`headerBtnRight` 的溢出自查在无按钮时返回 null（检查本身已处理 null）。
+
+### 验证（2026-11-26）
+
+- go vet 全过；go test ./... 全过（21 个包，一次过，无 flaky——这次 `TestRunnerRetryOnce` 与 `TestBatchDownloadLocalEndToEnd` 都没抖）；make lint exit 0（gofmt + vet + golangci-lint 0 issues + tsc）；npm 构建 JS 441.46 kB / gzip 136.18 kB；make build 三二进制均报 0.13.0。
+- visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2l（面板首帧中心 640 = 落位中心 640，无横向跳动）、2m（网格 12 张卡、刷新后仍是网格、切回列表）、2n（Toast 右缘 1264/视口 1280、top 16、悬停 4.5s 不消失、移走后自动消失）。2e/2g 按新容器改过。截图 02l/02m/02n/02e 已目视：面板居中、网格卡片与选中态正常、Toast 深底白字在右上角、悬停列是刷新在上、删除在下。
+- 诚实缺口：网格视图的缩略图只在 `thumbUrl` 有值时显示——桩数据里 12 个文件都没有 thumbUrl，所以网格里全是大图标，真机上缩略图是否出现取决于驱动是否回 thumbUrl（目前只有支持 Thumbnail 的驱动会回）；Toast 的悬停暂停在真机上依赖鼠标事件，与 5s 计时器的竞态只在桩里测过；详情页“类型”行在 mime 缺失时显示“文件”是兜底文案，不是后端给的类型；列表/网格切换的键盘焦点行为（Tab 到卡片/行、Enter 打开）在桩浏览器里没逐项跑过，只在代码层面与表格对齐。
+- 全屏预览 overlay（调研已定、用户已批“按你推荐的做”）不在本版：它是 Inspector 留一瞥 + 全屏覆盖层的大改动，与本批的详情页重排同文件、且 v0.12.0 未推——下一版（暂定 v0.14.0）再做，避免两次未推送的改动混进同一次推送。

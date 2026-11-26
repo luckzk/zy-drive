@@ -54,9 +54,15 @@ export default function FileTable({
               key={key}
               className={`stagger-item${isSelected ? ' selected' : ''}`}
               style={staggerStyle(i)}
+              tabIndex={0}
               onClick={() => onSelect(isSelected ? null : n)}
               onDoubleClick={() => {
                 if (n.isDir) onOpen(n)
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter') return
+                if (n.isDir) onOpen(n)
+                else onSelect(n)
               }}
               onContextMenu={(e) => {
                 e.preventDefault()

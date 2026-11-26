@@ -851,6 +851,13 @@ export const DesktopService = {
   listMounts: bind<[], (Mount | null)[]>("DesktopService.ListMounts", () => []),
   /** ListSyncJobs returns saved sync jobs (creation order). */
   listSyncJobs: bind<[], (SyncJob | null)[]>("DesktopService.ListSyncJobs", () => []),
+  /**
+   * ListVersions returns the version history of one file (v0.12.0):
+   * one node per version, oldest first, each carrying its version id
+   * in Extra["versionId"]. Only mounts whose driver implements
+   * storage.Versioner offer this (Caps.SupportsVersions).
+   */
+  listVersions: bind<[string, string], Node[]>("DesktopService.ListVersions", (mountID: string, ref: string) => [mountID, ref]),
   /** Mkdir creates one folder on a mount (upload target picker). */
   mkdir: bind<[string, string], void>("DesktopService.Mkdir", (mountID: string, ref: string) => [mountID, ref]),
   /**
@@ -920,6 +927,12 @@ export const DesktopService = {
    * right-click menu) and returns the new ref.
    */
   renameNode: bind<[string, string, string], string>("DesktopService.RenameNode", (mountID: string, srcRef: string, newName: string) => [mountID, srcRef, newName]),
+  /**
+   * RestoreVersion restores one version as the new head version
+   * (v0.12.0). The restored version stays in the history, so a
+   * restore is undoable by restoring the previous head.
+   */
+  restoreVersion: bind<[string, string, string], void>("DesktopService.RestoreVersion", (mountID: string, ref: string, versionID: string) => [mountID, ref, versionID]),
   /**
    * RetryFailedTransfers re-queues every failed/cancelled transfer
    * and returns how many were re-queued.

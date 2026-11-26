@@ -1224,14 +1224,25 @@ type fakeMegaEntry struct {
 	content []byte
 }
 
+type fakeMegaVersion struct {
+	versionID string
+	content   []byte
+}
+
 type fakeMegaProvider struct {
 	storage.Provider // embedded nil; only overridden methods are called
 	exportSessionID  string
 	files            map[string]fakeMegaEntry
+	// versions: ref -> older contents, oldest first. Upload pushes
+	// the overwritten bytes here, so Versions/Restore have
+	// something real to return (v0.12.0 test double for the
+	// Versioner + Copier app paths).
+	versions  map[string][]fakeMegaVersion
+	copyCalls int
 }
 
 func newFakeMegaProvider(sid string) *fakeMegaProvider {
-	return &fakeMegaProvider{exportSessionID: sid, files: map[string]fakeMegaEntry{}}
+	return &fakeMegaProvider{exportSessionID: sid, files: map[string]fakeMegaEntry{}, versions: map[string][]fakeMegaVersion{}}
 }
 
 func fakeMegaParent(ref string) string {
@@ -1292,8 +1303,67 @@ func (f *fakeMegaProvider) Upload(ctx context.Context, ref string, r io.Reader, 
 	if err != nil {
 		return domain.Node{}, err
 	}
+	// Overwriting pushes the old bytes to the version history.
+	if old, ok := f.files[ref]; ok && !old.isDir {
+		f.versions[ref] = append(f.versions[ref], fakeMegaVersion{
+			versionID: fmt.Sprintf("v%d", len(f.versions[ref])+1), content: old.content,
+		})
+	}
 	f.files[ref] = fakeMegaEntry{name: path.Base(ref), content: b}
 	return domain.Node{Ref: ref, Path: "/" + ref, Name: path.Base(ref), Size: int64(len(b))}, nil
+}
+
+// Versions returns the saved pre-overwrite contents of a file,
+// oldest first; each node carries Extra["versionId"].
+func (f *fakeMegaProvider) Versions(ctx context.Context, ref string) ([]domain.Node, error) {
+	ref = strings.Trim(ref, "/")
+	if _, err := f.Stat(ctx, ref); err != nil {
+		return nil, err
+	}
+	out := make([]domain.Node, 0, len(f.versions[ref]))
+	for _, v := range f.versions[ref] {
+		out = append(out, domain.Node{
+			Ref: ref, Path: "/" + ref, Name: path.Base(ref),
+			Size:  int64(len(v.content)),
+			Extra: map[string]string{"versionId": v.versionID},
+		})
+	}
+	return out, nil
+}
+
+// Restore makes one saved version the current content (and the
+// old head becomes a version itself, so a restore is undoable).
+func (f *fakeMegaProvider) Restore(ctx context.Context, ref, versionID string) error {
+	ref = strings.Trim(ref, "/")
+	e, ok := f.files[ref]
+	if !ok || e.isDir {
+		return fmt.Errorf("mega: no such file %q", ref)
+	}
+	for _, v := range f.versions[ref] {
+		if v.versionID == versionID {
+			f.versions[ref] = append(f.versions[ref], fakeMegaVersion{
+				versionID: fmt.Sprintf("v%d", len(f.versions[ref])+1), content: e.content,
+			})
+			f.files[ref] = fakeMegaEntry{name: e.name, content: v.content}
+			return nil
+		}
+	}
+	return fmt.Errorf("mega: no such version %q for %q", versionID, ref)
+}
+
+// Copy duplicates a file server-side (no OpenRead involved) and
+// counts calls, so the transfer tests can prove the Copier path
+// was taken instead of the streaming fallback.
+func (f *fakeMegaProvider) Copy(ctx context.Context, src, dst string) error {
+	src = strings.Trim(src, "/")
+	dst = strings.Trim(dst, "/")
+	e, ok := f.files[src]
+	if !ok || e.isDir {
+		return fmt.Errorf("mega: no such file %q", src)
+	}
+	f.copyCalls++
+	f.files[dst] = fakeMegaEntry{name: path.Base(dst), content: e.content}
+	return nil
 }
 
 func (f *fakeMegaProvider) Mkdir(ctx context.Context, ref string) error {

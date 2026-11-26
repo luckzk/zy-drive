@@ -15,28 +15,91 @@
 // transfers() every 5s.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { isMyGo, onFileDrop } from 'mygo-runtime'
-import type { Mount, MountQuota, Node, Transfer } from '../mygo'
+import type { Mount, Node, Transfer } from '../mygo'
 import { api, friendlyError, type UploadSkipped } from '../api/client'
 import { Skeleton, useClosing } from './motion'
 import ContextMenu, { type ContextMenuEntry } from './ContextMenu'
 import FileTable from './FileTable'
+import FileGrid from './FileGrid'
 import Inspector from './Inspector'
 import { revealLabel } from './PreviewPane'
 import UploadTargetDialog from './UploadTargetDialog'
-import QuotaBar from './QuotaBar'
 
 interface Crumb {
   name: string
   ref: string
 }
 
-export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { mount: Mount; mounts: Mount[]; quota?: MountQuota; onRefreshQuota?: () => void }) {
+// ViewToggle — the list/grid segmented control (v0.13.0).
+// Built in our own Drime tokens (see .view-toggle in tokens.css).
+// Only the two lucide glyphs are reused from the snippet the user
+// pasted: layout-list and layout-grid SVG paths, inline. The
+// snippet's trailing info button is intentionally not built —
+// there is nothing to explain about the toggle itself.
+function ViewToggle({ view, onChange }: { view: 'list' | 'grid'; onChange: (v: 'list' | 'grid') => void }) {
+  return (
+    <div className="view-toggle" role="group" aria-label="视图切换">
+      <button
+        type="button"
+        className={view === 'list' ? 'active' : ''}
+        aria-pressed={view === 'list'}
+        aria-label="列表视图"
+        title="列表视图"
+        onClick={() => onChange('list')}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <rect width="7" height="7" x="3" y="3" rx="1" />
+          <rect width="7" height="7" x="3" y="14" rx="1" />
+          <path d="M14 4h7" />
+          <path d="M14 9h7" />
+          <path d="M14 15h7" />
+          <path d="M14 20h7" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        className={view === 'grid' ? 'active' : ''}
+        aria-pressed={view === 'grid'}
+        aria-label="网格视图"
+        title="网格视图"
+        onClick={() => onChange('grid')}
+      >
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <rect width="7" height="7" x="3" y="3" rx="1" />
+          <rect width="7" height="7" x="3" y="14" rx="1" />
+          <rect width="7" height="7" x="14" y="3" rx="1" />
+          <rect width="7" height="7" x="14" y="14" rx="1" />
+        </svg>
+      </button>
+    </div>
+  )
+}
+
+export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; mounts: Mount[]; onToast?: (message: string) => void }) {
   const [crumbs, setCrumbs] = useState<Crumb[]>([])
   const [nodes, setNodes] = useState<Node[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Node | null>(null)
   const [checked, setChecked] = useState<Set<string>>(new Set())
+  // List/grid view (v0.13.0): the choice persists in localStorage
+  // (key zydrive.view), default list. Read lazily so a stored
+  // choice survives reloads; a corrupt value falls back to list.
+  const [view, setView] = useState<'list' | 'grid'>(() => {
+    try {
+      return window.localStorage.getItem('zydrive.view') === 'grid' ? 'grid' : 'list'
+    } catch {
+      return 'list'
+    }
+  })
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('zydrive.view', view)
+    } catch {
+      // Private mode / storage blocked: the toggle still works
+      // for this session, it just doesn't persist.
+    }
+  }, [view])
   // Batch actions (V0.9.0): download / copy for the checked
   // selection. Upload of local files stays drag-drop (no system
   // file picker exists); the batch bar says so.
@@ -56,6 +119,9 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
   // “详情”菜单项打开 Inspector 时高级页默认展开：nonce 只在
   // 点“详情”时 +1，点别的行、手动收起后都不会误展开。
   const [inspectorOpenNonce, setInspectorOpenNonce] = useState(0)
+  // “历史版本…”菜单项把 nonce +1：Inspector 展开高级页并
+  // 直接拉取版本列表（见 Inspector openVersionsNonce）。
+  const [versionsOpenNonce, setVersionsOpenNonce] = useState(0)
   // 跨盘移动的收尾轮询（见 startMoveCleanupPoll）：与上传轮询
   // 各用一个计时器，卸载时都要清掉。
   const movePollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -206,6 +272,19 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
           setInspectorOpenNonce((n) => n + 1)
         },
       })
+      // 历史版本（v0.12.0）：只在支持的网盘上出现（Caps 规则：
+      // 不支持的能力不出现，而不是灰掉点不动）。点它打开
+      // Inspector 高级页并直接拉取版本列表。
+      if (!single.isDir && mount.caps.supportsVersions) {
+        items.push({
+          label: '历史版本…',
+          onClick: () => {
+            setSelected(single)
+            setInspectorOpenNonce((n) => n + 1)
+            setVersionsOpenNonce((n) => n + 1)
+          },
+        })
+      }
     }
     return items
   }
@@ -215,7 +294,9 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
     setBatchError(null)
     try {
       await api.revealInFinder(mount.id, nodeKey(n))
-      setBatchMsg(`已在文件管理器中打开 ${n.name} 所在位置。`)
+      // v0.13.0: this confirmation is a top-right toast now, not
+      // an inline notice — the inline box pushed the file list down.
+      onToast?.(`已在文件管理器中打开 ${n.name} 所在位置。`)
     } catch (e) {
       setBatchError(friendlyError(e))
     }
@@ -573,6 +654,27 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
     }
   }, [])
 
+  // List and grid views share exactly the same props (same data,
+  // same selection, same context menu, same open behaviour) — one
+  // object so the two can't drift apart.
+  const listProps = {
+    nodes,
+    selectedId: selected ? nodeKey(selected) : null,
+    checked,
+    onSelect: setSelected,
+    onToggleCheck: (n: Node) => {
+      setChecked((prev) => {
+        const next = new Set(prev)
+        const k = nodeKey(n)
+        if (next.has(k)) next.delete(k)
+        else next.add(k)
+        return next
+      })
+    },
+    onOpen: openDir,
+    onContextMenu: handleContextMenu,
+  }
+
   return (
     <div
       ref={zoneRef}
@@ -648,25 +750,10 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
             </span>
           ))}
           <span style={{ flex: 1 }} />
+          <ViewToggle view={view} onChange={setView} />
           <button className="btn btn-sm" onClick={() => void load()}>
             刷新
           </button>
-        </div>
-
-        {/* Same quota as the sidebar card (one App-level batch fetch,
-            not a second call): the number here and there never disagree. */}
-        <div className="browse-quota" style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            {/* Drime 容量是工作区口径：数字前面标明是哪个工作区
-                （个人空间 / 工作区 8762），不让用户误以为是账号总量。 */}
-            {mount.workspaceLabel && <div className="quota-text" style={{ marginBottom: 2 }}>{mount.workspaceLabel}容量</div>}
-            <QuotaBar quota={quota} />
-          </div>
-          {quota && !quota.unlimited && !quota.error && (
-            <button className="btn btn-sm" onClick={() => onRefreshQuota?.()}>
-              刷新容量
-            </button>
-          )}
         </div>
 
         {uploadInfo && <div className="notice-box">{uploadInfo}</div>}
@@ -721,24 +808,10 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
               ))}
             </div>
           </div>
+        ) : view === 'grid' ? (
+          <FileGrid {...listProps} />
         ) : (
-          <FileTable
-            nodes={nodes}
-            selectedId={selected ? nodeKey(selected) : null}
-            checked={checked}
-            onSelect={setSelected}
-            onToggleCheck={(n) => {
-              setChecked((prev) => {
-                const next = new Set(prev)
-                const k = nodeKey(n)
-                if (next.has(k)) next.delete(k)
-                else next.add(k)
-                return next
-              })
-            }}
-            onOpen={openDir}
-            onContextMenu={handleContextMenu}
-          />
+          <FileTable {...listProps} />
         )}
         {checked.size > 0 && (
           <div className="notice-box" style={{ marginTop: 8 }}>
@@ -785,7 +858,7 @@ export default function FileBrowser({ mount, mounts, quota, onRefreshQuota }: { 
         {batchMsg && <div className="notice-box" style={{ marginTop: 8, fontSize: 13 }}>{batchMsg}</div>}
         {batchError && <div className="error-box" style={{ marginTop: 8, fontSize: 13 }}>{batchError}</div>}
       </div>
-      {selected && <Inspector node={selected} mount={mount} quota={quota} closing={inspectorClosing} onClose={closeInspector} openAdvancedNonce={inspectorOpenNonce} />}
+      {selected && <Inspector node={selected} mount={mount} closing={inspectorClosing} onClose={closeInspector} openAdvancedNonce={inspectorOpenNonce} openVersionsNonce={versionsOpenNonce} onChanged={() => void load()} onToast={onToast} />}
       {copyMount && (
         <UploadTargetDialog
           mount={copyMount}
