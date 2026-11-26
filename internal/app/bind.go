@@ -128,6 +128,14 @@ func (s *DesktopService) UploadFiles(ctx context.Context, mountID, ref string, p
 	return s.app.UploadFiles(ctx, mountID, ref, paths)
 }
 
+// PickFiles opens the system's file picker (native dialog via the
+// cmd/desktop hook) and returns the chosen absolute paths, or nil
+// when the user cancels. The frontend feeds the paths into the
+// same UploadTargetDialog → UploadFiles flow as drag-drop.
+func (s *DesktopService) PickFiles(ctx context.Context) ([]string, error) {
+	return s.app.PickFiles(ctx)
+}
+
 // ListAgents returns the configured server Agents.
 func (s *DesktopService) ListAgents() []*domain.Agent { return s.app.ListAgents() }
 

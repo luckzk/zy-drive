@@ -37,7 +37,14 @@ export function formatTime(iso?: string | null): string {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
   const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  const hhmm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  // 今天 / 昨天用相对文案（Finder 习惯），更早的还是绝对日期。
+  // 全站统一用这一个函数，表格、网格、详情、传输记录一起受益。
+  const startOf = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const diffDays = Math.round((startOf(new Date()) - startOf(d)) / 86400000)
+  if (diffDays === 0) return `今天 ${hhmm}`
+  if (diffDays === 1) return `昨天 ${hhmm}`
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hhmm}`
 }
 
 export function formatDate(iso?: string | null): string {

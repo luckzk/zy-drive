@@ -40,6 +40,7 @@ export default function Sidebar({
   onRemoveMount,
   onRefreshQuota,
   onMountsReordered,
+  syncJobCount,
 }: {
   page: Page
   lang: Lang
@@ -59,6 +60,9 @@ export default function Sidebar({
   // v0.11.0：拖拽排序松手后乐观更新顺序。App 把 setMounts
   // 直接传进来；后端确认后 Sidebar 仍调 onGroupsChanged 重拉。
   onMountsReordered?: (next: Mount[]) => void
+  // v0.15.0：已保存同步任务数（Demo v8 .navitem .cnt）。0 时
+  // 不渲染——绝不编一个数字。
+  syncJobCount?: number
 }) {
   const [extraGroups, setExtraGroups] = useState<string[]>([])
   const [newGroupName, setNewGroupName] = useState('')
@@ -625,6 +629,7 @@ export default function Sidebar({
             aria-current={page === p ? 'page' : undefined}
           >
             <NavIcon page={p} /> {t(lang, p)}
+            {p === 'sync' && syncJobCount !== undefined && syncJobCount > 0 && <span className="cnt">{syncJobCount}</span>}
           </button>
         ))}
       </nav>
@@ -829,8 +834,8 @@ export default function Sidebar({
                     <div className="mount-hover-actions">
                       <button
                         className="icon-btn mount-refresh"
-                        title="刷新容量"
-                        aria-label="刷新容量"
+                        title="刷新全部容量"
+                        aria-label="刷新全部容量"
                         onClick={(e) => {
                           e.stopPropagation()
                           onRefreshQuota?.()

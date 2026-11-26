@@ -13,13 +13,14 @@
 // selected-row background, var(--brand) dashed border); progress
 // lives in the TransferDock capsule (brand-green bar), which polls
 // transfers() every 5s.
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { isMyGo, onFileDrop } from 'mygo-runtime'
 import type { Mount, Node, Transfer } from '../mygo'
 import { api, friendlyError, type UploadSkipped } from '../api/client'
+import { formatSize } from '../lib/format'
 import { Skeleton, useClosing } from './motion'
 import ContextMenu, { type ContextMenuEntry } from './ContextMenu'
-import FileTable from './FileTable'
+import FileTable, { type SortDir, type SortKey } from './FileTable'
 import FileGrid from './FileGrid'
 import Inspector from './Inspector'
 import PreviewOverlay from './PreviewOverlay'
@@ -29,6 +30,39 @@ import UploadTargetDialog from './UploadTargetDialog'
 interface Crumb {
   name: string
   ref: string
+}
+
+// Sorting preference (v0.15.0): stored per mount in localStorage
+// (zydrive.sort.<mountId>), default name asc. A corrupt value
+// falls back to the default — never crashes the page.
+function readSortPref(mountId: string): { key: SortKey; dir: SortDir } {
+  try {
+    const raw = window.localStorage.getItem(`zydrive.sort.${mountId}`)
+    if (raw) {
+      const p = JSON.parse(raw) as { key?: unknown; dir?: unknown }
+      if (p.key === 'name' || p.key === 'size' || p.key === 'modTime') {
+        return { key: p.key, dir: p.dir === 'desc' ? 'desc' : 'asc' }
+      }
+    }
+  } catch {
+    // Corrupt value / storage blocked: fall through to default.
+  }
+  return { key: 'name', dir: 'asc' }
+}
+
+// sortNodes orders one directory listing: folders first (Finder
+// habit), then each group sorted by the key. Sizes of folders
+// count as 0 (their size is -1/unknown); modTime sorts by instant.
+function sortNodes(nodes: Node[], key: SortKey, dir: SortDir): Node[] {
+  const cmp = (a: Node, b: Node): number => {
+    if (key === 'name') return a.name.localeCompare(b.name, 'zh')
+    if (key === 'size') return Math.max(0, a.size) - Math.max(0, b.size)
+    return new Date(a.modTime ?? '').getTime() - new Date(b.modTime ?? '').getTime()
+  }
+  const sign = dir === 'asc' ? 1 : -1
+  const dirs = nodes.filter((n) => n.isDir).sort((a, b) => sign * cmp(a, b))
+  const files = nodes.filter((n) => !n.isDir).sort((a, b) => sign * cmp(a, b))
+  return [...dirs, ...files]
 }
 
 // ViewToggle — the list/grid segmented control (v0.13.0).
@@ -77,6 +111,7 @@ function ViewToggle({ view, onChange }: { view: 'list' | 'grid'; onChange: (v: '
 }
 
 export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; mounts: Mount[]; onToast?: (message: string) => void }) {
+  const nodeKey = (n: Node) => n.ref || n.path
   const [crumbs, setCrumbs] = useState<Crumb[]>([])
   const [nodes, setNodes] = useState<Node[]>([])
   const [loading, setLoading] = useState(true)
@@ -101,6 +136,40 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
       // for this session, it just doesn't persist.
     }
   }, [view])
+  // Sorting (v0.15.0): per-mount preference, key zydrive.sort.<id>,
+  // default name asc. Folders always stay on top (Finder habit);
+  // each group (folders, files) is sorted by the key within itself.
+  // The sorted order feeds both views and the overlay navigation,
+  // so list, grid and preview never disagree about the order.
+  const [sortKey, setSortKey] = useState<SortKey>(() => readSortPref(mount.id).key)
+  const [sortDir, setSortDir] = useState<SortDir>(() => readSortPref(mount.id).dir)
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(`zydrive.sort.${mount.id}`, JSON.stringify({ key: sortKey, dir: sortDir }))
+    } catch {
+      // Storage blocked: sorting still works for this session.
+    }
+  }, [sortKey, sortDir, mount.id])
+  const sortedNodes = useMemo(() => sortNodes(nodes, sortKey, sortDir), [nodes, sortKey, sortDir])
+  const handleSort = (key: SortKey) => {
+    if (key === sortKey) setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
+    else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+  // Select-all (v0.15.0): the header checkbox toggles the visible
+  // (sorted) rows only — it never reaches into other folders.
+  const allChecked = sortedNodes.length > 0 && sortedNodes.every((n) => checked.has(nodeKey(n)))
+  const someChecked = sortedNodes.some((n) => checked.has(nodeKey(n)))
+  const toggleCheckAll = () => {
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (allChecked) sortedNodes.forEach((n) => next.delete(nodeKey(n)))
+      else sortedNodes.forEach((n) => next.add(nodeKey(n)))
+      return next
+    })
+  }
   // Batch actions (V0.9.0): download / copy for the checked
   // selection. Upload of local files stays drag-drop (no system
   // file picker exists); the batch bar says so.
@@ -117,6 +186,14 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
   const [renameValue, setRenameValue] = useState('')
   const [renameError, setRenameError] = useState<string | null>(null)
   const [deleteTargets, setDeleteTargets] = useState<Node[] | null>(null)
+  // 新建文件夹（v0.15.0）：对话框与重命名对话框同一样式；
+  // 名字校验与 UploadTargetDialog 的新建框一致（去首尾斜杠，
+  // 为空或含 / 都不接受，后端同样会拒绝）。
+  const [newFolderOpen, setNewFolderOpen] = useState(false)
+  const [newFolderName, setNewFolderName] = useState('')
+  const [newFolderError, setNewFolderError] = useState<string | null>(null)
+  const [newFolderBusy, setNewFolderBusy] = useState(false)
+  const [newFolderClosing, requestNewFolderClose, resetNewFolderClose] = useClosing(() => setNewFolderOpen(false))
   // “详情”菜单项打开 Inspector 时高级页默认展开：nonce 只在
   // 点“详情”时 +1，点别的行、手动收起后都不会误展开。
   const [inspectorOpenNonce, setInspectorOpenNonce] = useState(0)
@@ -128,7 +205,7 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
   // 着走。overlayFiles 由 nodes 现算；目录刷新导致下标失效
   // 时 overlay 不渲染（渲染处守卫）。
   const [overlayIdx, setOverlayIdx] = useState<number | null>(null)
-  const overlayFiles = nodes.filter((n) => !n.isDir)
+  const overlayFiles = sortedNodes.filter((n) => !n.isDir)
   const openOverlay = (n: Node) => {
     const i = overlayFiles.findIndex((x) => nodeKey(x) === nodeKey(n))
     if (i >= 0) setOverlayIdx(i)
@@ -353,6 +430,33 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
     }
   }
 
+  // 新建文件夹（v0.15.0）：名字拼到当前目录 ref 上再调
+  // api.mkdir，与 UploadTargetDialog 的新建框是同一拼法
+  // （ref 为空即根目录）。后端对已存在的文件夹返回成功
+  // （幂等），所以这条消息只说“已新建”，不承诺之前不存在。
+  const handleNewFolderConfirm = async () => {
+    if (newFolderBusy) return
+    const name = newFolderName.trim().replace(/^\/+|\/+$/g, '')
+    if (!name || name.includes('/') || name.includes('\\')) {
+      setNewFolderError('文件夹名不能留空，也不能含 /。')
+      return
+    }
+    const target = ref ? `${ref}/${name}` : name
+    setNewFolderBusy(true)
+    setNewFolderError(null)
+    try {
+      await api.mkdir(mount.id, target)
+      setBatchMsg(`已新建文件夹“${name}”。`)
+      requestNewFolderClose()
+      setNewFolderName('')
+      void load()
+    } catch (e) {
+      setNewFolderError(friendlyError(e))
+    } finally {
+      setNewFolderBusy(false)
+    }
+  }
+
   const handleDeleteConfirm = async () => {
     if (!deleteTargets || deleteTargets.length === 0 || batchBusy) return
     const targets = deleteTargets
@@ -538,8 +642,6 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
     setCrumbs([...crumbs, { name: n.name, ref: n.ref || n.path }])
   }
 
-  const nodeKey = (n: Node) => n.ref || n.path
-
   // ---- Drag-drop upload ----
   const zoneRef = useRef<HTMLDivElement>(null)
   const dragCount = useRef(0)
@@ -563,18 +665,19 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
     [],
   )
 
-  // Esc 关闭重命名/删除对话框（useClosing 的退出动画走完才
-  // 真正关；与 UploadTargetDialog 各自的 Esc 监听一致）。
+  // Esc 关闭重命名/删除/新建文件夹对话框（useClosing 的退出
+  // 动画走完才真正关；与 UploadTargetDialog 各自的 Esc 监听一致）。
   useEffect(() => {
-    if (!deleteTargets && !renameTarget) return
+    if (!deleteTargets && !renameTarget && !newFolderOpen) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       if (deleteTargets) requestDeleteClose()
-      else requestRenameClose()
+      else if (renameTarget) requestRenameClose()
+      else requestNewFolderClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [deleteTargets, renameTarget, requestDeleteClose, requestRenameClose])
+  }, [deleteTargets, renameTarget, newFolderOpen, requestDeleteClose, requestRenameClose, requestNewFolderClose])
 
   // Uploads one batch of local paths into the given directory ref
   // and polls transfers() until the batch is terminal, then refreshes
@@ -643,6 +746,24 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
     [mount.id, ref, load],
   )
 
+  // 上传文件（v0.15.0）：原生文件选择器（mygo.Dialog.Open，
+  // 经 DesktopService.PickFiles）。选中的路径走与拖拽完全相同
+  // 的流程：先弹 UploadTargetDialog 选目标文件夹，再上传。
+  // 取消选择返回空数组，什么都不发生；桌面窗口之外（浏览器、
+  // dev shell）如实报错，绝不放一个点了没反应的假按钮。
+  const handlePickFiles = async () => {
+    if (!isMyGo()) {
+      setUploadError('上传文件仅在 ZyDrive 桌面窗口中可用。在浏览器里打开时，请用桌面窗口拖拽上传。')
+      return
+    }
+    try {
+      const paths = await api.pickFiles()
+      if (paths.length > 0) setPendingPaths(paths)
+    } catch (e) {
+      setUploadError(friendlyError(e))
+    }
+  }
+
   // mygo gives real local paths via onFileDrop; register only inside
   // the desktop window (guarded by isMyGo, registration failure
   // never breaks the page). The drop is accepted only when it lands
@@ -670,7 +791,7 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
   // same selection, same context menu, same open behaviour) — one
   // object so the two can't drift apart.
   const listProps = {
-    nodes,
+    nodes: sortedNodes,
     selectedId: selected ? nodeKey(selected) : null,
     checked,
     onSelect: setSelected,
@@ -687,6 +808,9 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
     onContextMenu: handleContextMenu,
     onPreview: openOverlay,
   }
+
+  // 本文件夹文件总大小（文件夹不计）：crumbs 行“共 X”用。
+  const totalFileBytes = nodes.reduce((s, n) => (n.isDir ? s : s + Math.max(0, n.size)), 0)
 
   return (
     <div
@@ -763,11 +887,82 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
             </span>
           ))}
           <span style={{ flex: 1 }} />
+          {/* 本文件夹条目数 + 文件总大小：nodes 已加载，本地算，
+              无后端成本。 */}
+          <span className="muted" style={{ fontSize: 13, whiteSpace: 'nowrap' }}>
+            {nodes.length} 项{totalFileBytes > 0 ? ` · 共 ${formatSize(totalFileBytes)}` : ''}
+          </span>
+          <button
+            className="btn btn-sm"
+            onClick={() => {
+              resetNewFolderClose()
+              setNewFolderName('')
+              setNewFolderError(null)
+              setNewFolderOpen(true)
+            }}
+          >
+            新建文件夹
+          </button>
+          <button className="btn btn-sm" onClick={() => void handlePickFiles()}>
+            上传文件
+          </button>
           <ViewToggle view={view} onChange={setView} />
-          <button className="btn btn-sm" onClick={() => void load()}>
-            刷新
+          <button className="btn btn-sm" disabled={loading} onClick={() => void load()}>
+            {loading ? '刷新中…' : '刷新'}
           </button>
         </div>
+
+        {/* 批量操作栏（v0.15.0）：挪到表格上方、随滚动固定在主区
+            顶部（Demo v8 .bulkbar 淡绿条），不再是灰色的
+            notice-box——操作栏和结果消息必须一眼分清。只在有勾
+            选时出现；结果消息仍留在表格下方（选完即清，写在栏
+            里会跟着消失）。 */}
+        {checked.size > 0 && (
+          <div className="bulkbar">
+            <span>已选 {checked.size} 个</span>
+            <button className="btn btn-sm" disabled={batchBusy} onClick={() => void handleBatchDownload(checkedRefs())}>
+              {batchBusy ? '处理中…' : '下载到默认文件夹'}
+            </button>
+            <button
+              className="btn btn-sm"
+              disabled={batchBusy || mounts.filter((m) => m.id !== mount.id).length === 0}
+              onClick={() => {
+                const others = mounts.filter((m) => m.id !== mount.id)
+                if (others.length > 0) {
+                  setCopyRefs(checkedRefs())
+                  setCopyMount(others[0])
+                }
+              }}
+            >
+              复制到…
+            </button>
+            <button
+              className="btn btn-sm"
+              disabled={batchBusy}
+              onClick={() => {
+                setMoveRefs(checkedRefs())
+                setMoveMount(mount)
+              }}
+            >
+              移动到…
+            </button>
+            {mount.caps.canDelete && (
+              <button
+                className="btn btn-sm btn-danger"
+                disabled={batchBusy}
+                onClick={() => {
+                  resetDeleteClose()
+                  setDeleteTargets([...checked].map((k) => nodes.find((x) => nodeKey(x) === k)).filter((x): x is Node => !!x))
+                }}
+              >
+                删除
+              </button>
+            )}
+            <button className="btn btn-sm" disabled={batchBusy} onClick={() => setChecked(new Set())}>
+              取消选择
+            </button>
+          </div>
+        )}
 
         {uploadInfo && <div className="notice-box">{uploadInfo}</div>}
         {skipped.length > 0 && (
@@ -824,46 +1019,15 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
         ) : view === 'grid' ? (
           <FileGrid {...listProps} />
         ) : (
-          <FileTable {...listProps} />
-        )}
-        {checked.size > 0 && (
-          <div className="notice-box" style={{ marginTop: 8 }}>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13 }}>已选 {checked.size} 个</span>
-              <button className="btn btn-sm" disabled={batchBusy} onClick={() => void handleBatchDownload(checkedRefs())}>
-                {batchBusy ? '处理中…' : '下载到默认文件夹'}
-              </button>
-              <button
-                className="btn btn-sm"
-                disabled={batchBusy || mounts.filter((m) => m.id !== mount.id).length === 0}
-                onClick={() => {
-                  const others = mounts.filter((m) => m.id !== mount.id)
-                  if (others.length > 0) {
-                    setCopyRefs(checkedRefs())
-                    setCopyMount(others[0])
-                  }
-                }}
-              >
-                复制到…
-              </button>
-              {mount.caps.canDelete && (
-                <button
-                  className="btn btn-sm btn-danger"
-                  disabled={batchBusy}
-                  onClick={() => {
-                    resetDeleteClose()
-                    setDeleteTargets([...checked].map((k) => nodes.find((x) => nodeKey(x) === k)).filter((x): x is Node => !!x))
-                  }}
-                >
-                  删除
-                </button>
-              )}
-              <button className="btn btn-sm" disabled={batchBusy} onClick={() => setChecked(new Set())}>
-                取消选择
-              </button>
-              <span className="muted" style={{ fontSize: 12 }}>批量上传还是拖拽进窗口（选目标文件夹后上传）。</span>
-            </div>
-          </div>
+          <FileTable
+            {...listProps}
+            sortKey={sortKey}
+            sortDir={sortDir}
+            onSort={handleSort}
+            allChecked={allChecked}
+            someChecked={someChecked}
+            onToggleCheckAll={toggleCheckAll}
+          />
         )}
         {/* The result lives OUTSIDE the selection bar on purpose:
             a successful download/copy clears the selection, and a
@@ -871,7 +1035,37 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
         {batchMsg && <div className="notice-box" style={{ marginTop: 8, fontSize: 13 }}>{batchMsg}</div>}
         {batchError && <div className="error-box" style={{ marginTop: 8, fontSize: 13 }}>{batchError}</div>}
       </div>
-      {selected && <Inspector node={selected} mount={mount} closing={inspectorClosing} onClose={closeInspector} openAdvancedNonce={inspectorOpenNonce} openVersionsNonce={versionsOpenNonce} onChanged={() => void load()} onToast={onToast} onFullscreen={() => openOverlay(selected)} />}
+      {selected && (
+        <Inspector
+          node={selected}
+          mount={mount}
+          closing={inspectorClosing}
+          onClose={closeInspector}
+          openAdvancedNonce={inspectorOpenNonce}
+          openVersionsNonce={versionsOpenNonce}
+          onChanged={() => void load()}
+          onToast={onToast}
+          onFullscreen={() => openOverlay(selected)}
+          // Inspector 操作按钮（v0.15.0）：全部复用右键菜单的
+          // handler。打开：文件夹进目录、文件开全屏预览。
+          onOpen={() => {
+            if (selected.isDir) openDir(selected)
+            else openOverlay(selected)
+          }}
+          onDownload={() => void handleBatchDownload([nodeKey(selected)])}
+          // 没有别的网盘时不传 onCopyTo，按钮直接不出现——
+          // 不支持的能力不出现，而不是灰掉点不动。
+          onCopyTo={
+            mounts.some((m) => m.id !== mount.id)
+              ? () => {
+                  setCopyRefs([nodeKey(selected)])
+                  const others = mounts.filter((m) => m.id !== mount.id)
+                  if (others.length > 0) setCopyMount(others[0])
+                }
+              : undefined
+          }
+        />
+      )}
       {copyMount && (
         <UploadTargetDialog
           mount={copyMount}
@@ -927,6 +1121,36 @@ export default function FileBrowser({ mount, mounts, onToast }: { mount: Mount; 
               <button className="btn" onClick={requestRenameClose}>取消</button>
               <button className="btn-primary" disabled={batchBusy || renameValue.trim().length === 0} onClick={() => void handleRenameConfirm()}>
                 {batchBusy ? '重命名中…' : '确定'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {newFolderOpen && (
+        <div className={`dialog-backdrop${newFolderClosing ? ' closing' : ''}`} onClick={requestNewFolderClose}>
+          <div className={`dialog${newFolderClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <h1>新建文件夹</h1>
+            <p className="muted" style={{ margin: '0 0 12px' }}>
+              在{crumbs.length > 0 ? `“${crumbs[crumbs.length - 1].name}”` : `“${mount.displayName}”根目录`}里新建。
+            </p>
+            <input
+              autoFocus
+              value={newFolderName}
+              onChange={(e) => {
+                setNewFolderName(e.target.value)
+                setNewFolderError(null)
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') void handleNewFolderConfirm()
+              }}
+              placeholder="文件夹名（不能含 /）"
+              aria-label="文件夹名"
+            />
+            {newFolderError && <div className="error-box" style={{ marginTop: 8 }}>{newFolderError}</div>}
+            <div className="dialog-actions">
+              <button className="btn" onClick={requestNewFolderClose}>取消</button>
+              <button className="btn-primary" disabled={newFolderBusy || newFolderName.trim().length === 0} onClick={() => void handleNewFolderConfirm()}>
+                {newFolderBusy ? '新建中…' : '确定'}
               </button>
             </div>
           </div>

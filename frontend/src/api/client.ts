@@ -78,6 +78,10 @@ export const api = {
     if (!r) return { transfers: [], skipped: [] }
     return { transfers: nonNull(r.transfers), skipped: nonNull(r.skipped) }
   },
+  // V0.15.0: native file picker (mygo.Dialog.Open via the Go hook).
+  // Returns the chosen absolute paths, or [] when the user cancels.
+  // Null from the binding means the backend produced nothing.
+  pickFiles: async () => (await DesktopService.pickFiles()) ?? [],
   listAgents: async () => nonNull(await DesktopService.listAgents()),
   agentStatus: () => DesktopService.agentStatus(),
   validateJob: (job: SyncJob) => DesktopService.validateJob(job),

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // PreviewPane — file preview inside the Inspector (v0.9.1, free).
-// The "glance": first-screen content only, ~200px tall. The
+// The "glance": first-screen content only, 240px tall (v0.15.0:
+// 图片/视频/PDF/文本统一 240px，换个文件类型面板高度不再跳).
 // fullscreen overlay (PreviewOverlay, v0.14.0) is the serious
 // viewer; this pane stays small on purpose. Tier detection and
 // fetching live in previewShared so glance and overlay never
@@ -170,7 +171,7 @@ export default function PreviewPane({ mountID, node, onToast }: { mountID: strin
             </>
           )}
           {tier === 'pdf' && url && (
-            <iframe title={node.name} src={url} style={{ width: '100%', height: 320, border: '1px solid var(--border)', borderRadius: 4 }} />
+            <iframe title={node.name} src={url} style={{ width: '100%', height: 240, border: '1px solid var(--border)', borderRadius: 4 }} />
           )}
           {(tier === 'text' || tier === 'markdown') && text !== null && (
             <>
@@ -180,12 +181,12 @@ export default function PreviewPane({ mountID, node, onToast }: { mountID: strin
                 ) : (
                   <div
                     className="preview-md"
-                    style={{ maxHeight: 320, overflowY: 'auto', fontSize: 13, lineHeight: 1.5 }}
+                    style={{ maxHeight: 240, overflowY: 'auto', fontSize: 13, lineHeight: 1.5 }}
                     dangerouslySetInnerHTML={{ __html: mdHtml }}
                   />
                 )
               ) : (
-                <pre style={{ maxHeight: 320, overflow: 'auto', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>
+                <pre style={{ maxHeight: 240, overflow: 'auto', fontSize: 12, lineHeight: 1.5, whiteSpace: 'pre-wrap', wordBreak: 'break-all', margin: 0 }}>
                   {text}
                 </pre>
               )}

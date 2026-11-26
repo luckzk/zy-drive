@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -370,6 +371,26 @@ func (a *App) GetVersions() VersionInfo {
 		Protocol: version.ProtocolVersion,
 		Engine:   version.EngineVersion,
 	}
+}
+
+// --- File picker (mygo) ---
+//
+// Same hook shape as the open-at-login hooks above: internal/app
+// must not import mygo, so cmd/desktop installs a hook that calls
+// mygo.Dialog.Open (native NSOpenPanel sheet on macOS). Without
+// the hook — dev shell, tests, plain browser — the picker reports
+// itself unavailable instead of the UI showing a dead button.
+func (a *App) SetPickFilesHook(pick func(ctx context.Context) ([]string, error)) {
+	a.pickFiles = pick
+}
+
+// PickFiles opens the system's file picker and returns the chosen
+// absolute paths, or nil when the user cancels.
+func (a *App) PickFiles(ctx context.Context) ([]string, error) {
+	if a.pickFiles == nil {
+		return nil, fmt.Errorf("app: 文件选择器在当前运行方式下不可用（需要在 ZyDrive 桌面窗口里打开）")
+	}
+	return a.pickFiles(ctx)
 }
 
 // --- Open at login (mygo) ---

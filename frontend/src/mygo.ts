@@ -887,6 +887,13 @@ export const DesktopService = {
    */
   openWithSystemApp: bind<[string, string], string>("DesktopService.OpenWithSystemApp", (mountID: string, ref: string) => [mountID, ref]),
   /**
+   * PickFiles opens the system's file picker (native dialog via the
+   * cmd/desktop hook) and returns the chosen absolute paths, or nil
+   * when the user cancels. The frontend feeds the paths into the
+   * same UploadTargetDialog → UploadFiles flow as drag-drop.
+   */
+  pickFiles: bind<[], string[]>("DesktopService.PickFiles", () => []),
+  /**
    * PollOAuthCallback reports whether the browser has jumped back
    * with a code for this state yet ("waiting" / "done" / "error" /
    * "expired"). It never blocks; the frontend polls it.

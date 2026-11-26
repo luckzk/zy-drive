@@ -11,6 +11,7 @@
 > **v0.12.0（2026-11-26，未推）：版本历史真实现（Drive/S3/Dropbox）+ Copier 服务端复制（S3/Dropbox）+ OneDrive 上传 409 修复 + 拖拽分组标题跟随，见文末“附：v0.12.0”。**
 > **v0.13.0（2026-11-26，未推）：文件浏览页 UI/UX 批——命令面板居中修复、主面板去重容量、顶栏去掉“新建同步”、列表/网格切换、详情页定义列表重排、右上角 Toast，见文末“附：v0.13.0”。全屏预览 overlay（调研已定）仍在排队，见 v0.13.0 附录末尾。**
 > **v0.14.0（2026-11-26，未推）：文件预览全屏 overlay（P1）——深色遮罩 + 逐文件切换 + 自适应工具条 + 图片/视频/音频/PDF.js/代码/Markdown 查看器 + 右侧信息面板，见文末“附：v0.14.0”。Inspector 的 glance 保留。**
+> **v0.15.0（2026-11-26，未推）：主页面 UI 审计 Top 5 全做——新建文件夹 + 上传文件入口、列表排序 + 全选、Inspector 操作按钮、批量栏上移 + 移动到…、命令面板边输边搜 + 方向键导航；另修同区 S 项（刷新 busy 态、glance 240px、--selected 统一选中色、刷新全部容量改名、同步任务角标），见文末“附：v0.15.0”。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -477,3 +478,68 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 - visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2o（overlay 盖满 1280×800、遮罩 rgba(17,17,17,0.92)、标题“封面.png”、图片 naturalWidth 240）、2p（Esc 关闭）、2q（“下一个文件”→ 旅行.mp4、← 回封面.png）、2r（放大后标签“适应”→“125%”、图片 240 → 300px）、2s（PDF canvas 1248×1248、页码 1 / 1、无 iframe）、2t（代码 `.hljs-keyword` = "package"、行号 5 行、Markdown h1“说明”+ 2 项列表）。截图 02o/02r/02s/02t 已目视：遮罩、图片、PDF "Hello" 页、代码高亮与行号都正常。
 - 构建时修的两个真问题：① overlay 重构脚本吃掉了“下一个文件”按钮的 `</button>`（tsc 报错定位）；② harness 的 MIME 表缺 `.mjs` 导致 PDF worker 起不来（见 F）。③ 桩列表多了 说明.md 后，同步多选“全选本页”断言从 12 改成 13（检查脚本的改动，不进应用代码）。
 - 诚实缺口：PDF.js 的 `zydrive-preview://` 取数与 `?url` worker 在真机 mygo webview 里还没验过（harness 走 data: URL + 静态服务，与真机路径不同）；`navigator.clipboard` 在 mygo 自定义 scheme 下是否可用没验过（复制失败时会如实 toast，不静默）；图片缩放的宽高过渡是特意破例（transform/opacity 规则之外，只作用于单张 img、拖动时关掉）；视频/音频的倍速与全屏只在桩里点过，真机播放体验待用户验；overlay 的焦点陷阱与 Space/方向键只在桩浏览器里跑过，真机键盘行为待验；网格缩略图、Toast 悬停计时、Inspector "类型：文件"兜底等 v0.13.0 的缺口原样保留。
+
+## 附：v0.15.0（2026-11-26，主页面 UI 审计 Top 5；未推）
+
+用户 2026-11-26 20:34 让看主页面 UI 还能怎么优化；审计（`docs/main-page-ui-audit.md`，13 个区）列了 Top 5，用户 21:25 批了“Top 5 全做”。本版就是这五项 + 同区的 S 项。上传文件入口先做了 mygo 文件选择器调查（见 A），不是先写按钮再找实现。
+
+### A. 上传文件：先调查 mygo 的选择器，再写按钮
+
+- 结论：原生选择器走得通——`mygo.Dialog.Open`（mygo v0.10.0，`dialog.go:141-176`；macOS NSOpenPanel、Linux GTK chooser；选项 Title/Filters/Multiple/Directory/ShowHiddenFiles/CreateDirectories/Parent）。但它是 Go 侧 API，mygo-runtime 0.10.0 没有导出 dialog（`frontend/node_modules/mygo-runtime/dist/index.d.ts` 完整导出表查过，dist/index.js 里 grep dialog 无结果），所以前端不能直接调；做法是新绑一个 Go 方法 + `mygo generate` 重生成绑定。
+- 落地：`internal/app/app.go` 加 `pickFiles` 字段；`internal/app/settings.go` 加 `SetPickFilesHook` + `PickFiles()`（hook 为 nil 时报诚实错误“文件选择器在当前运行方式下不可用”，不假装能选）；`internal/app/bind.go` 加 `DesktopService.PickFiles`；`cmd/desktop/mygo.go` 在 `SetLoginHooks` 旁边装 hook（`mygo.Dialog.Open`，`Parent: mygo.CallerWindow(ctx)`，`Title: "选择要上传的文件"`，`Multiple: true`）。`mygo generate` 后 `frontend/src/mygo.ts:895` 多了 `pickFiles` 绑定；`client.ts` 加 `api.pickFiles()`。前端“上传文件”按钮点它 → 拿到路径 → 复用已有的 `UploadTargetDialog`（选目标文件夹）→ 走已有的 `handleUpload`，不另起上传路径。
+- 死胡同（都试过、都不走）：① `<input type="file">` 能弹出选择框，但 DOM File 对象不带本地路径，而 `UploadFiles` 要的是绝对路径字符串——要走它得另做一套“传字节”的后端，不值得；② File System Access API（`showOpenFilePicker`）在 mygo webview 里没有任何证据；③ 在 `internal/app` 里直接调 `mygo.Dialog` 会打破“应用层不依赖 mygo”的分层——用 hook 模式，`internal/app` 只认一个函数字段。
+- 真机缺口：无头浏览器打不开 NSOpenPanel，harness 只能验接线（桩 `PickFiles` 返回一条假路径，断言“点了按钮 → 弹出目标框、显示 1 个文件将上传”）；**真的选文件 → 上传整条路必须在用户 Mac 上验**。
+
+### B. 新建文件夹（FileBrowser.tsx）
+
+- 面包屑行加“新建文件夹”按钮（Demo v8 的 actions 行没有这个按钮——是审计建议的新入口，不是原型照搬）。对话框复用重命名对话框的样式：名称输入框 + 目标文件夹副标题；校验：去首尾空格、禁 `/` 和 `\`、空名确定按钮禁用；目标路径用 `UploadTargetDialog` 同款拼接（`ref ? ref/name : name`）；成功后 `void load()` 刷新列表 + 提示“已新建文件夹"X"。”。Drive/Dropbox 的 mkdir 是幂等的，所以文案不声称“之前不存在”。
+- 面包屑行同时加了计数“13 项 · 共 22.7 MB”（审计建议；文件数是当前目录的节点数，总字节只计文件不计文件夹——文件夹大小本来就没有）。
+
+### C. 列表排序 + 全选（FileTable.tsx / FileBrowser.tsx）
+
+- 三列可点：名称 / 大小 / 修改时间；同一列再点切换升降序，换列回到升序；表头按钮带 ↑/↓ 指示（`aria-label` 是“按名称排序”等）。文件夹永远在前、每组内再按 key 排；文件夹大小按 0 计（不编数字）；修改时间按时间戳排。
+- 排序偏好按网盘存 `localStorage`（`zydrive.sort.<mountId>`，与 `zydrive.view` 同款约定），默认名称升序；损坏的存值回落到默认。列表、网格、overlay 前后切换共用同一份 `sortedNodes`——overlay 的“下一个文件”从此跟可见顺序走（v0.14.0 时是桩列表原顺序；harness 2q 的期望因此从“旅行.mp4”改成“合同.docx”，见“验证”）。
+- 全选：表头复选框（Demo v8 `#checkAll`），只勾当前目录可见行；半选时 `indeterminate`（ref 回调设，不走 state）；勾选行带 `.checked` tint——淡蓝 `#eef4ff`，复用 DualPane 的 `.multiselected` 颜色（不是新发明一个蓝）；选中行是淡绿 `--selected`，两者能一眼分清（截图上像素核实过：勾选行 rgb(238,244,255)，选中行 rgb(240,253,244)）。
+- 同区 S 项：大小列右对齐（Demo v8 `.num`）；修改时间改相对时间（今天 HH:MM / 昨天 HH:MM，其余绝对；`formatTime`，表格/网格/Inspector/传输共用同一份——桩数据全是 6 天前，所以 harness 里仍显示绝对时间，今天/昨天分支只在真机上出现）。
+
+### D. Inspector 操作按钮（Inspector.tsx / FileBrowser.tsx）
+
+- 文件名下方一排 `.insp-actions`：打开 / 下载 / 复制到…，全部复用右键菜单的同一批 handler，不另写逻辑。打开：文件夹进目录、文件开全屏 overlay；下载：走批量下载（单条）；复制到…：走已有的目标选择框；没有其他网盘时不渲染“复制到…”（不摆一个点不动的按钮）。
+- 位置说明：任务原文写“在 glance 预览下方”，审计 §8.1 与 Demo v8 写“文件名下方、kv 信息上方”——实际布局顺序是 文件名 → kv 信息 → glance，两者不可能同时满足。按审计/Demo v8 做了（文件名下方、kv 上方），见 02w 截图。Demo v8 的 `.insp-actions` 是居中 + `padding:12px 16px 4px`；我们的是左对齐 + `margin-top:12px`——Inspector aside 本身已有 16px padding，再加 16px 横向 padding 是双倍留白；Demo 自己的窄屏变体（line 502）也是左对齐，所以这不是偷懒，是按容器做的适配。
+
+### E. 批量栏上移 + 移动到…（FileBrowser.tsx / tokens.css）
+
+- 批量栏从表格下方挪到表格上方（面包屑行下面），`position: sticky; top: 0` 随滚动固定在主区顶部；淡绿底（`--selected`），不再是灰色的 notice-box——操作栏和结果消息必须一眼分清。结果消息（“已把 N 个文件加入下载队列”之类）仍留在表格下方，不跟进栏里（选完即清，写在栏里会跟着消失）。
+- 加“移动到…”：复用已有的移动目标选择框（右键菜单同款），不在栏里另起一套。其他批量动作原样保留（下载到默认文件夹 / 复制到… / 删除 / 取消选择）。
+- 与 Demo v8 的差异：Demo 的 `.bulkbar` 不 sticky（本版按审计要求加了 sticky）；Demo 的栏是 `padding:8px 18px; gap:10px`，我们是 `margin:0 -16px; padding:8px 12px; gap:8px`（通栏 bleed，文字起点比表格首列左 4px——肉眼难辨，留作以后统一）；Demo 的栏没有“移动到…”（本版按审计要求加的）；Demo 的栏文案是“已选 0 项”，我们沿用 v0.9.0 以来的“已选 N 个”。
+
+### F. 命令面板边输边搜 + 方向键（CommandPalette.tsx）
+
+- 输入后 150ms 防抖即搜（不再等回车；回车仍可显式重搜）；旧请求的回包晚到时直接丢（`searchSeq` 守卫）；↑/↓ 移动高亮行（边界夹住、不循环）、回车打开高亮行、Esc 关闭；匹配文字用 `<mark>` 高亮（查询先转义，不当正则用）；每行右端显示 API 本来就返回的大小/日期（`formatSize · formatTime`；文件夹只显示日期）。
+- 底部“关闭”按钮换成快捷键提示“↑↓ 选择 · 回车 打开 · Esc 关闭”。Demo v8 的 palette 是命令列表（新建同步/添加网盘/上传文件/切换网盘），没有文件搜索、没有方向键、没有高亮——本版这五项全是审计要求的新增，不是原型照搬；Demo 的命令入口（新建同步任务等）我们本来就没有，不补。
+- 搜索范围仍是当前网盘；顶栏占位文案改诚实了：“在当前网盘搜索… (Ctrl+K)”（之前写“搜索全部网盘”是假承诺）。跨网盘搜索是单独的 L 项，不在本版。
+
+### G. 同区 S 项（tokens.css / App.tsx / Sidebar.tsx / InspectorInfo.tsx / PreviewPane.tsx）
+
+- `--selected` token：`:root` 里 `#f0fdf4`、深色 `#1e3a26`；导航激活、网盘卡片选中、网格卡片选中、双栏行选中、表格选中行全部改走它（之前导航 `#dcfce7` 与表格 `#f0fdf4` 各说各的）。与 Demo v8 的 `--green-soft`（`rgba(86,225,108,.14)` ≈ `#e7fbea`）略有色差——我们的是审计要求的单一共享 token，不再每处一个绿。
+- 刷新按钮 busy 态：加载中禁用 + 文案变“刷新中…”。
+- Inspector“高级”文案矛盾修了：之前是“分享链接”列在支持能力里、下面又写“尚未接入”——现在是“上面是该网盘支持的能力；生成分享链接等操作尚未接入，后续版本提供。”（前半句说网盘侧能力，后半句说 ZyDrive 接线状态，不再自相矛盾）。
+- glance 预览高度统一 240px（PDF iframe 与 Markdown/文本区之前是 320px）。
+- 侧栏悬停“刷新容量”改名“刷新全部容量”（它重拉的是全部网盘的容量，旧文案误导；harness 2e 的期望同步改了）。
+- 同步任务导航角标：App 拉 `api.listSyncJobs()` 计数（已有的 endpoint，SyncJobsPage 同款用法），回到浏览页时重数；0 时不渲染——绝不编数字。Demo v8 的角标是写死的 3，我们的是真数。
+
+### 审计 open questions 的拍板（用户可推翻）
+
+- 排序范围：按网盘（`zydrive.sort.<mountId>`），不是全局。
+- 密度：单档，不加切换。
+- 网格卡片大小：固定，不加调节。
+- Agent 离线 last-seen：不做（后端没有这个字段）。
+- 搜索范围：当前网盘 + 诚实占位文案；跨网盘搜索是单独的 L 项。
+- Inspector 按钮位置：文件名下方、kv 上方（见 D 的说明）。
+
+### 验证（2026-11-26）
+
+- `make lint` exit 0（gofmt + go vet + golangci-lint 0 issues + tsc）；`go test ./...` 全过（21 个包；整轮里 `internal/agentrun` 又抖了一次——`TestRunnerRetryOnce`，单跑通过、整包重跑通过，是已知 flaky，不是本版改动；这次首轮失败的测试名没截到，只看到包 FAIL，重跑全过）；npm 构建通过（JS 469.36 kB / gzip 144.53 kB，v0.14.0 是 463.73 kB——本版只加了 UI 逻辑，没有新依赖）；`make build` 三二进制均报 0.15.0。
+- visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2u（新建文件夹对话框：空名确定禁用 → 输名 → 对话框关闭 + “已新建文件夹”消息；上传文件 → 目标框“1 个文件将上传”）、2v（默认名称升序首行照片；大小升序首文件笔记.txt、降序首文件旅行.mp4；表头全选 13 行带 `.checked` + “已选 13 个”）、2w（Inspector 有 打开/下载/复制到…；点下载出现入队提示；点复制到…弹出目标框）、2x（批量栏在表格上方、淡绿底 `rgb(240,253,244)`、有“移动到…”并弹出目标框）、2y（输“行程”不等回车就出 1 条结果、`<mark>` 高亮、121 KB · 2026-11-20；输“.p”出 3 条、按两次 ↓ 高亮封面.png、回车关闭；无匹配显示“没有找到”；底部是快捷键提示、无“关闭”按钮）。截图 02u/02v/02w/02x/02y 已目视：批量栏淡绿条在表格上方、勾选行淡蓝与选中行淡绿能分清、大小列右对齐带 ↑/↓、命令面板居中且结果行带大小日期、上传目标框正常。
+- 构建/验证时修的真问题与 harness 调整：① 2e 原来点 `.file-table input[type="checkbox"]` 的第一个——表头复选框加上后第一个变成它，改成 `tbody` 限定（应用代码没错，是检查脚本要跟上）；② 2q 的 overlay“下一个文件”期望从“旅行.mp4”改成“合同.docx”（本版起 overlay 跟可见排序走，见 C）；③ 2e 的刷新按钮 title 期望改成“刷新全部容量”（本版改名）；④ harness 的 Search/PickFiles 桩是新加的（之前 Search 未实现会抛错）；⑤ 2v 的名称排序期望：中文名按拼音排在拉丁字母前（`localeCompare('zh')` 在桩 Chromium 里的行为：main.go 排在所有中文名之后）——不是 bug，是 locale 行为，断言按实测写。
+- 诚实缺口：上传文件整条路（NSOpenPanel 真选框 → 上传）只能在用户 Mac 上验，harness 只验了接线；今天/昨天相对时间只在真机上出现（桩数据全是 6 天前）；名称排序里中文在前、拉丁字母在后是 Chromium 的 zh collation 行为，真机 Chrome 同款 ICU，应一致，待用户肉眼确认；Agent 角标在同步页增删任务后要回到浏览页才重数（不轮询）；v0.13.0/v0.14.0 的缺口（网格缩略图、Toast 悬停计时、PDF.js 真机、clipboard、视频全屏）原样保留。

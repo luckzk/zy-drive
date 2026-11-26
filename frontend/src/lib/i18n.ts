@@ -11,7 +11,7 @@ const DICT = {
   browse: { zh: '文件浏览', en: 'Browse' },
   sync: { zh: '同步任务', en: 'Sync Jobs' },
   settings: { zh: '设置', en: 'Settings' },
-  searchPlaceholder: { zh: '搜索全部网盘… (Ctrl+K)', en: 'Search all drives… (Ctrl+K)' },
+  searchPlaceholder: { zh: '在当前网盘搜索… (Ctrl+K)', en: 'Search the current drive… (Ctrl+K)' },
   drives: { zh: '网盘', en: 'Drives' },
   general: { zh: '通用', en: 'General' },
   syncDefaults: { zh: '同步默认', en: 'Sync Defaults' },

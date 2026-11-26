@@ -36,6 +36,7 @@ resources/icon.png
 scripts/visual-check/node_modules/
 scripts/visual-check/.chromium/
 scripts/visual-check/shots/
+scripts/visual-check/shots-mobile/
 scripts/visual-check/package-lock.json
 
 # Go

@@ -298,6 +298,16 @@ const STUB = `(() => {
       if (method === 'DesktopService.TestProxy') return { ok: true, detail: '经代理 http://127.0.0.1:7890 连通（200 OK，跟随系统代理）' }
       if (method === 'DesktopService.CheckDownloadDir') return null
       if (method === 'DesktopService.GetVersions') return { backend: '0.3.0', protocol: '1', engine: '0.1.0' }
+      // v0.15.0 命令面板桩：按名字子串过滤桩列表（服务端搜索的
+      // 样子），返回完整 Node（大小/修改时间都在，面板要显示）。
+      if (method === 'DesktopService.Search') {
+        const q = String(args[1] ?? '').trim().toLowerCase()
+        const nodes = ${JSON.stringify(STUB_NODES)}.filter((n) => n.name.toLowerCase().includes(q))
+        return { nodes, localOnly: false }
+      }
+      // v0.15.0 上传文件桩：原生选择器在无头浏览器里打不开，
+      // 直接返回一条已选路径——断言只认“点了按钮 → 弹出目标框”。
+      if (method === 'DesktopService.PickFiles') return ['/Users/zy/照片/test.jpg']
       // Open-at-login deliberately throws here: in the dev shell /
       // non-packaged runs mygo cannot manage login items, and the
       // Settings page must show its honest "暂不支持" note. The text
@@ -1098,7 +1108,9 @@ try {
     if (mountRemove.found && mountRemove.text !== '') failures.push(`网盘删除按钮里不应有文字/emoji，实测 ${JSON.stringify(mountRemove.text)}`)
     if (mountRemove.found && mountRemove.title !== '移除网盘') failures.push(`网盘删除按钮 title 应为“移除网盘”，实测 ${JSON.stringify(mountRemove.title)}`)
     if (mountRemove.found && !mountRemove.refreshHasSvg) failures.push('网盘刷新容量按钮应是内联 SVG 图标，不是 emoji/文字')
-    if (mountRemove.found && mountRemove.refreshTitle !== '刷新容量') failures.push(`网盘刷新容量按钮 title 应为“刷新容量”，实测 ${JSON.stringify(mountRemove.refreshTitle)}`)
+    // v0.15.0 改名：它重拉的是全部网盘的容量，旧文案“刷新容量”
+    // 会让人以为只刷这一张卡。
+    if (mountRemove.found && mountRemove.refreshTitle !== '刷新全部容量') failures.push(`网盘刷新容量按钮 title 应为“刷新全部容量”，实测 ${JSON.stringify(mountRemove.refreshTitle)}`)
     await page.hover('.mount-card').catch(() => failures.push('悬停网盘卡片失败'))
     await page.waitForTimeout(300)
     const mountRemoveHover = await page.evaluate(() => {
@@ -1229,7 +1241,7 @@ try {
   // “已选 N 个” + 下载 / 复制到…；下载进队列有提示，复制弹
   // 出目标选择框（可切换目标网盘、确认按钮是“复制到这里”）。
   if (process.env.VISUAL_MOUNTS) {
-    await page.locator('.file-table input[type="checkbox"]').first().click()
+    await page.locator('.file-table tbody input[type="checkbox"]').first().click()
     await page.waitForTimeout(400)
     const batchBar = await page.evaluate(() => {
       const body = document.body.textContent ?? ''
@@ -1252,7 +1264,7 @@ try {
       if (!dlMsg.includes('已把 1 个文件加入下载队列')) failures.push(`点下载后没有出现入队提示，实测 ${JSON.stringify(dlMsg.slice(0, 200))}`)
     }
     // 重新勾选（下载后选择被清空），再测复制目标框。
-    await page.locator('.file-table input[type="checkbox"]').first().click()
+    await page.locator('.file-table tbody input[type="checkbox"]').first().click()
     await page.waitForTimeout(300)
     await page.getByRole('button', { name: '复制到…', exact: true }).click()
     await page.waitForTimeout(600)
@@ -1810,13 +1822,15 @@ try {
 
   // 2q. 箭头按钮 / 方向键切换文件：按当前目录顺序走，不包
   // 含文件夹；切到视频（桩是无效字节）只认标题——降级面板
-  // 是预期行为，不认视频元素。
+  // 是预期行为，不认视频元素。v0.15.0 起顺序跟列表的可见排
+  // 序走（名称升序）：封面.png 的下一个是合同.docx，不再是
+  // 桩列表原顺序里的旅行.mp4。
   if (process.env.VISUAL_MOUNTS) {
     if (await openOverlayByName('封面.png')) {
       await page.getByRole('button', { name: '下一个文件' }).click()
       await page.waitForTimeout(600)
       const titleNext = await page.evaluate(() => document.querySelector('.preview-title')?.textContent ?? '')
-      if (titleNext !== '旅行.mp4') failures.push(`点“下一个文件”后标题应是“旅行.mp4”，实测 ${JSON.stringify(titleNext)}`)
+      if (titleNext !== '合同.docx') failures.push(`点“下一个文件”后标题应是“合同.docx”（名称升序里的下一项），实测 ${JSON.stringify(titleNext)}`)
       await page.keyboard.press('ArrowLeft')
       await page.waitForTimeout(600)
       const titlePrev = await page.evaluate(() => document.querySelector('.preview-title')?.textContent ?? '')
@@ -1942,6 +1956,259 @@ try {
       await page.screenshot({ path: path.join(SHOTS, '02t-markdown.png') })
       await closeOverlayByEsc()
     }
+  }
+
+  // 2u. 新建文件夹 + 上传文件入口（v0.15.0，VISUAL_MOUNTS）：
+  // 面包屑行有“新建文件夹 / 上传文件”按钮与“13 项 · 共 …”计数；
+  // 新建：输名 → 确定 → 桩 Mkdir 返回 null，列表重拉（桩仍返
+  // 回同一份列表）+ 出现“已新建文件夹”消息；上传：桩 PickFiles
+  // 返回一条路径，弹出目标选择框（标题“上传到哪里？”）。
+  if (process.env.VISUAL_MOUNTS) {
+    const headerBtns = await page.evaluate(() => ({
+      hasNewFolder: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === '新建文件夹'),
+      hasUpload: [...document.querySelectorAll('button')].some((b) => b.textContent?.trim() === '上传文件'),
+      hasCount: /13 项/.test(document.body.textContent ?? ''),
+    }))
+    console.log('file header:', JSON.stringify(headerBtns))
+    if (!headerBtns.hasNewFolder) failures.push('文件工具栏没有“新建文件夹”按钮')
+    if (!headerBtns.hasUpload) failures.push('文件工具栏没有“上传文件”按钮')
+    if (!headerBtns.hasCount) failures.push('面包屑行没有“13 项”计数')
+    await page.getByRole('button', { name: '新建文件夹', exact: true }).click()
+    await page.waitForTimeout(400)
+    const newFolderDlg = await page.evaluate(() => {
+      const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('新建文件夹'))
+      if (!d) return { found: false }
+      return { found: true, hasInput: !!d.querySelector('input'), confirmDisabled: d.querySelector('.dialog-actions button:last-child')?.disabled ?? null }
+    })
+    console.log('new folder dialog:', JSON.stringify(newFolderDlg))
+    if (!newFolderDlg.found) failures.push('点“新建文件夹”后没有弹出对话框')
+    if (newFolderDlg.found && !newFolderDlg.hasInput) failures.push('新建文件夹对话框里没有名称输入框')
+    if (newFolderDlg.found && newFolderDlg.confirmDisabled !== true) failures.push('新建文件夹：空名时确定按钮应禁用')
+    if (newFolderDlg.found) {
+      await page.locator('.dialog input').fill('新文件夹')
+      await page.waitForTimeout(200)
+      await page.getByRole('button', { name: '确定', exact: true }).click()
+      await page.waitForTimeout(700)
+      const afterMkdir = await page.evaluate(() => ({
+        dialogGone: ![...document.querySelectorAll('.dialog')].some((el) => el.textContent?.includes('新建文件夹')),
+        hasMsg: (document.body.textContent ?? '').includes('已新建文件夹'),
+      }))
+      console.log('after mkdir:', JSON.stringify(afterMkdir))
+      if (!afterMkdir.dialogGone) failures.push('新建文件夹确定后对话框没有关闭')
+      if (!afterMkdir.hasMsg) failures.push('新建文件夹后没有出现“已新建文件夹”消息')
+      await page.screenshot({ path: path.join(SHOTS, '02u-new-folder.png') })
+    }
+    await page.getByRole('button', { name: '上传文件', exact: true }).click()
+    await page.waitForTimeout(500)
+    const uploadDlg = await page.evaluate(() => {
+      const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('上传到哪里'))
+      // 目标框只显示待传文件数（不列文件名——路径可能很长）：
+      // 桩 PickFiles 返回 1 条路径，应显示“1 个文件将上传”。
+      return { found: !!d, showsCount: d ? (d.textContent ?? '').includes('1 个文件将上传') : false }
+    })
+    console.log('upload target dialog:', JSON.stringify(uploadDlg))
+    if (!uploadDlg.found) failures.push('点“上传文件”后没有弹出目标选择框（桩 PickFiles 应返回一条路径）')
+    if (uploadDlg.found && !uploadDlg.showsCount) failures.push('上传目标框里没有显示“1 个文件将上传”（桩只选了 1 个文件）')
+    await page.screenshot({ path: path.join(SHOTS, '02u-upload-target.png') })
+    if (uploadDlg.found) {
+      await page.locator('.dialog-actions >> text=取消').click()
+      await page.waitForTimeout(400)
+    }
+  }
+
+  // 2v. 列表排序 + 全选（v0.15.0，VISUAL_MOUNTS）：默认名称升
+  // 序、文件夹在前（首行是“照片”）；点“大小”升序首文件是
+  // 最小的笔记.txt，再点一次降序首文件是最大的旅行.mp4；
+  // 表头复选框全选 13 项、行带 .checked（已选 tint）、批量栏
+  // 出现“已选 13 个”；再点一次全部取消。
+  if (process.env.VISUAL_MOUNTS) {
+    // 文件夹的 .row-name 里带一个“›”进入标记，比较时去掉。
+    const rowNames = async () => page.evaluate(() => [...document.querySelectorAll('.file-table tbody tr .row-name')].map((el) => (el.textContent?.trim() ?? '').replace(/›$/, '')))
+    const firstRows = await rowNames()
+    console.log('default order:', JSON.stringify(firstRows.slice(0, 3)))
+    if (firstRows[0] !== '照片') failures.push(`默认排序首行应是文件夹“照片”，实测 ${JSON.stringify(firstRows[0])}`)
+    await page.getByRole('button', { name: '按大小排序', exact: true }).click()
+    await page.waitForTimeout(400)
+    const sizeAsc = await rowNames()
+    console.log('size asc:', JSON.stringify(sizeAsc.slice(0, 3)))
+    if (sizeAsc[0] !== '照片' || sizeAsc[1] !== '笔记.txt') failures.push(`按大小升序应是 照片 → 笔记.txt，实测 ${JSON.stringify(sizeAsc.slice(0, 2))}`)
+    await page.getByRole('button', { name: '按大小排序', exact: true }).click()
+    await page.waitForTimeout(400)
+    const sizeDesc = await rowNames()
+    console.log('size desc:', JSON.stringify(sizeDesc.slice(0, 3)))
+    if (sizeDesc[0] !== '照片' || sizeDesc[1] !== '旅行.mp4') failures.push(`按大小降序应是 照片 → 旅行.mp4，实测 ${JSON.stringify(sizeDesc.slice(0, 2))}`)
+    await page.screenshot({ path: path.join(SHOTS, '02v-sort-size.png') })
+    // 回到默认名称升序（后面的断言按桩列表原顺序认行）。
+    // 注意：名称是 localeCompare('zh')，中文按拼音排在拉丁
+    // 字母前——首两行是 照片 → 备份.zip，不是 main.go。
+    await page.getByRole('button', { name: '按名称排序', exact: true }).click()
+    await page.waitForTimeout(400)
+    const sortReset = await rowNames()
+    if (sortReset[0] !== '照片' || sortReset[1] !== '备份.zip') failures.push(`点回名称排序后首两行应是 照片 → 备份.zip，实测 ${JSON.stringify(sortReset.slice(0, 2))}`)
+    // 全选：表头复选框（thead 里唯一的 checkbox）。
+    await page.locator('.file-table thead input[type="checkbox"]').click()
+    await page.waitForTimeout(400)
+    const checkAll = await page.evaluate(() => ({
+      checkedRows: document.querySelectorAll('.file-table tbody tr.checked').length,
+      checkedBoxes: document.querySelectorAll('.file-table tbody input[type="checkbox"]:checked').length,
+      hasCount: (document.body.textContent ?? '').includes('已选 13 个'),
+      bulkBar: !!document.querySelector('.bulkbar'),
+    }))
+    console.log('check all:', JSON.stringify(checkAll))
+    if (checkAll.checkedRows !== 13) failures.push(`全选后应有 13 行带 .checked tint，实测 ${checkAll.checkedRows}`)
+    if (checkAll.checkedBoxes !== 13) failures.push(`全选后应有 13 个行复选框被勾选，实测 ${checkAll.checkedBoxes}`)
+    if (!checkAll.hasCount) failures.push('全选后批量栏没有出现“已选 13 个”')
+    if (!checkAll.bulkBar) failures.push('全选后批量栏没有出现（.bulkbar）')
+    await page.screenshot({ path: path.join(SHOTS, '02v-check-all.png') })
+    await page.locator('.file-table thead input[type="checkbox"]').click()
+    await page.waitForTimeout(400)
+    const unchecked = await page.evaluate(() => document.querySelectorAll('.file-table tbody input[type="checkbox"]:checked').length)
+    if (unchecked !== 0) failures.push(`再点表头复选框后应全部取消，实测仍有 ${unchecked} 个勾选`)
+  }
+
+  // 2w. Inspector 操作按钮（v0.15.0，VISUAL_MOUNTS）：点文件
+  // 行后 Inspector 文件名下方有 打开 / 下载 / 复制到…（复用
+  // 右键菜单的同一批 handler）；点下载出现入队提示；点复制
+  // 到…弹出目标选择框。
+  if (process.env.VISUAL_MOUNTS) {
+    await page.locator('.file-table .row-name', { hasText: '封面.png' }).first().click()
+    await page.waitForTimeout(600)
+    const inspBtns = await page.evaluate(() => {
+      const aside = document.querySelector('aside.inspector-enter, aside.inspector-exit')
+      if (!aside) return { found: false }
+      const names = [...aside.querySelectorAll('button')].map((b) => b.textContent?.trim())
+      return { found: true, hasOpen: names.includes('打开'), hasDownload: names.includes('下载'), hasCopy: names.includes('复制到…'), inActionsRow: !!aside.querySelector('.insp-actions') }
+    })
+    console.log('inspector actions:', JSON.stringify(inspBtns))
+    if (!inspBtns.found) failures.push('点 封面.png 后 Inspector 没有打开')
+    if (inspBtns.found && !inspBtns.inActionsRow) failures.push('Inspector 里没有 .insp-actions 按钮行')
+    if (inspBtns.found && !inspBtns.hasOpen) failures.push('Inspector 里没有“打开”按钮')
+    if (inspBtns.found && !inspBtns.hasDownload) failures.push('Inspector 里没有“下载”按钮')
+    if (inspBtns.found && !inspBtns.hasCopy) failures.push('Inspector 里没有“复制到…”按钮（需要存在其他网盘，桩有多网盘）')
+    await page.screenshot({ path: path.join(SHOTS, '02w-inspector-actions.png') })
+    if (inspBtns.found && inspBtns.hasDownload) {
+      await page.locator('aside.inspector-enter .insp-actions button', { hasText: '下载' }).click()
+      await page.waitForTimeout(600)
+      const dlMsg = await page.evaluate(() => document.body.textContent ?? '')
+      if (!dlMsg.includes('已把 1 个文件加入下载队列')) failures.push(`Inspector 点下载后没有出现入队提示，实测 ${JSON.stringify(dlMsg.slice(0, 200))}`)
+    }
+    if (inspBtns.found && inspBtns.hasCopy) {
+      await page.locator('aside.inspector-enter .insp-actions button', { hasText: '复制到…' }).click()
+      await page.waitForTimeout(600)
+      const copyDlg = await page.evaluate(() => [...document.querySelectorAll('.dialog')].some((el) => el.textContent?.includes('复制到哪里')))
+      if (!copyDlg) failures.push('Inspector 点“复制到…”后没有弹出目标选择框')
+      if (copyDlg) {
+        await page.locator('.dialog-actions >> text=取消').click()
+        await page.waitForTimeout(400)
+      }
+    }
+  }
+
+  // 2x. 批量栏在表格上方（v0.15.0，VISUAL_MOUNTS）：勾选一行
+  // 后 .bulkbar 出现在表格上方（top 小于表格 top）、淡绿底
+  // （--selected #f0fdf4），且有“移动到…”并能弹出移动目标框。
+  if (process.env.VISUAL_MOUNTS) {
+    await page.locator('.file-table tbody input[type="checkbox"]').first().click()
+    await page.waitForTimeout(400)
+    // 先把栏滚回视口顶部再量位置——它是 sticky，页面滚过之
+    // 后量到的 top 会是吸附位置，不是文档流里的相对位置。
+    await page.evaluate(() => document.querySelector('.bulkbar')?.scrollIntoView({ block: 'start' }))
+    await page.waitForTimeout(200)
+    const bulkPos = await page.evaluate(() => {
+      const bar = document.querySelector('.bulkbar')
+      const table = document.querySelector('.file-table')
+      if (!bar || !table) return { found: false }
+      const b = bar.getBoundingClientRect()
+      const t = table.getBoundingClientRect()
+      return {
+        found: true,
+        barTop: Math.round(b.top),
+        tableTop: Math.round(t.top),
+        above: b.top < t.top,
+        bg: getComputedStyle(bar).backgroundColor,
+        hasMove: [...bar.querySelectorAll('button')].some((x) => x.textContent?.trim() === '移动到…'),
+        hasDownload: [...bar.querySelectorAll('button')].some((x) => x.textContent?.trim() === '下载到默认文件夹'),
+      }
+    })
+    console.log('bulk bar above table:', JSON.stringify(bulkPos))
+    if (!bulkPos.found) failures.push('勾选一行后没有出现 .bulkbar（应已移到表格上方）')
+    if (bulkPos.found && !bulkPos.above) failures.push(`批量栏应在表格上方，实测 bar top=${bulkPos.barTop}，table top=${bulkPos.tableTop}`)
+    if (bulkPos.found && bulkPos.bg !== 'rgb(240, 253, 244)') failures.push(`批量栏应是淡绿底 --selected #f0fdf4，实测 ${bulkPos.bg}`)
+    if (bulkPos.found && !bulkPos.hasMove) failures.push('批量栏里没有“移动到…”按钮')
+    if (bulkPos.found && !bulkPos.hasDownload) failures.push('批量栏里丢了“下载到默认文件夹”按钮')
+    await page.screenshot({ path: path.join(SHOTS, '02x-bulkbar-above.png') })
+    if (bulkPos.found && bulkPos.hasMove) {
+      await page.getByRole('button', { name: '移动到…', exact: true }).click()
+      await page.waitForTimeout(600)
+      const moveDlg = await page.evaluate(() => [...document.querySelectorAll('.dialog')].some((el) => el.textContent?.includes('移动到哪里')))
+      if (!moveDlg) failures.push('批量栏点“移动到…”后没有弹出目标选择框')
+      if (moveDlg) {
+        await page.locator('.dialog-actions >> text=取消').click()
+        await page.waitForTimeout(400)
+      }
+    }
+    await page.getByRole('button', { name: '取消选择', exact: true }).click().catch(() => {})
+    await page.waitForTimeout(300)
+  }
+
+  // 2y. 命令面板边输边搜 + 方向键（v0.15.0，VISUAL_MOUNTS）：
+  // 不按回车、只输入就出结果（150ms 防抖；桩 Search 按名过滤）；
+  // 匹配文字带 <mark> 高亮、每行显示大小/日期；底部是快捷键
+  // 提示、没有“关闭”按钮；↑/↓ 移动高亮行，回车打开它。
+  if (process.env.VISUAL_MOUNTS) {
+    await page.locator('.app-header .input').click()
+    await page.waitForTimeout(300)
+    await page.keyboard.type('行程')
+    await page.waitForTimeout(500)
+    const live = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('.palette-row')]
+      const paletteText = document.querySelector('.palette')?.textContent ?? ''
+      return {
+        rows: rows.length,
+        firstText: rows[0]?.textContent ?? '',
+        hasMark: rows.some((r) => !!r.querySelector('mark')),
+        markText: rows[0]?.querySelector('mark')?.textContent ?? '',
+        // formatSize(123456) = 121 KB（≥100 取整，见 lib/format.ts）。
+        hasSizeDate: /121 KB/.test(rows[0]?.textContent ?? '') && /2026-11-20/.test(rows[0]?.textContent ?? ''),
+        // 底部提示没有独立 class，直接在整个面板文本里找。
+        footerHasHints: paletteText.includes('↑↓ 选择') && paletteText.includes('回车 打开') && paletteText.includes('Esc 关闭'),
+        hasCloseBtn: [...document.querySelectorAll('.palette button')].some((b) => b.textContent?.trim() === '关闭'),
+      }
+    })
+    console.log('palette live search:', JSON.stringify(live))
+    if (live.rows !== 1) failures.push(`输入“行程”后应边输边搜出 1 条结果，实测 ${live.rows} 条`)
+    if (!live.hasMark) failures.push('命令面板搜索结果没有 <mark> 高亮')
+    if (live.markText !== '行程') failures.push(`高亮的应是“行程”，实测 ${JSON.stringify(live.markText)}`)
+    if (!live.hasSizeDate) failures.push(`结果行应显示大小/日期（120.6 KB · 2026-11-20），实测 ${JSON.stringify(live.firstText)}`)
+    if (!live.footerHasHints) failures.push('命令面板底部没有快捷键提示（↑↓ 选择 · 回车 打开 · Esc 关闭）')
+    if (live.hasCloseBtn) failures.push('命令面板底部不应再有“关闭”按钮')
+    await page.screenshot({ path: path.join(SHOTS, '02y-palette-live.png') })
+    // 多结果方向键：“.p” 命中 3 条（.pdf/.pptx/.png），下移两次
+    // 高亮第三行（封面.png），回车打开它、面板关闭。
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type('.p')
+    await page.waitForTimeout(500)
+    const multi = await page.evaluate(() => document.querySelectorAll('.palette-row').length)
+    if (multi !== 3) failures.push(`输入“.p”后应有 3 条结果，实测 ${multi}`)
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('ArrowDown')
+    await page.waitForTimeout(200)
+    const activeRow = await page.evaluate(() => document.querySelector('.palette-row.active')?.textContent ?? '')
+    console.log('palette arrow nav active:', JSON.stringify(activeRow))
+    if (!activeRow.includes('封面.png')) failures.push(`按两次 ↓ 后高亮行应是“封面.png”，实测 ${JSON.stringify(activeRow)}`)
+    await page.keyboard.press('Enter')
+    await page.waitForTimeout(500)
+    const paletteGone = await page.evaluate(() => !document.querySelector('.palette'))
+    if (!paletteGone) failures.push('方向键选中后按回车，命令面板没有关闭（应打开该文件并关闭）')
+    // 无结果态：诚实提示，不编数据。
+    await page.locator('.app-header .input').click()
+    await page.waitForTimeout(300)
+    await page.keyboard.type('zzz-no-match')
+    await page.waitForTimeout(500)
+    const noResult = await page.evaluate(() => (document.querySelector('.palette')?.textContent ?? '').includes('没有找到'))
+    if (!noResult) failures.push('输入无匹配关键词后命令面板没有显示“没有找到”')
+    await page.keyboard.press('Escape')
+    await page.waitForTimeout(400)
   }
 
   // 3. 同步任务页：先列已保存任务（零任务空态）

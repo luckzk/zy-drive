@@ -47,6 +47,10 @@ export default function App() {
   const [agents, setAgents] = useState<Agent[]>([])
   const [agentStatus, setAgentStatus] = useState<AgentStatus | null>(null)
   const [transfers, setTransfers] = useState<Transfer[]>([])
+  // 已保存同步任务数（v0.15.0）：导航“同步任务”旁的角标
+  // （Demo v8 .cnt）。只在 browse 页加载 + 回到 browse 页时
+  // 重数——任务在同步页里增删，App 靠页面切换感知变化。
+  const [syncJobCount, setSyncJobCount] = useState(0)
   const [activeMountId, setActiveMountId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -109,6 +113,14 @@ export default function App() {
     }
   }, [])
 
+  const loadSyncJobCount = useCallback(async () => {
+    try {
+      setSyncJobCount((await api.listSyncJobs()).length)
+    } catch {
+      // 角标是非致命信息：失败就留着旧数，不挡浏览。
+    }
+  }, [])
+
   const loadQuotas = useCallback(async () => {
     try {
       const qs = await api.mountQuotas()
@@ -135,8 +147,13 @@ export default function App() {
 
   useEffect(() => {
     setLoading(true)
-    void Promise.all([loadMounts(), loadAgents(), loadTransfers(), loadSettings(), loadQuotas()]).finally(() => setLoading(false))
-  }, [loadMounts, loadAgents, loadTransfers, loadSettings, loadQuotas])
+    void Promise.all([loadMounts(), loadAgents(), loadTransfers(), loadSettings(), loadQuotas(), loadSyncJobCount()]).finally(() => setLoading(false))
+  }, [loadMounts, loadAgents, loadTransfers, loadSettings, loadQuotas, loadSyncJobCount])
+
+  // 回到文件浏览页时重数一次（任务在同步页里增删）。
+  useEffect(() => {
+    if (page === 'browse') void loadSyncJobCount()
+  }, [page, loadSyncJobCount])
 
   // Poll the transfer queue while the app is open.
   useEffect(() => {
@@ -222,6 +239,7 @@ export default function App() {
           // v0.11.0：拖拽排序松手时先乐观更新本地顺序（Sidebar
           // 内部算好新数组直接 setMounts），再调后端确认。
           onMountsReordered={(next) => setMounts(next)}
+          syncJobCount={syncJobCount}
         />
 
         <main style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>

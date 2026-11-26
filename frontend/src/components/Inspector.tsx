@@ -29,6 +29,12 @@ export default function Inspector({
   onChanged,
   onToast,
   onFullscreen,
+  // 操作按钮（v0.15.0，Demo v8 .insp-actions）：全部复用右键
+  // 菜单的 handler。onCopyTo 为空时不渲染复制按钮（没有别的
+  // 网盘可复制时，不出现点不动的按钮）。
+  onOpen,
+  onDownload,
+  onCopyTo,
 }: {
   node: Node
   mount: Mount | null
@@ -41,6 +47,9 @@ export default function Inspector({
   // v0.14.0: open the fullscreen overlay for this file. Files
   // only — folders have no preview.
   onFullscreen?: () => void
+  onOpen?: () => void
+  onDownload?: () => void
+  onCopyTo?: () => void
 }) {
   return (
     <aside
@@ -55,6 +64,27 @@ export default function Inspector({
       </div>
       <p style={{ margin: '12px 0 0', fontSize: 16, wordBreak: 'break-all' }}>{node.name}</p>
 
+      {/* 操作按钮（v0.15.0）：文件名下方一排。打开：文件夹进
+          目录、文件开全屏预览；下载走批量下载；复制到…走已有的
+          目标选择框。 */}
+      <div className="insp-actions">
+        {onOpen && (
+          <button className="btn btn-sm" onClick={onOpen}>
+            打开
+          </button>
+        )}
+        {onDownload && (
+          <button className="btn btn-sm" onClick={onDownload}>
+            下载
+          </button>
+        )}
+        {onCopyTo && (
+          <button className="btn btn-sm" onClick={onCopyTo}>
+            复制到…
+          </button>
+        )}
+      </div>
+
       <InspectorBasicInfo node={node} mount={mount} />
 
       {/* File preview (v0.9.1): files only, never folders. The
@@ -63,7 +93,7 @@ export default function Inspector({
       {mount && !node.isDir && <PreviewPane mountID={mount.id} node={node} onToast={onToast} />}
 
       {/* v0.14.0: the glance's fullscreen entry — the overlay is
-          the serious viewer, this pane stays a ~200px glance. */}
+          the serious viewer, this pane stays a 240px glance. */}
       {mount && !node.isDir && onFullscreen && (
         <div style={{ marginTop: 8 }}>
           <button className="btn btn-sm" onClick={onFullscreen}>

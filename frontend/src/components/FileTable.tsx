@@ -3,10 +3,20 @@
 // api.browse; this component never invents rows. Click selects (and
 // opens the Inspector), double-click enters a folder, checkbox
 // toggles multi-select. Clicking an already-selected row deselects it.
+//
+// v0.15.0: sortable column headers （名称/大小/修改时间；文件夹
+// 永远置顶，Finder 习惯）and a select-all checkbox in the header
+// row (Demo v8 #checkAll). The rows arrive already sorted from the
+// parent — sorting state lives in FileBrowser so the grid view
+// shares the same order; this component only renders the headers
+// and reports header clicks back.
 import type { Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
 import { staggerStyle } from './motion'
 import { FileTypeIcon } from './icons'
+
+export type SortKey = 'name' | 'size' | 'modTime'
+export type SortDir = 'asc' | 'desc'
 
 export default function FileTable({
   nodes,
@@ -17,6 +27,12 @@ export default function FileTable({
   onOpen,
   onContextMenu,
   onPreview,
+  sortKey,
+  sortDir,
+  onSort,
+  allChecked,
+  someChecked,
+  onToggleCheckAll,
 }: {
   nodes: Node[]
   selectedId: string | null
@@ -29,6 +45,16 @@ export default function FileTable({
   onContextMenu?: (n: Node, e: React.MouseEvent) => void
   // Fullscreen preview (v0.14.0): double-click / Space on a file.
   onPreview?: (n: Node) => void
+  // Sorting (v0.15.0): the active key/direction, and the header
+  // click callback. The parent owns the state (and persists it).
+  sortKey?: SortKey
+  sortDir?: SortDir
+  onSort?: (key: SortKey) => void
+  // Select-all (v0.15.0): whether every visible row is checked,
+  // whether some are (indeterminate), and the header toggle.
+  allChecked?: boolean
+  someChecked?: boolean
+  onToggleCheckAll?: () => void
 }) {
   if (nodes.length === 0) {
     return (
@@ -38,24 +64,41 @@ export default function FileTable({
       </div>
     )
   }
+  const sortLabel = (key: SortKey, label: string) => (
+    <button type="button" className="sort-btn" onClick={() => onSort?.(key)} aria-label={`按${label}排序`}>
+      {label}
+      {sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+    </button>
+  )
   return (
     <table className="file-table">
       <thead>
         <tr>
-          <th style={{ width: 32 }}></th>
-          <th>名称</th>
-          <th>大小</th>
-          <th>修改时间</th>
+          <th style={{ width: 32 }}>
+            <input
+              type="checkbox"
+              checked={allChecked ?? false}
+              ref={(el) => {
+                if (el) el.indeterminate = !allChecked && !!someChecked
+              }}
+              onChange={() => onToggleCheckAll?.()}
+              aria-label="全选"
+            />
+          </th>
+          <th>{sortLabel('name', '名称')}</th>
+          <th className="num">{sortLabel('size', '大小')}</th>
+          <th>{sortLabel('modTime', '修改时间')}</th>
         </tr>
       </thead>
       <tbody>
         {nodes.map((n, i) => {
           const key = n.ref || n.path
           const isSelected = selectedId === key
+          const isChecked = checked.has(key)
           return (
             <tr
               key={key}
-              className={`stagger-item${isSelected ? ' selected' : ''}`}
+              className={`stagger-item${isSelected ? ' selected' : ''}${isChecked ? ' checked' : ''}`}
               style={staggerStyle(i)}
               tabIndex={0}
               onClick={() => onSelect(isSelected ? null : n)}
@@ -88,7 +131,7 @@ export default function FileTable({
               <td onClick={(e) => e.stopPropagation()}>
                 <input
                   type="checkbox"
-                  checked={checked.has(key)}
+                  checked={isChecked}
                   onChange={() => onToggleCheck(n)}
                   aria-label={`选择 ${n.name}`}
                 />
@@ -102,7 +145,7 @@ export default function FileTable({
                   {n.isDir && <span className="muted">›</span>}
                 </span>
               </td>
-              <td>{n.isDir ? '—' : formatSize(n.size)}</td>
+              <td className="num">{n.isDir ? '—' : formatSize(n.size)}</td>
               <td className="muted">{formatTime(n.modTime)}</td>
             </tr>
           )

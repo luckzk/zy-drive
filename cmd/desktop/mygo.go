@@ -117,6 +117,19 @@ func runMygo(application *app.App, frontendDir string, generate bool) error {
 		func() (bool, error) { return mygo.App.OpenAtLogin(), nil },
 		func(on bool) error { return mygo.App.SetOpenAtLogin(on) },
 	)
+	// File picker (v0.15.0): the native open-file dialog, as a
+	// sheet of the calling window on macOS. internal/app stays
+	// mygo-free — this hook is the only bridge, same shape as the
+	// login hooks above. Dialog.Open blocks until the user
+	// answers; bound methods run on their own goroutines, so the
+	// UI thread is never held.
+	application.SetPickFilesHook(func(ctx context.Context) ([]string, error) {
+		return mygo.Dialog.Open(mygo.OpenDialogOptions{
+			Parent:   mygo.CallerWindow(ctx),
+			Title:    "选择要上传的文件",
+			Multiple: true,
+		})
+	})
 	mygo.Bind(application.BindService())
 
 	// File preview (v0.9.1): the loopback preview proxy is served

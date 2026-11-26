@@ -7,6 +7,7 @@
 package app
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -39,6 +40,11 @@ type App struct {
 	// honestly that the setting is unavailable in this run mode.
 	loginGet func() (bool, error)
 	loginSet func(bool) error
+	// pickFiles is installed by cmd/desktop (mygo shell) and calls
+	// mygo.Dialog.Open. Nil anywhere else (dev shell, tests):
+	// PickFiles then reports honestly that the picker is
+	// unavailable in this run mode.
+	pickFiles func(ctx context.Context) ([]string, error)
 	// localProv is the on-demand local-filesystem provider for the
 	// "local" pseudo-mount, rooted at "/" so absolute local:// paths
 	// resolve. Built lazily; local jobs never leave this machine.
