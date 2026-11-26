@@ -1,0 +1,13 @@
+# golangci-lint configuration (v2).
+# Minimal set: only high-value linters. `make lint` runs this when
+# golangci-lint is installed; gofmt + go vet are enforced regardless.
+version: "2"
+run:
+  timeout: 5m
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused

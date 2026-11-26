@@ -292,7 +292,7 @@ func (m *mockGraph) serveGraph(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
 		if token == "latest" {
 			m.writeJSON(w, http.StatusOK, map[string]any{
-				"value":          []any{},
+				"value":            []any{},
 				"@odata.deltaLink": m.base + "/me/drive/root/delta?token=tok1",
 			})
 			return
@@ -312,7 +312,7 @@ func (m *mockGraph) serveGraph(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			m.writeJSON(w, http.StatusOK, map[string]any{
-				"value":          value,
+				"value":            value,
 				"@odata.deltaLink": m.base + "/me/drive/root/delta?token=tok2",
 			})
 			return
@@ -445,7 +445,7 @@ func (m *mockGraph) serveGraph(w http.ResponseWriter, r *http.Request) {
 			return
 		case sub == "children" && r.Method == http.MethodPost:
 			var body struct {
-				Name   string `json:"name"`
+				Name   string    `json:"name"`
 				Folder *struct{} `json:"folder"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)

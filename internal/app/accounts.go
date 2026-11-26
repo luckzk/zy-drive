@@ -40,29 +40,29 @@ type Account struct {
 // Secrets travel here only in memory, from the user's own Mac UI;
 // they are encrypted before anything is written to SQLite.
 type AddMountInput struct {
-	DisplayName  string              `json:"displayName"`
-	Provider     domain.ProviderKind `json:"provider"`
-	Group        string              `json:"group,omitempty"`
-	Endpoint     string              `json:"endpoint,omitempty"`     // S3-compatible endpoint (R2/MinIO/...)
-	Region       string              `json:"region,omitempty"`       // S3 region
-	Bucket       string              `json:"bucket,omitempty"`       // S3 bucket
-	Prefix       string              `json:"prefix,omitempty"`       // S3 key prefix inside the bucket
-	PathStyle    bool                `json:"pathStyle,omitempty"`    // S3 path-style addressing (MinIO/...)
-	AccessKey    string              `json:"accessKey,omitempty"`    // S3 AccessKey (secret)
-	SecretKey    string              `json:"secretKey,omitempty"`    // S3 SecretKey (secret)
-	AccessToken  string              `json:"accessToken,omitempty"`  // OAuth access token (secret)
-	RefreshToken string              `json:"refreshToken,omitempty"` // OAuth refresh token (secret)
-	ClientID     string              `json:"clientId,omitempty"`     // OAuth app client id (not secret)
-	ClientSecret string              `json:"clientSecret,omitempty"` // OAuth app client secret (secret)
-	TokenURL     string              `json:"tokenUrl,omitempty"`     // OAuth token endpoint override (tests)
-	APIBase      string              `json:"apiBase,omitempty"`      // API base override for Dropbox/Drive (tests / proxied deployments; normally empty)
-	RootID       string              `json:"rootId,omitempty"`       // Drive root folder id, default "root"
-	WorkspaceID  string              `json:"workspaceId,omitempty"`  // Drime workspace id, default "" = personal workspace (0)
-	LocalPath    string              `json:"localPath,omitempty"`    // local mount: absolute folder path
-	MegaEmail    string              `json:"megaEmail,omitempty"`    // MEGA account email
-	MegaPassword string              `json:"megaPassword,omitempty"` // MEGA account password (never persisted; the exported session is stored instead)
-	MegaTwoFactor string             `json:"megaTwoFactor,omitempty"` // MEGA 2FA code (optional, one login only)
-	PCloudRegion string              `json:"pcloudRegion,omitempty"` // pCloud region: "auto" | "us" | "eu", default "auto"
+	DisplayName   string              `json:"displayName"`
+	Provider      domain.ProviderKind `json:"provider"`
+	Group         string              `json:"group,omitempty"`
+	Endpoint      string              `json:"endpoint,omitempty"`      // S3-compatible endpoint (R2/MinIO/...)
+	Region        string              `json:"region,omitempty"`        // S3 region
+	Bucket        string              `json:"bucket,omitempty"`        // S3 bucket
+	Prefix        string              `json:"prefix,omitempty"`        // S3 key prefix inside the bucket
+	PathStyle     bool                `json:"pathStyle,omitempty"`     // S3 path-style addressing (MinIO/...)
+	AccessKey     string              `json:"accessKey,omitempty"`     // S3 AccessKey (secret)
+	SecretKey     string              `json:"secretKey,omitempty"`     // S3 SecretKey (secret)
+	AccessToken   string              `json:"accessToken,omitempty"`   // OAuth access token (secret)
+	RefreshToken  string              `json:"refreshToken,omitempty"`  // OAuth refresh token (secret)
+	ClientID      string              `json:"clientId,omitempty"`      // OAuth app client id (not secret)
+	ClientSecret  string              `json:"clientSecret,omitempty"`  // OAuth app client secret (secret)
+	TokenURL      string              `json:"tokenUrl,omitempty"`      // OAuth token endpoint override (tests)
+	APIBase       string              `json:"apiBase,omitempty"`       // API base override for Dropbox/Drive (tests / proxied deployments; normally empty)
+	RootID        string              `json:"rootId,omitempty"`        // Drive root folder id, default "root"
+	WorkspaceID   string              `json:"workspaceId,omitempty"`   // Drime workspace id, default "" = personal workspace (0)
+	LocalPath     string              `json:"localPath,omitempty"`     // local mount: absolute folder path
+	MegaEmail     string              `json:"megaEmail,omitempty"`     // MEGA account email
+	MegaPassword  string              `json:"megaPassword,omitempty"`  // MEGA account password (never persisted; the exported session is stored instead)
+	MegaTwoFactor string              `json:"megaTwoFactor,omitempty"` // MEGA 2FA code (optional, one login only)
+	PCloudRegion  string              `json:"pcloudRegion,omitempty"`  // pCloud region: "auto" | "us" | "eu", default "auto"
 	// SkipProbe (C, one-page form): save without a connection
 	// probe. The mount is then stored Verified=false ("未验证")
 	// and the user re-tests it later from Settings. When false
@@ -204,20 +204,20 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		verified = true
 	}
 	m := &domain.Mount{
-		ID:           id,
-		DisplayName:  strings.TrimSpace(in.DisplayName),
-		Provider:     in.Provider,
-		AccountID:    secretIDFor(id),
-		RootRef:      rootRefFor(in),
-		RootLabel:    rootLabelFor(in),
+		ID:             id,
+		DisplayName:    strings.TrimSpace(in.DisplayName),
+		Provider:       in.Provider,
+		AccountID:      secretIDFor(id),
+		RootRef:        rootRefFor(in),
+		RootLabel:      rootLabelFor(in),
 		WorkspaceLabel: workspaceLabelFor(in),
-		EndpointHost: endpointHost(in.Endpoint),
-		Group:        strings.TrimSpace(in.Group),
-		Caps:         p.Caps(),
-		Status:       domain.MountOK,
-		Verified:     verified,
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		EndpointHost:   endpointHost(in.Endpoint),
+		Group:          strings.TrimSpace(in.Group),
+		Caps:           p.Caps(),
+		Status:         domain.MountOK,
+		Verified:       verified,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 	// New mounts go at the end of their group (sort_order =
 	// max+1 there; the first mount in a group gets 0). The same

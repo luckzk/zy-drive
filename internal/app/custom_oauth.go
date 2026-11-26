@@ -60,10 +60,10 @@ type customOAuthAppFile struct {
 
 // customOAuthFile is the whole custom store file.
 type customOAuthFile struct {
-	Comment  string                          `json:"_comment,omitempty"`
-	Dropbox  *customOAuthAppFile             `json:"dropbox,omitempty"`
-	Drive    *customOAuthAppFile             `json:"drive,omitempty"`
-	OneDrive *customOAuthAppFile             `json:"onedrive,omitempty"`
+	Comment  string              `json:"_comment,omitempty"`
+	Dropbox  *customOAuthAppFile `json:"dropbox,omitempty"`
+	Drive    *customOAuthAppFile `json:"drive,omitempty"`
+	OneDrive *customOAuthAppFile `json:"onedrive,omitempty"`
 }
 
 func (f *customOAuthFile) entry(p domain.ProviderKind) *customOAuthAppFile {

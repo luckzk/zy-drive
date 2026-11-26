@@ -177,6 +177,7 @@ type DirectURLer interface {
 // them "expired" would send the user to re-authorize for a blip.
 // Drivers wrap it with %w; LoadMounts maps it to MountAuthExpired.
 var ErrSessionExpired = errors.New("storage: saved session expired")
+
 // login yields a storable session handle (MEGA, v0.9.1): the app
 // persists the exported session instead of the user's password.
 // sessionID is the opaque server session; secret is the master

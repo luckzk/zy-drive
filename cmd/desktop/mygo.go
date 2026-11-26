@@ -74,6 +74,7 @@ func runDesktop(application *app.App, addr string, devShell bool, frontendDir st
 //   - <exe dir>/../Resources/icon.png (inside ZyDrive.app:
 //     Contents/MacOS/zy-drive-desktop -> Contents/Resources/)
 //   - <exe dir>/icon.png (a bare binary next to its icon)
+//
 // The PNG is binary and cannot be pushed to the repo — the user
 // regenerates it once on their Mac with
 // `node scripts/visual-check/export-logo-png.mjs`. Missing icon

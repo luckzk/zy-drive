@@ -263,7 +263,8 @@ func TestDropboxTokenRefresh(t *testing.T) {
 	}
 }
 
-func TestDropboxUploadSessionLarge(t *testing.T) {	p, srv := newTestProvider(t)
+func TestDropboxUploadSessionLarge(t *testing.T) {
+	p, srv := newTestProvider(t)
 	defer srv.Close()
 	// size -1 forces the session path even for a small body.
 	data := bytes.Repeat([]byte("x"), 100)

@@ -62,17 +62,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-func (m *mockDrive) children(parent string) []*mockFile {
-	var out []*mockFile
-	for _, f := range m.files {
-		if f.parent == parent && !f.trashed {
-			out = append(out, f)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
-	return out
-}
-
 // matchQuery handles the two query shapes the driver sends:
 // "name = 'x' and 'parent' in parents and trashed = false"
 // "'parent' in parents and trashed = false"

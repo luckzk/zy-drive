@@ -88,7 +88,7 @@ import (
 )
 
 const (
-	defaultAPIBase = "https://app.drime.cloud/api/v1"
+	defaultAPIBase  = "https://app.drime.cloud/api/v1"
 	defaultTokenURL = "https://app.drime.cloud/oauth/token"
 	// singleUploadLimit is Drime's simple-upload ceiling: files of
 	// 5 MiB or more must use multipart (docs + drime.py agree).
@@ -269,21 +269,21 @@ func (p *Provider) Caps() domain.Caps {
 // --- wire types ---
 
 type entry struct {
-	ID                 int64   `json:"id"`
-	Name               string  `json:"name"`
-	Type               string  `json:"type"`
-	Hash               string  `json:"hash"`
-	FileHash           string  `json:"file_hash"`
-	FileSize           int64   `json:"file_size"`
-	Mime               string  `json:"mime"`
-	Extension          string  `json:"extension"`
-	ParentID           *int64  `json:"parent_id"`
-	WorkspaceID        int     `json:"workspace_id"`
-	URL                string  `json:"url"`
-	ThumbnailURL       string  `json:"thumbnail_url"`
-	CreatedAt          string  `json:"created_at"`
-	UpdatedAt          string  `json:"updated_at"`
-	ClientLastModified *int64  `json:"client_last_modified"`
+	ID                 int64  `json:"id"`
+	Name               string `json:"name"`
+	Type               string `json:"type"`
+	Hash               string `json:"hash"`
+	FileHash           string `json:"file_hash"`
+	FileSize           int64  `json:"file_size"`
+	Mime               string `json:"mime"`
+	Extension          string `json:"extension"`
+	ParentID           *int64 `json:"parent_id"`
+	WorkspaceID        int    `json:"workspace_id"`
+	URL                string `json:"url"`
+	ThumbnailURL       string `json:"thumbnail_url"`
+	CreatedAt          string `json:"created_at"`
+	UpdatedAt          string `json:"updated_at"`
+	ClientLastModified *int64 `json:"client_last_modified"`
 }
 
 func (e entry) node(ref string) domain.Node {
@@ -342,7 +342,7 @@ func hashOf(h string) (string, string) {
 
 func isHex(s string) bool {
 	for _, c := range s {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}
@@ -540,9 +540,9 @@ func (p *Provider) listChildren(ctx context.Context, parentID int64) ([]entry, e
 			u += "&parentIds[]=" + strconv.FormatInt(parentID, 10)
 		}
 		var resp struct {
-			Data       []entry `json:"data"`
-			CurrentPage int    `json:"current_page"`
-			LastPage    int    `json:"last_page"`
+			Data        []entry `json:"data"`
+			CurrentPage int     `json:"current_page"`
+			LastPage    int     `json:"last_page"`
 		}
 		if err := p.doJSON(ctx, "List", http.MethodGet, u, nil, &resp); err != nil {
 			return nil, err
@@ -1088,8 +1088,8 @@ func (p *Provider) Search(ctx context.Context, query string) ([]domain.Node, err
 		u := fmt.Sprintf("%s/drive/file-entries?workspaceId=%d&perPage=50&page=%d&query=%s",
 			p.apiBase, p.workspaceID, page, url.QueryEscape(query))
 		var resp struct {
-			Data      []entry `json:"data"`
-			LastPage  int     `json:"last_page"`
+			Data     []entry `json:"data"`
+			LastPage int     `json:"last_page"`
 		}
 		if err := p.doJSON(ctx, "Search", http.MethodGet, u, nil, &resp); err != nil {
 			return nil, err

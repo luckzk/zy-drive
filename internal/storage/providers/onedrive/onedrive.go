@@ -260,10 +260,10 @@ func (p *Provider) Caps() domain.Caps {
 const itemFields = "id,name,size,file,folder,parentReference,createdDateTime,lastModifiedDateTime,webUrl"
 
 type driveItem struct {
-	ID                   string `json:"id"`
-	Name                 string `json:"name"`
-	Size                 int64  `json:"size"`
-	File                 *struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+	File *struct {
 		MimeType string `json:"mimeType"`
 		Hashes   struct {
 			SHA1Hash     string `json:"sha1Hash"`
@@ -277,20 +277,20 @@ type driveItem struct {
 		ID   string `json:"id"`
 		Path string `json:"path"`
 	} `json:"parentReference"`
-	CreatedDateTime      string `json:"createdDateTime"`
-	LastModifiedDateTime string `json:"lastModifiedDateTime"`
-	WebURL               string `json:"webUrl"`
-	DownloadURL          string `json:"@microsoft.graph.downloadUrl"`
+	CreatedDateTime      string    `json:"createdDateTime"`
+	LastModifiedDateTime string    `json:"lastModifiedDateTime"`
+	WebURL               string    `json:"webUrl"`
+	DownloadURL          string    `json:"@microsoft.graph.downloadUrl"`
 	Deleted              *struct{} `json:"deleted,omitempty"`
 }
 
 func (it driveItem) node(displayPath string) domain.Node {
 	n := domain.Node{
-		Ref:  strings.Trim(displayPath, "/"),
-		Path: "/" + strings.Trim(displayPath, "/"),
-		Name: it.Name,
+		Ref:   strings.Trim(displayPath, "/"),
+		Path:  "/" + strings.Trim(displayPath, "/"),
+		Name:  it.Name,
 		IsDir: it.Folder != nil,
-		Size: -1,
+		Size:  -1,
 	}
 	if it.File != nil {
 		n.Size = it.Size
@@ -960,8 +960,8 @@ func (p *Provider) Mkdir(ctx context.Context, ref string) error {
 		return err
 	}
 	body := map[string]any{
-		"name":   name,
-		"folder": map[string]any{},
+		"name":                              name,
+		"folder":                            map[string]any{},
 		"@microsoft.graph.conflictBehavior": "fail",
 	}
 	u := p.apiBase + "/me/drive/items/" + url.PathEscape(parentID) + "/children"
@@ -1165,10 +1165,10 @@ func (p *Provider) Versions(ctx context.Context, ref string) ([]domain.Node, err
 	out := make([]domain.Node, 0, len(resp.Value))
 	for _, v := range resp.Value {
 		n := domain.Node{
-			Ref:  strings.Trim(ref, "/"),
-			Path: "/" + strings.Trim(ref, "/"),
-			Name: path.Base(strings.Trim(ref, "/")),
-			Size: v.Size,
+			Ref:   strings.Trim(ref, "/"),
+			Path:  "/" + strings.Trim(ref, "/"),
+			Name:  path.Base(strings.Trim(ref, "/")),
+			Size:  v.Size,
 			Extra: map[string]string{"versionId": v.ID},
 		}
 		if t, err := time.Parse(time.RFC3339, v.LastModifiedDateTime); err == nil {
@@ -1203,9 +1203,15 @@ func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
 	u := p.apiBase + "/me/drive/items/" + url.PathEscape(id) + "/thumbnails"
 	var resp struct {
 		Value []struct {
-			Large  struct{ URL string `json:"url"` } `json:"large"`
-			Medium struct{ URL string `json:"url"` } `json:"medium"`
-			Small  struct{ URL string `json:"url"` } `json:"small"`
+			Large struct {
+				URL string `json:"url"`
+			} `json:"large"`
+			Medium struct {
+				URL string `json:"url"`
+			} `json:"medium"`
+			Small struct {
+				URL string `json:"url"`
+			} `json:"small"`
 		} `json:"value"`
 	}
 	if err := p.doJSON(ctx, "Thumbnail", http.MethodGet, u, nil, &resp); err != nil {

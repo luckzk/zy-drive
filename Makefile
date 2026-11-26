@@ -1,7 +1,7 @@
 GO ?= go
 GOFLAGS ?= -trimpath
 
-.PHONY: all tidy vet test build build-frontend build-desktop build-agent build-cli clean run-desktop run-agent app check-icon
+.PHONY: all tidy vet test build build-frontend build-desktop build-agent build-cli clean run-desktop run-agent app check-icon lint lint-go lint-frontend fmt fmt-check
 
 all: tidy vet test build
 
@@ -13,6 +13,35 @@ vet:
 
 test:
 	$(GO) test ./...
+
+# Code checks. `make lint` is the entry point: Go formatting + vet
+# (+ golangci-lint when installed, see below) and the frontend
+# typecheck. No tooling is installed automatically.
+lint: lint-go lint-frontend
+
+lint-go: fmt-check vet
+	@if command -v golangci-lint >/dev/null 2>&1; then \
+		golangci-lint run ./...; \
+	else \
+		echo "golangci-lint not found in PATH — skipped (gofmt + vet still enforced)."; \
+		echo "Install it with:"; \
+		echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest"; \
+	fi
+
+lint-frontend:
+	@if [ -x frontend/node_modules/.bin/tsc ]; then \
+		cd frontend && ./node_modules/.bin/tsc -b; \
+	else \
+		echo "frontend/node_modules is missing — typecheck skipped. Run 'npm install' in frontend/ first."; \
+	fi
+
+# fmt-check fails when any Go file is not gofmt-clean.
+# Fix with `make fmt` (or `gofmt -w <file>`).
+fmt-check:
+	@test -z "$$(gofmt -l cmd internal)" || { echo "gofmt: these files need formatting:"; gofmt -l cmd internal; echo "Fix with: make fmt"; exit 1; }
+
+fmt:
+	gofmt -w cmd internal
 
 build: build-frontend build-desktop build-agent build-cli
 

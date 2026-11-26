@@ -15,10 +15,10 @@ import (
 // parts_json holds the Session's Parts array (number, size, ETag,
 // done) so a restart can pick up exactly where the upload stopped.
 type uploadSessionRow struct {
-	SessionID string              `json:"sessionId"`
-	RemoteID  string              `json:"remoteId"`
-	RemoteKey string              `json:"remoteKey"`
-	Parts     []upload.PartState  `json:"parts"`
+	SessionID string             `json:"sessionId"`
+	RemoteID  string             `json:"remoteId"`
+	RemoteKey string             `json:"remoteKey"`
+	Parts     []upload.PartState `json:"parts"`
 }
 
 // SaveSession upserts one resumable-upload session. The caller

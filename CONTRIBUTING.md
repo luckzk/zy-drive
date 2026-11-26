@@ -57,9 +57,21 @@ pro vX.Y.Z）。
 export PATH=$HOME/tools/go/bin:$PATH
 make tidy
 make vet
+make lint
 make test
 make build
 ```
 
 前端改动后，先跑 `scripts/visual-check/` 的截图自查，再对照用户确认过的
 Demo v8 原型逐项比对，通过了再推。
+
+## 代码检查（lint）
+
+提交前跑 `make lint`，它做三件事：
+
+- Go：`gofmt -l` 必须为空（格式不对就 `make fmt` 一键修掉），`go vet ./...`
+  必须通过；装了 golangci-lint 还会按根目录 `.golangci.yml`
+  （只开 govet / ineffassign / staticcheck / unused 四条高价值规则）再跑一遍。
+- 前端：`tsc -b` 类型检查（已有配置，不引新依赖；没装 node_modules 时跳过）。
+
+格式要求：Go 代码一律按 `gofmt` 标准格式写，不要手调对齐。

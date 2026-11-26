@@ -417,13 +417,13 @@ func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
 // returns the code, the code IS filled into the box — and the UI
 // still shows "授权链接已失效或已被用过". The trigger is the
 // frontend's stale React closure: the poll callback was created in
-// the render where `oauthState` was still the OLD value ('' on the
+// the render where `oauthState` was still the OLD value (” on the
 // first flow, the previous flow's cancelled state on a retry),
 // so the automatic exchange presents the wrong state and the
 // backend answers "unknown state" — before any network call to
 // the token endpoint. The fix (frontend) passes the state
 // explicitly from startWaiting; this test pins the backend half:
-// the same code exchanged with '' fails with exactly that
+// the same code exchanged with ” fails with exactly that
 // message, and with the flow's own state it succeeds against a
 // mock token endpoint.
 func TestExchangeWithStaleStateReproducesExpiredMessage(t *testing.T) {

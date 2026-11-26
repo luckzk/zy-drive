@@ -100,9 +100,9 @@ var builtinOAuthClientsJSON []byte
 // read or parsed — the JSON file is the source of truth, these
 // are the safety net, and both must be kept in sync.
 var builtinClientIDFallbacks = map[domain.ProviderKind]string{
-	domain.ProviderDropbox:  "ocx73kxhcpga24m", // Dropbox App key, app "ZyDrive-app", Full Dropbox
+	domain.ProviderDropbox:  "ocx73kxhcpga24m",                                                          // Dropbox App key, app "ZyDrive-app", Full Dropbox
 	domain.ProviderDrive:    "504630572830-9nkremocc6fsmbrg0lpk5n185ii4b447.apps.googleusercontent.com", // Google OAuth 客户端 ID, 应用类型“桌面应用”, app "ZyDrive-app"
-	domain.ProviderOneDrive: "367e206e-fdfb-4372-8380-7f795ee42533", // Azure 应用程序（客户端）ID, app "ZyDrive-app", 移动和桌面应用程序, http://localhost
+	domain.ProviderOneDrive: "367e206e-fdfb-4372-8380-7f795ee42533",                                     // Azure 应用程序（客户端）ID, app "ZyDrive-app", 移动和桌面应用程序, http://localhost
 }
 
 var (

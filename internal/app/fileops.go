@@ -26,9 +26,9 @@ import (
 // Transfer.DeleteSource). mygo.Bind allows at most one value plus
 // an error, so all three travel together.
 type FileOpResult struct {
-	Done      []string            `json:"done"`
-	Failed    []UploadSkipped     `json:"failed"`
-	Transfers []*domain.Transfer  `json:"transfers"`
+	Done      []string           `json:"done"`
+	Failed    []UploadSkipped    `json:"failed"`
+	Transfers []*domain.Transfer `json:"transfers"`
 }
 
 func newFileOpResult() *FileOpResult {
@@ -73,7 +73,7 @@ func (a *App) RenameNode(ctx context.Context, mountID, srcRef, newName string) (
 		return "", fmt.Errorf("app: 新名字不能为空")
 	}
 	if strings.ContainsAny(newName, `/\`) || newName == "." || newName == ".." {
-		return "", fmt.Errorf("app: 新名字不能含 /，也不能是 . 或 ..")
+		return "", fmt.Errorf("app: 新名字不能是 . 或 ..，也不能含斜杠")
 	}
 	srcRef = strings.TrimSuffix(strings.TrimSpace(srcRef), "/")
 	if srcRef == "" {

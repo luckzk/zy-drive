@@ -29,10 +29,10 @@ import (
 // in the user's own hands — encrypted with a passphrase typed on
 // both ends, never through any of our servers (there are none).
 type Bundle struct {
-	Version    int           `json:"version"` // 1
-	ExportedAt time.Time     `json:"exportedAt"`
-	AgentName  string        `json:"agentName,omitempty"`
-	Mounts     []BundleMount `json:"mounts"`
+	Version    int              `json:"version"` // 1
+	ExportedAt time.Time        `json:"exportedAt"`
+	AgentName  string           `json:"agentName,omitempty"`
+	Mounts     []BundleMount    `json:"mounts"`
 	Jobs       []domain.SyncJob `json:"jobs"`
 }
 
@@ -42,9 +42,9 @@ type Bundle struct {
 // itself is AES-256-GCM encrypted, and the Agent re-encrypts each
 // credential with its own master key on import).
 type BundleMount struct {
-	Mount       domain.Mount       `json:"mount"`
-	Config      map[string]string  `json:"config"`
-	Credentials BundleCredentials  `json:"credentials"`
+	Mount       domain.Mount      `json:"mount"`
+	Config      map[string]string `json:"config"`
+	Credentials BundleCredentials `json:"credentials"`
 }
 
 // BundleCredentials mirrors the app's encrypted credential blob

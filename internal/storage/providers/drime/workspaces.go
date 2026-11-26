@@ -75,8 +75,8 @@ func ListWorkspaces(ctx context.Context, apiBase, token string) ([]Workspace, er
 	}
 	var body struct {
 		Workspaces []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
+			ID          int    `json:"id"`
+			Name        string `json:"name"`
 			CurrentUser struct {
 				RoleName string `json:"role_name"`
 			} `json:"currentUser"`

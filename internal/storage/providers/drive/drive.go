@@ -59,13 +59,6 @@ var exportMimes = map[string]string{
 	"application/vnd.google-apps.drawing":      "image/png",
 }
 
-var exportSuffix = map[string]string{
-	"application/vnd.google-apps.document":     ".docx",
-	"application/vnd.google-apps.spreadsheet":  ".xlsx",
-	"application/vnd.google-apps.presentation": ".pptx",
-	"application/vnd.google-apps.drawing":      ".png",
-}
-
 // Provider is a Drive-backed storage.Provider. One instance per Mount.
 type Provider struct {
 	apiBase    string

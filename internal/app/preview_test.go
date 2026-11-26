@@ -182,9 +182,9 @@ func TestParseRange(t *testing.T) {
 		{"bytes=0-", 10, 0, 9, true},
 		{"bytes=4-", 10, 4, 9, true},
 		{"bytes=2-5", 10, 2, 5, true},
-		{"bytes=0-99", 10, 0, 9, true}, // clamped to the file end
-		{"bytes=-5", 10, 0, 9, false},  // suffix ranges are not served
-		{"bytes=5-2", 10, 0, 9, false}, // inverted
+		{"bytes=0-99", 10, 0, 9, true},     // clamped to the file end
+		{"bytes=-5", 10, 0, 9, false},      // suffix ranges are not served
+		{"bytes=5-2", 10, 0, 9, false},     // inverted
 		{"bytes=0-1,4-5", 10, 0, 9, false}, // multi-range not served
 		{"bytes=abc-", 10, 0, 9, false},
 	}
@@ -427,7 +427,7 @@ func TestPreviewCacheReconcileAndClear(t *testing.T) {
 	if err := a.DB.SavePreviewEntry(&cache.PreviewEntry{
 		Key: previewCacheKey("m1", "gone.txt"), MountID: "m1", Ref: "gone.txt",
 		Filename: previewCacheFilename(previewCacheKey("m1", "gone.txt"), "gone.txt"),
-		Size: 3, RemoteMtime: mod, LastAccess: mod,
+		Size:     3, RemoteMtime: mod, LastAccess: mod,
 	}); err != nil {
 		t.Fatalf("seed gone row: %v", err)
 	}

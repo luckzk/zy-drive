@@ -71,7 +71,7 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			KeyCount       int
 			MaxKeys        int
 			IsTruncated    bool
-			Contents       []contents        `xml:"Contents"`
+			Contents       []contents                `xml:"Contents"`
 			CommonPrefixes []struct{ Prefix string } `xml:"CommonPrefixes"`
 		}
 		res := listResult{Xmlns: "http://s3.amazonaws.com/doc/2006-03-01/", Name: bucket, Prefix: prefix, MaxKeys: 1000}

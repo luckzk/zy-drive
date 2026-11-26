@@ -185,6 +185,7 @@ func humanTestError(err error) string {
 		return "连接失败：" + msg
 	}
 }
+
 // --- Agent API token (V0.9.0) ---
 //
 // The token is the Agent API's password (set with --token when the

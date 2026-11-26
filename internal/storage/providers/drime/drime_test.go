@@ -60,7 +60,7 @@ type mockDrime struct {
 	// (including retries); failPartPUTsAfter, when > 0, makes
 	// every part PUT after that count fail with 500 — the
 	// interrupt injection for resume tests (v0.9.1).
-	partPUTs         int
+	partPUTs          int
 	failPartPUTsAfter int
 }
 
@@ -98,17 +98,17 @@ func (m *mockDrime) entryJSON(e *mockEntry) map[string]any {
 	}
 	return map[string]any{
 		"id": e.id, "name": e.name, "type": e.typ,
-		"hash":              fmt.Sprintf("hash-%d", e.id),
-		"file_hash":         "",
-		"file_size":         e.size,
-		"mime":              e.mime,
-		"extension":         "",
-		"parent_id":         parent,
-		"workspace_id":      0,
-		"url":               "",
-		"thumbnail_url":     e.thumbURL,
-		"created_at":        e.createdAt,
-		"updated_at":        e.updatedAt,
+		"hash":                 fmt.Sprintf("hash-%d", e.id),
+		"file_hash":            "",
+		"file_size":            e.size,
+		"mime":                 e.mime,
+		"extension":            "",
+		"parent_id":            parent,
+		"workspace_id":         0,
+		"url":                  "",
+		"thumbnail_url":        e.thumbURL,
+		"created_at":           e.createdAt,
+		"updated_at":           e.updatedAt,
 		"client_last_modified": nil,
 	}
 }
@@ -595,10 +595,10 @@ func (m *mockDrime) handleUploadedParts(w http.ResponseWriter, r *http.Request) 
 
 func (m *mockDrime) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Filename  string `json:"filename"`
-		Size      int64  `json:"size"`
+		Filename   string `json:"filename"`
+		Size       int64  `json:"size"`
 		ClientName string `json:"clientName"`
-		ParentID  *int64 `json:"parentId"`
+		ParentID   *int64 `json:"parentId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		m.writeErr(w, http.StatusBadRequest, "bad body")

@@ -143,7 +143,7 @@ func TestUploadFilesLocalEndToEnd(t *testing.T) {
 
 func TestUploadFilesSkipsOversizeAndMissing(t *testing.T) {
 	src := t.TempDir()
-	writeTestFile(t, filepath.Join(src, "small.txt"), "12345")        // 5 B
+	writeTestFile(t, filepath.Join(src, "small.txt"), "12345")              // 5 B
 	writeTestFile(t, filepath.Join(src, "big.txt"), "12345678901234567890") // 20 B
 
 	dst := t.TempDir()

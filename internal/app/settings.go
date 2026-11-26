@@ -51,24 +51,24 @@ type Settings struct {
 	// 512 / 1024 / 2048 / 5120, default 2048. ClearOnExit wipes
 	// the cache when the app quits (mygo has no OnExit hook, so
 	// main runs it after App.Run returns); default off.
-	PreviewCacheLimitMB    int  `json:"previewCacheLimitMB"`
+	PreviewCacheLimitMB     int  `json:"previewCacheLimitMB"`
 	PreviewCacheClearOnExit bool `json:"previewCacheClearOnExit"`
 }
 
 // DefaultSettings is what a fresh install (or a missing key) gets.
 func DefaultSettings() Settings {
 	return Settings{
-		Theme:              "light",
-		Language:           "zh",
-		DownloadDir:        "",
-		SyncCompare:        domain.CompareSizeTime,
-		SyncConcurrency:    4,
-		SyncSpeedLimitKBps: 0,
-		SyncConflict:       "keep-both",
-		ProxyMode:          string(netproxy.ModeSystem),
-		ProxyHTTP:          "",
-		ProxySOCKS5:        "",
-		PreviewCacheLimitMB:    previewCacheLimitDefaultMB,
+		Theme:                   "light",
+		Language:                "zh",
+		DownloadDir:             "",
+		SyncCompare:             domain.CompareSizeTime,
+		SyncConcurrency:         4,
+		SyncSpeedLimitKBps:      0,
+		SyncConflict:            "keep-both",
+		ProxyMode:               string(netproxy.ModeSystem),
+		ProxyHTTP:               "",
+		ProxySOCKS5:             "",
+		PreviewCacheLimitMB:     previewCacheLimitDefaultMB,
 		PreviewCacheClearOnExit: false,
 	}
 }

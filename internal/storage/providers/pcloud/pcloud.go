@@ -84,7 +84,7 @@ type Provider struct {
 	idMap  map[string]int64 // display path ("/a/b") -> folderid/fileid
 	dirMap map[string]bool  // display path -> is a folder
 
-	hostMu      sync.Mutex
+	hostMu       sync.Mutex
 	hostResolved string // the host the probe settled on ("" while unresolved)
 	probeHosts   string // test-only override for the probe list (comma-separated base URLs)
 }
@@ -182,12 +182,12 @@ func (e *pcloudError) err(op string) error {
 }
 
 type pcloudMeta struct {
-	Name     string `json:"name"`
-	IsFolder bool   `json:"isfolder"`
-	FileID   int64  `json:"fileid"`
-	FolderID int64  `json:"folderid"`
-	Size     int64  `json:"size"`
-	Modified string `json:"modified"`
+	Name     string       `json:"name"`
+	IsFolder bool         `json:"isfolder"`
+	FileID   int64        `json:"fileid"`
+	FolderID int64        `json:"folderid"`
+	Size     int64        `json:"size"`
+	Modified string       `json:"modified"`
 	Content  []pcloudMeta `json:"contents"`
 }
 
@@ -604,9 +604,12 @@ func (p *Provider) Upload(ctx context.Context, ref string, r io.Reader, size int
 
 	var node domain.Node
 	if size >= 0 && size <= singleUploadLimit {
-		data, err := io.ReadAll(r)
-		if err != nil {
-			return domain.Node{}, p.wrap("Upload", err)
+		// readErr is deliberately separate from err: using err
+		// here would shadow the outer err, and the error from
+		// uploadMultipart below would be silently dropped.
+		data, readErr := io.ReadAll(r)
+		if readErr != nil {
+			return domain.Node{}, p.wrap("Upload", readErr)
 		}
 		if int64(len(data)) != size {
 			return domain.Node{}, p.wrap("Upload", fmt.Errorf("pcloud: read %d bytes, expected %d", len(data), size))
@@ -865,7 +868,7 @@ func (p *Provider) Search(ctx context.Context, query string) ([]domain.Node, err
 			continue
 		}
 		ref := strings.Trim(e.Path, "/")
-		nodes = append(nodes, e.pcloudMeta.node(ref))
+		nodes = append(nodes, e.node(ref))
 	}
 	return nodes, nil
 }

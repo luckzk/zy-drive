@@ -375,7 +375,7 @@ func (m *mockBox) handlePutPart(w http.ResponseWriter, r *http.Request) {
 	m.writeJSON(w, http.StatusOK, map[string]any{"part": map[string]any{
 		"part_id": fmt.Sprintf("part-%d", partNum),
 		"offset":  start, "size": len(data),
-		"sha1":    fmt.Sprintf("%x", sha1.Sum(data)),
+		"sha1": fmt.Sprintf("%x", sha1.Sum(data)),
 	}})
 }
 

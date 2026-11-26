@@ -57,11 +57,8 @@ import (
 )
 
 const (
-	defaultAPIBase     = "https://api.box.com/2.0"
-	defaultUploadBase  = "https://upload.box.com/api/2.0"
-	// singleUploadLimit is Box's direct-upload ceiling (50 MiB).
-	// Files at or above chunkedMinSize use an upload session.
-	singleUploadLimit = 50 << 20
+	defaultAPIBase    = "https://api.box.com/2.0"
+	defaultUploadBase = "https://upload.box.com/api/2.0"
 	// chunkedMinSize is the smallest file that may use an upload
 	// session (Box requires >= 20 MiB for sessions).
 	chunkedMinSize = 20 << 20
@@ -607,7 +604,7 @@ func (p *Provider) Search(ctx context.Context, query string) ([]domain.Node, err
 		}
 		parts = append(parts, e.Name)
 		ref := strings.Join(parts, "/")
-		out = append(out, e.boxItem.node(ref))
+		out = append(out, e.node(ref))
 	}
 	return out, nil
 }
@@ -816,9 +813,9 @@ func (p *Provider) directUpload(ctx context.Context, ref, name, parentID string,
 // commit. On any failure the session is best-effort aborted.
 func (p *Provider) chunkedUpload(ctx context.Context, ref, name, parentID string, r io.Reader, size int64) (domain.Node, error) {
 	var created struct {
-		ID        string `json:"id"`
-		PartSize  int64  `json:"part_size"`
-		TotalParts int   `json:"total_parts"`
+		ID         string `json:"id"`
+		PartSize   int64  `json:"part_size"`
+		TotalParts int    `json:"total_parts"`
 	}
 	if err := p.doJSON(ctx, "Upload", http.MethodPost, p.uploadBase+"/files/upload_sessions",
 		map[string]any{"folder_id": parentID, "file_size": size, "file_name": name}, &created); err != nil {

@@ -137,9 +137,9 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 		// Permissions). Adding it here only affects NEW
 		// authorizations: an existing token never gains a scope,
 		// so the user must re-authorize after this lands.
-		scopes:       []string{"files.metadata.read", "files.content.read", "files.content.write", "files.metadata.write", "account_info.read"},
-		extra:        map[string]string{"token_access_type": "offline"},
-		pkce:         true,
+		scopes: []string{"files.metadata.read", "files.content.read", "files.content.write", "files.metadata.write", "account_info.read"},
+		extra:  map[string]string{"token_access_type": "offline"},
+		pkce:   true,
 	},
 	domain.ProviderDrive: {
 		authEndpoint: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -202,10 +202,10 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 // reading the outcome.
 type oauthPending struct {
 	expiry      time.Time
-	verifier    string // PKCE code_verifier ("" when the provider has PKCE off)
-	redirectURI string // http://localhost:<port>, this flow only
-	code        string // set by the callback handler
-	codeErr     string // provider-side error (e.g. access_denied)
+	verifier    string              // PKCE code_verifier ("" when the provider has PKCE off)
+	redirectURI string              // http://localhost:<port>, this flow only
+	code        string              // set by the callback handler
+	codeErr     string              // provider-side error (e.g. access_denied)
 	provider    domain.ProviderKind // which provider this flow belongs to
 	region      string              // pCloud region: "auto" | "us" | "eu" ("" = auto)
 	done        chan struct{}

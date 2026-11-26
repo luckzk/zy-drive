@@ -18,9 +18,9 @@ import (
 
 // fakeExecutor records RunNow calls and job notifications.
 type fakeExecutor struct {
-	ran     []string
+	ran      []string
 	upserted []domain.SyncJob
-	deleted []string
+	deleted  []string
 }
 
 func (f *fakeExecutor) RunNow(ctx context.Context, jobID string) (string, error) {
@@ -29,7 +29,7 @@ func (f *fakeExecutor) RunNow(ctx context.Context, jobID string) (string, error)
 }
 
 func (f *fakeExecutor) JobUpserted(job domain.SyncJob) { f.upserted = append(f.upserted, job) }
-func (f *fakeExecutor) JobDeleted(jobID string)       { f.deleted = append(f.deleted, jobID) }
+func (f *fakeExecutor) JobDeleted(jobID string)        { f.deleted = append(f.deleted, jobID) }
 
 func newTestServer(t *testing.T) (*Server, *cache.DB, *fakeExecutor) {
 	t.Helper()

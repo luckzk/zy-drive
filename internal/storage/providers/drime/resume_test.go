@@ -25,10 +25,10 @@ func newResumableProvider(t *testing.T, mock *mockDrime) (*Provider, *httptest.S
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	p, err := New(storage.Config{
-		Token:     "test-token",
-		MountID:   "mnt-test",
+		Token:       "test-token",
+		MountID:     "mnt-test",
 		ResumeStore: db,
-		Extra:     map[string]string{"api_base": srv.URL + "/api/v1"},
+		Extra:       map[string]string{"api_base": srv.URL + "/api/v1"},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

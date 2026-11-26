@@ -44,6 +44,9 @@ type mockPcloud struct {
 	// failUserinfo makes /userinfo return a non-zero result (used
 	// to simulate "this data center does not serve this account").
 	failUserinfo bool
+	// failUpload makes /uploadfile return a non-zero result (used
+	// to check that Upload propagates upload errors).
+	failUpload bool
 	// directHost is the host getfilelink advertises (the test
 	// server's own host, so the link is fetchable).
 	directHost string
@@ -189,6 +192,10 @@ func (m *mockPcloud) handleMkdir(w http.ResponseWriter, r *http.Request) {
 }
 
 func (m *mockPcloud) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if m.failUpload {
+		m.writeErr(w, 2000, "simulated upload failure")
+		return
+	}
 	folderID, _ := strconv.ParseInt(r.URL.Query().Get("folderid"), 10, 64)
 	// The driver promises an exact Content-Length (no chunked
 	// encoding): verify it against the bytes actually received.
@@ -431,6 +438,20 @@ func TestPcloudUploadSmall(t *testing.T) {
 	_ = rc.Close()
 	if !bytes.Equal(got, content) {
 		t.Fatalf("round-trip mismatch")
+	}
+}
+
+// A failed small-file upload must surface the error instead of
+// returning a zero node with a nil error (ineffassign caught a
+// shadowed err that dropped it).
+func TestPcloudUploadSmallError(t *testing.T) {
+	mock := newMockPcloud()
+	mock.failUpload = true
+	p, srv := newTestProvider(t, mock)
+	defer srv.Close()
+	content := []byte("hello pcloud\n")
+	if _, err := p.Upload(t.Context(), "hello.txt", bytes.NewReader(content), int64(len(content))); err == nil {
+		t.Fatalf("Upload: got nil error, want upload failure")
 	}
 }
 

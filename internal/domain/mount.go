@@ -87,9 +87,9 @@ type Mount struct {
 	// SortOrder is the mount's position inside its group (v0.11.0,
 	// sidebar drag-sort): 0-based, dense 0..n-1 per group. Only
 	// meaningful inside a group; ListMounts orders by it.
-	SortOrder int `json:"sortOrder"`
-	Caps   Caps        `json:"caps"`
-	Status MountStatus `json:"status"`
+	SortOrder int         `json:"sortOrder"`
+	Caps      Caps        `json:"caps"`
+	Status    MountStatus `json:"status"`
 	// Verified is whether the mount passed a connection probe at
 	// least once (C, one-page form): mounts saved from the wizard
 	// after a passed test are verified; mounts saved without a
