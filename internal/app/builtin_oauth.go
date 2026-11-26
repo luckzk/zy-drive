@@ -44,6 +44,17 @@ import (
 //     端）ID" on the 概述 page is the builtin value. No secret
 //     is created (public client + PKCE).
 //
+//  Box and pCloud have NO builtin app, by design (not "not yet
+//  registered"): their token endpoints require a Client Secret
+//  at exchange time, so a shared Client ID alone could never
+//  one-click — the user must register their own app and fill in
+//  ID + Secret (the wizard's "自己的应用" is the only path, and
+//  the one-click card shows "还没配置" with that explanation).
+//  loadBuiltinClientsFrom accepts box/pcloud keys in the JSON
+//  so the format stays uniform, but there is no builtin value
+//  for them and there never will be one: even a filled-in ID
+//  would still need a secret the shared flow cannot supply.
+//
 // The fallback still applies to any provider whose builtin ID
 // is cleared or overridden away: its BuiltinOAuthClientID is
 // "" and the wizard falls back to the self-built app flow
@@ -134,7 +145,13 @@ func loadBuiltinClientsFrom(raw []byte) map[domain.ProviderKind]string {
 		}
 		p := domain.ProviderKind(strings.TrimSpace(key))
 		switch p {
-		case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderOneDrive:
+		case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderOneDrive,
+			domain.ProviderBox, domain.ProviderPCloud:
+			// Box/pCloud are accepted here for format uniformity,
+			// but the JSON carries no values for them (see the
+			// file header: their exchanges need a Client Secret,
+			// so a shared ID alone could never one-click). An
+			// empty value clears the entry, like the other three.
 			if strings.TrimSpace(id) != "" {
 				out[p] = strings.TrimSpace(id)
 			} else {

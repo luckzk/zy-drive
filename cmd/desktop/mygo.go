@@ -118,6 +118,17 @@ func runMygo(application *app.App, frontendDir string, generate bool) error {
 	)
 	mygo.Bind(application.BindService())
 
+	// File preview (v0.9.1): the loopback preview proxy is served
+	// as the "zydrive-preview" custom scheme, not http://127.0.0.1
+	// — the frontend loads from mygo://localhost/ and a plain-http
+	// subresource from it is mixed content the webview may refuse.
+	// Schemes must be registered before the windows that use them
+	// are created, so this sits before WhenReady. A failure here
+	// only disables proxy previews (direct URLs still work).
+	if err := mygo.Protocol.HandleFunc("zydrive-preview", application.PreviewHandler().ServeHTTP); err != nil {
+		log.Printf("desktop: preview scheme: %v (proxy previews unavailable)", err)
+	}
+
 	var mainWin *mygo.Window
 	// The menu-bar tray icon and the Dock icon come from the same
 	// PNG (the user's cloud). Both are best-effort: on a machine

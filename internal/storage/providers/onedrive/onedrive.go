@@ -603,30 +603,58 @@ func (p *Provider) Stat(ctx context.Context, ref string) (domain.Node, error) {
 	return it.node(ref), nil
 }
 
+// downloadURL fetches one item's @microsoft.graph.downloadUrl —
+// a pre-authenticated short-lived URL. Shared by OpenRead (which
+// GETs it) and DirectURL (which hands it to the webview). An empty
+// URL is not an error here: the caller falls back to GET
+// .../content (OpenRead) or to the loopback proxy (DirectURL).
+func (p *Provider) downloadURL(ctx context.Context, op, ref string) (string, error) {
+	if err := checkPath(ref); err != nil {
+		return "", p.wrap(op, err)
+	}
+	id, err := p.resolve(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	u := p.apiBase + "/me/drive/items/" + url.PathEscape(id) +
+		"?$select=" + url.QueryEscape(itemFields+",@microsoft.graph.downloadUrl")
+	var it driveItem
+	if err := p.doJSON(ctx, op, http.MethodGet, u, nil, &it); err != nil {
+		return "", err
+	}
+	if it.Folder != nil {
+		return "", p.wrap(op, fmt.Errorf("onedrive: %s is a folder, not a file", ref))
+	}
+	return it.DownloadURL, nil
+}
+
+// DirectURL implements storage.DirectURLer: the item's
+// @microsoft.graph.downloadUrl, handed to the webview for in-app
+// preview. Empty (the item carries none) is an error — the caller
+// falls back to the loopback preview proxy, which streams OpenRead.
+func (p *Provider) DirectURL(ctx context.Context, ref string) (string, error) {
+	u, err := p.downloadURL(ctx, "DirectURL", ref)
+	if err != nil {
+		return "", err
+	}
+	if u == "" {
+		return "", p.wrap("DirectURL", fmt.Errorf("onedrive: no download URL for %q", ref))
+	}
+	return u, nil
+}
+
 // OpenRead streams a file for download. The item's
 // @microsoft.graph.downloadUrl is a pre-authenticated short-lived
 // URL: it is GET directly with a plain client (no bearer token,
 // no Graph round-trip). Falls back to GET .../content when the
 // item carries no download URL.
 func (p *Provider) OpenRead(ctx context.Context, ref string) (io.ReadCloser, error) {
-	if err := checkPath(ref); err != nil {
-		return nil, p.wrap("OpenRead", err)
-	}
-	id, err := p.resolve(ctx, ref)
+	u, err := p.downloadURL(ctx, "OpenRead", ref)
 	if err != nil {
 		return nil, err
 	}
-	u := p.apiBase + "/me/drive/items/" + url.PathEscape(id) +
-		"?$select=" + url.QueryEscape(itemFields+",@microsoft.graph.downloadUrl")
-	var it driveItem
-	if err := p.doJSON(ctx, "OpenRead", http.MethodGet, u, nil, &it); err != nil {
-		return nil, err
-	}
-	if it.Folder != nil {
-		return nil, p.wrap("OpenRead", fmt.Errorf("onedrive: %s is a folder, not a file", ref))
-	}
-	if it.DownloadURL != "" {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, it.DownloadURL, nil)
+	if u != "" {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
 			return nil, p.wrap("OpenRead", err)
 		}
@@ -639,6 +667,10 @@ func (p *Provider) OpenRead(ctx context.Context, ref string) (io.ReadCloser, err
 			return nil, p.wrap("OpenRead", fmt.Errorf("onedrive: download URL returned %s", resp.Status))
 		}
 		return resp.Body, nil
+	}
+	id, err := p.resolve(ctx, ref)
+	if err != nil {
+		return nil, err
 	}
 	req, err := p.newRequest(ctx, http.MethodGet, p.apiBase+"/me/drive/items/"+url.PathEscape(id)+"/content", nil)
 	if err != nil {

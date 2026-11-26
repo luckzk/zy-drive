@@ -50,16 +50,23 @@
 // window (~15h). The shared retry client waits 60s and retries a
 // 429 exactly once, then gives up with a plain-language error —
 // never a loop. Multipart part PUTs go to R2, not to Drime, and
-// retry per part (re-sign, up to 3 attempts). A failed multipart
-// upload is best-effort aborted: unlike drime.py this driver keeps
-// no resume sidecar, so leaving an orphaned server-side upload
-// behind would only leak parts.
+// retry per part (re-sign, up to 3 attempts). A failed plain
+// Upload is best-effort aborted (no session is kept); a failed
+// UploadResumable instead PERSISTS its session (upload id + done
+// parts in SQLite, v0.9.1) and the next attempt resumes from the
+// next missing part. Drime documents no TTL for multipart upload
+// ids (docs snapshot 2026-11-17, verified 2026-11-25: the
+// get-uploaded-parts endpoint exists but no expiry is stated
+// anywhere): an unknown upload id is treated as expired — the
+// session is discarded and a fresh one is created, re-uploading
+// the parts that are missing in the new session.
 package drime
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -77,6 +84,7 @@ import (
 	"github.com/luckzk/zy-drive/internal/storage"
 	shttp "github.com/luckzk/zy-drive/internal/storage/http"
 	"github.com/luckzk/zy-drive/internal/storage/oauth"
+	"github.com/luckzk/zy-drive/internal/storage/upload"
 )
 
 const (
@@ -107,6 +115,13 @@ var drimePolicy = &shttp.RetryPolicy{
 	Max429Retries: 1,
 }
 
+// errUploadSessionGone is returned by getUploadedParts when the
+// server no longer knows the upload id (400/404/410): the session
+// expired or was cleaned up server-side, and the caller must start
+// a fresh session. It is a sentinel: callers check it with
+// errors.Is, never by string.
+var errUploadSessionGone = errors.New("drime: multipart upload session no longer exists on the server")
+
 // Provider is a Drime-backed storage.Provider. One instance per
 // Mount (never a per-type singleton): each account has its own
 // token, its own TokenSource and its own http client, so two Drime
@@ -117,9 +132,18 @@ type Provider struct {
 	tokens      *oauth.TokenSource
 	client      *shttp.Client
 	partClient  *http.Client // presigned R2 PUTs: no credential, no retry wrapper
+	mountID     string       // "" while the mount is unsaved; keys resume sessions
+	store       upload.Store // nil = resume disabled (fresh session, abort on failure)
 
 	mu    sync.Mutex
 	idMap map[string]int64 // display path ("/a/b") -> entry id
+
+	// resumeMu serialises UploadResumable per ref: two attempts
+	// for the same file must never interleave their part uploads,
+	// or they would overwrite each other's persisted session.
+	// Different files still upload in parallel.
+	resumeMu    sync.Mutex
+	resumeLocks map[string]*sync.Mutex
 }
 
 // New builds a Drime provider. cfg.Token is the Bearer token: a
@@ -169,8 +193,11 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 		apiBase:     strings.TrimSuffix(apiBase, "/"),
 		workspaceID: ws,
 		tokens:      ts,
+		mountID:     cfg.MountID,
+		store:       cfg.ResumeStore,
 		idMap:       map[string]int64{},
 		partClient:  &http.Client{Timeout: 180 * time.Second},
+		resumeLocks: map[string]*sync.Mutex{},
 	}
 	p.client = shttp.New(drimePolicy)
 	// The Authorization header is attached by the transport on
@@ -228,7 +255,7 @@ func (p *Provider) Caps() domain.Caps {
 		SupportsSearch:          true,
 		SupportsDelta:           false,
 		SupportsThumbnail:       true,
-		SupportsResumableUpload: true, // multipart; resume across restarts is not implemented
+		SupportsResumableUpload: true, // multipart; uploadId + done parts persist in SQLite, resume across restarts (v0.9.1)
 		SupportsEncryption:      false,
 		SupportsStorageClass:    false,
 		SupportsPresignedURL:    true,
@@ -750,14 +777,32 @@ func (p *Provider) simpleUpload(ctx context.Context, ref, name string, parentID 
 // register flow for files >= 5 MiB. Parts are PUT sequentially to
 // their presigned R2 URLs (no credential); a failed part is
 // re-signed and retried (up to partAttempts). On any failure the
-// server-side upload is best-effort aborted — this driver keeps no
-// resume state, so an orphan would only leak parts.
+// server-side upload is best-effort aborted: the plain path keeps
+// no resume state (use UploadResumable when the caller can retry
+// from a seekable source).
 func (p *Provider) multipartUpload(ctx context.Context, ref, name string, parentID *int64, r io.Reader, size int64) (domain.Node, error) {
 	mime := mimeOf(name)
 	ext := ""
 	if i := strings.LastIndex(name, "."); i >= 0 && i < len(name)-1 {
 		ext = strings.ToLower(name[i+1:])
 	}
+	key, uploadID, err := p.createMultipart(ctx, name, mime, size, ext, parentID)
+	if err != nil {
+		return domain.Node{}, err
+	}
+	node, err := p.multipartRun(ctx, ref, name, mime, ext, parentID, r, size, key, uploadID)
+	if err != nil {
+		// Best effort: do not leave an orphaned multipart upload.
+		_ = p.abortMultipart(ctx, key, uploadID)
+		return domain.Node{}, err
+	}
+	return node, nil
+}
+
+// createMultipart opens a server-side multipart session and returns
+// the object key and upload id. Both are opaque server values: the
+// key is the S3 object key, the upload id the session handle.
+func (p *Provider) createMultipart(ctx context.Context, name, mime string, size int64, ext string, parentID *int64) (key, uploadID string, err error) {
 	createBody := map[string]any{
 		"filename": name, "mime": mime, "size": size,
 		"extension": ext, "workspaceId": p.workspaceID,
@@ -770,55 +815,27 @@ func (p *Provider) multipartUpload(ctx context.Context, ref, name string, parent
 		UploadID string `json:"uploadId"`
 	}
 	if err := p.doJSON(ctx, "Upload", http.MethodPost, p.apiBase+"/s3/multipart/create", createBody, &created); err != nil {
-		return domain.Node{}, err
+		return "", "", err
 	}
 	if created.Key == "" || created.UploadID == "" {
-		return domain.Node{}, p.wrap("Upload", fmt.Errorf("drime: multipart create returned no key/uploadId"))
+		return "", "", p.wrap("Upload", fmt.Errorf("drime: multipart create returned no key/uploadId"))
 	}
-	node, err := p.multipartRun(ctx, ref, name, mime, ext, parentID, r, size, created.Key, created.UploadID)
-	if err != nil {
-		// Best effort: do not leave an orphaned multipart upload.
-		_ = p.doJSON(ctx, "Upload", http.MethodPost, p.apiBase+"/s3/multipart/abort",
-			map[string]any{"key": created.Key, "uploadId": created.UploadID}, nil)
-		return domain.Node{}, err
-	}
-	return node, nil
+	return created.Key, created.UploadID, nil
 }
 
-func (p *Provider) multipartRun(ctx context.Context, ref, name, mime, ext string, parentID *int64, r io.Reader, size int64, key, uploadID string) (domain.Node, error) {
+// abortMultipart asks the server to forget a session. Best effort:
+// the caller ignores the error, because the upload already failed
+// and the server expires unknown sessions on its own.
+func (p *Provider) abortMultipart(ctx context.Context, key, uploadID string) error {
+	return p.doJSON(ctx, "Upload", http.MethodPost, p.apiBase+"/s3/multipart/abort",
+		map[string]any{"key": key, "uploadId": uploadID}, nil)
+}
+
+// completeAndRegister finishes a multipart upload (all parts
+// present in done, keyed by part number with their ETags) and
+// registers the file entry. It verifies the registered size.
+func (p *Provider) completeAndRegister(ctx context.Context, ref, name, mime, ext string, parentID *int64, size int64, key, uploadID string, done map[int]string) (domain.Node, error) {
 	totalParts := int((size + partSize - 1) / partSize)
-	done := make(map[int]string, totalParts)
-	buf := make([]byte, partSize)
-	for batchStart := 1; batchStart <= totalParts; batchStart += signBatch {
-		batchEnd := batchStart + signBatch - 1
-		if batchEnd > totalParts {
-			batchEnd = totalParts
-		}
-		var numbers []int
-		for n := batchStart; n <= batchEnd; n++ {
-			numbers = append(numbers, n)
-		}
-		urls, err := p.signParts(ctx, key, uploadID, numbers)
-		if err != nil {
-			return domain.Node{}, err
-		}
-		for _, n := range numbers {
-			chunk, readErr := io.ReadFull(r, buf)
-			if chunk > 0 {
-				etag, err := p.putPart(ctx, key, uploadID, n, urls[n], buf[:chunk])
-				if err != nil {
-					return domain.Node{}, err
-				}
-				done[n] = etag
-			}
-			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
-				break
-			}
-			if readErr != nil {
-				return domain.Node{}, p.wrap("Upload", readErr)
-			}
-		}
-	}
 	if len(done) != totalParts {
 		return domain.Node{}, p.wrap("Upload", fmt.Errorf("drime: uploaded %d of %d parts", len(done), totalParts))
 	}
@@ -856,6 +873,43 @@ func (p *Provider) multipartRun(ctx context.Context, ref, name, mime, ext string
 	p.idMap[cleanRef(ref)] = reg.FileEntry.ID
 	p.mu.Unlock()
 	return reg.FileEntry.node(ref), nil
+}
+
+func (p *Provider) multipartRun(ctx context.Context, ref, name, mime, ext string, parentID *int64, r io.Reader, size int64, key, uploadID string) (domain.Node, error) {
+	totalParts := int((size + partSize - 1) / partSize)
+	done := make(map[int]string, totalParts)
+	buf := make([]byte, partSize)
+	for batchStart := 1; batchStart <= totalParts; batchStart += signBatch {
+		batchEnd := batchStart + signBatch - 1
+		if batchEnd > totalParts {
+			batchEnd = totalParts
+		}
+		var numbers []int
+		for n := batchStart; n <= batchEnd; n++ {
+			numbers = append(numbers, n)
+		}
+		urls, err := p.signParts(ctx, key, uploadID, numbers)
+		if err != nil {
+			return domain.Node{}, err
+		}
+		for _, n := range numbers {
+			chunk, readErr := io.ReadFull(r, buf)
+			if chunk > 0 {
+				etag, err := p.putPart(ctx, key, uploadID, n, urls[n], buf[:chunk])
+				if err != nil {
+					return domain.Node{}, err
+				}
+				done[n] = etag
+			}
+			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
+				break
+			}
+			if readErr != nil {
+				return domain.Node{}, p.wrap("Upload", readErr)
+			}
+		}
+	}
+	return p.completeAndRegister(ctx, ref, name, mime, ext, parentID, size, key, uploadID, done)
 }
 
 // signParts signs one batch of part numbers.

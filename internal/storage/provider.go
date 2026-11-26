@@ -11,6 +11,7 @@ import (
 	"io"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/storage/upload"
 )
 
 // ErrNotImplemented is returned by placeholder drivers (e.g. Dropbox in
@@ -41,6 +42,20 @@ type Config struct {
 	SecretKey string            `json:"secretKey,omitempty"` // S3 SK, memory only
 	Token     string            `json:"token,omitempty"`     // OAuth access token, memory only
 	Extra     map[string]string `json:"extra,omitempty"`
+	// MountID is the mount this config belongs to ("" while the
+	// mount is unsaved). Drivers that persist per-mount state
+	// (Drime resume sessions) key it by this id. json:"-" on
+	// purpose: the app's test memo key (testMemoKey) hashes the
+	// whole Config, and a mount id minted after the probe must
+	// not change the memo of the config that was just tested.
+	MountID string `json:"-"`
+	// ResumeStore persists resumable-upload sessions (SQLite,
+	// internal/cache). nil means resume is disabled: a driver
+	// that implements ResumableUploader falls back to a fresh
+	// session that aborts on failure, exactly like plain Upload.
+	// json:"-" for the same memo reason as MountID (it holds a
+	// *cache.DB, which must never be marshalled into a hash).
+	ResumeStore upload.Store `json:"-"`
 }
 
 // Provider is the small core interface every cloud implements. Only
@@ -110,4 +125,56 @@ type Thumber interface {
 // and the UI says "不限量" instead of showing a made-up number.
 type QuotaSource interface {
 	Quota(ctx context.Context) (used, total int64, err error)
+}
+
+// SeekableSource is what UploadResumable reads from: a local
+// file (or any source that supports random access). It needs
+// ReadAt for part reads (io.SectionReader) and Seek+Read for
+// verification reads (which the app layer deliberately does not
+// count toward progress or the limiter). *os.File satisfies it,
+// and so does the app layer's resumableReader wrapper.
+type SeekableSource interface {
+	io.Reader
+	io.Seeker
+	io.ReaderAt
+}
+
+// ResumableUploader is the optional interface for drivers whose
+// multipart upload can continue after an interruption (Drime,
+// v0.9.1). UploadResumable reads the file from a seekable source
+// and uploads only the parts that are not already confirmed on the
+// server, resuming a persisted session when one exists; ResumeState
+// reports how many bytes are already confirmed uploaded, so the
+// caller can seed its progress display. The session (server
+// upload id + finished part numbers) lives in Config.ResumeStore
+// and survives restarts; without a store the driver falls back to
+// a fresh session that aborts on failure, exactly like plain
+// Upload. Callers only use this path when the source is seekable
+// (a local file): cross-cloud pipe copies keep plain Upload,
+// because a pipe cannot re-read the parts it already sent.
+type ResumableUploader interface {
+	ResumeState(ctx context.Context, ref string, size int64) (doneBytes int64, err error)
+	UploadResumable(ctx context.Context, ref string, rs SeekableSource, size int64) (domain.Node, error)
+}
+
+// DirectURLer is the optional interface for drivers that can hand
+// the browser a short-lived direct download URL for a file
+// (presigned URL, temporary link, or the provider's own file
+// link). The URL must work without extra headers so <video>,
+// <img> and <iframe> can load it directly; it is short-lived by
+// nature, so callers fetch it fresh for each preview. Drivers
+// without one (Drime, Box, MEGA, local) are served by the
+// loopback preview proxy instead, which streams OpenRead.
+type DirectURLer interface {
+	DirectURL(ctx context.Context, ref string) (string, error)
+}
+
+// SessionExporter is the optional interface for drivers whose
+// login yields a storable session handle (MEGA, v0.9.1): the app
+// persists the exported session instead of the user's password.
+// sessionID is the opaque server session; secret is the master
+// key, base64-encoded. Both are secrets: they travel only in
+// memory and are stored encrypted like any other credential.
+type SessionExporter interface {
+	ExportSession(ctx context.Context) (sessionID, secret string, err error)
 }

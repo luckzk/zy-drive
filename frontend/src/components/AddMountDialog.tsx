@@ -79,13 +79,16 @@ const PROVIDERS: ProviderOption[] = [
   { kind: 'local', name: '本地文件夹', desc: '这台 Mac 上的一个文件夹，浏览和同步都能用。', sub: '选本机上的一个文件夹', available: true },
   { kind: 'onedrive', name: 'OneDrive', desc: '用 OAuth 授权码换取 Token（公开客户端，PKCE），或直接粘贴 Refresh Token。个人与工作 / 学校账号都能用。', sub: 'OAuth 授权码添加', available: true },
   { kind: 'drime', name: 'Drime', desc: '用个人访问令牌接入。', sub: '粘贴令牌添加', available: true },
+  { kind: 'box', name: 'Box', desc: '用 OAuth 授权码换取 Token，或直接粘贴 Refresh Token。需要自己在 Box 开发者控制台建应用（换 Token 要 Client Secret，没有一键授权）。', sub: 'OAuth 授权码添加', available: true },
+  { kind: 'pcloud', name: 'pCloud', desc: '用 OAuth 授权码换取 Token，或直接粘贴 Access Token。需要自己在 pCloud 控制台建应用（换 Token 要 Client Secret，没有一键授权）；账号分美区 / 欧区。', sub: 'OAuth 授权码添加', available: true },
+  { kind: 'mega', name: 'MEGA', desc: '用邮箱 + 密码登录（可带两步验证）。文件在 MEGA 端自带加密。', sub: '邮箱 + 密码添加', available: true },
 ]
 
-const isOAuthProvider = (p: ProviderKind | null): p is 'dropbox' | 'drive' | 'onedrive' =>
-  p === 'dropbox' || p === 'drive' || p === 'onedrive'
+const isOAuthProvider = (p: ProviderKind | null): p is 'dropbox' | 'drive' | 'onedrive' | 'box' | 'pcloud' =>
+  p === 'dropbox' || p === 'drive' || p === 'onedrive' || p === 'box' || p === 'pcloud'
 // Key-based providers (C): one-page form, no step 3.
-const isKeyProvider = (p: ProviderKind | null): p is 's3' | 'drime' | 'local' =>
-  p === 's3' || p === 'drime' || p === 'local'
+const isKeyProvider = (p: ProviderKind | null): p is 's3' | 'drime' | 'local' | 'mega' =>
+  p === 's3' || p === 'drime' || p === 'local' || p === 'mega'
 
 const OAUTH_HELP: Record<string, { title: string; steps: string[] }> = {
   dropbox: {
@@ -117,6 +120,29 @@ const OAUTH_HELP: Record<string, { title: string; steps: string[] }> = {
       '左侧“API 权限”→ 添加权限 → Microsoft Graph → 委派的权限 → 勾选 Files.ReadWrite.All 和 offline_access（没有 offline_access 拿不到 Refresh Token），点“代表组织授予管理员同意”（个人账号可跳过）。',
       '左侧“概述”里拿到“应用程序（客户端）ID”，填回来。',
       '点“生成授权链接”，在浏览器里登录微软账号点允许；授权完浏览器会自动跳回 ZyDrive，code 自己换成 Token，不用复制。如果浏览器没跳回，再从地址栏复制 code= 后面的值，粘贴回来点“换取 Token”。',
+    ],
+  },
+  box: {
+    title: '去哪里拿 Client ID / Secret（Box 开发者控制台）',
+    steps: [
+      '打开 app.box.com/developers/console，点 Create New App，选 Custom App，名字例如 ZyDrive。',
+      '应用类型选 User Authentication (OAuth 2.0)，不要选 Server Authentication（那是 JWT / 服务账号，走另一套）。',
+      '左侧 Configuration → OAuth 2.0 Redirect URI 里加一行 http://localhost:57103（带端口，固定端口 57103）。',
+      '同一页 Scopes 里勾选 Read and write all files and folders stored in Box（root_readwrite）。',
+      'Configuration 页拿到 Client ID 和 Client Secret，填回来。',
+      '点“生成授权链接”，在浏览器里登录 Box 点允许；授权完浏览器会自动跳回 ZyDrive，code 自己换成 Token，不用复制。如果浏览器没跳回，再从地址栏复制 code= 后面的值，粘贴回来点“换取 Token”。',
+      '注意：Box 换 Token 必须带 Client Secret，所以 Box 没有一键授权，只能用自己的应用。',
+    ],
+  },
+  pcloud: {
+    title: '去哪里拿 Client ID / Secret（pCloud 控制台）',
+    steps: [
+      '打开 docs.pcloud.com，点 Create App（要先登录 pCloud 账号），名字例如 ZyDrive。',
+      'Redirect URIs 里加一行 http://localhost:57104（带端口，固定端口 57104）。',
+      '建好后拿到 Client ID 和 Client Secret，填回来。',
+      '先选好账号所在区再生成链接：自动会先按美区授权；如果你的账号在欧洲，换 Token 时会失败，改选“欧洲”再重新生成链接。',
+      '点“生成授权链接”，在浏览器里登录 pCloud 点允许；授权完浏览器会自动跳回 ZyDrive，code 自己换成 Token，不用复制。如果浏览器没跳回，再从地址栏复制 code= 后面的值，粘贴回来点“换取 Token”。',
+      '注意：pCloud 换 Token 必须带 Client Secret，所以 pCloud 没有一键授权，只能用自己的应用。',
     ],
   },
 }
@@ -342,6 +368,17 @@ export default function AddMountDialog({
   const [localPath, setLocalPath] = useState('')
   // Drime
   const [workspaceId, setWorkspaceId] = useState('')
+  // MEGA (C, one-page form): email + password login, optional 2FA.
+  // The password is only ever sent to TestMountConfig /
+  // AddMountWithCredentials in memory — it is never stored; the
+  // backend keeps the exported session instead (see accounts.go).
+  const [megaEmail, setMegaEmail] = useState('')
+  const [megaPassword, setMegaPassword] = useState('')
+  const [megaTwoFactor, setMegaTwoFactor] = useState('')
+  // pCloud region for the OAuth flow: 'auto' probes US first,
+  // 'us' / 'eu' pin the data centre. It only affects BeginOAuth
+  // (which authorize/token host to use).
+  const [pcloudRegion, setPcloudRegion] = useState('auto')
   // Drime workspace picker (V0.9.0): workspaces for the pasted
   // token, fetched from GET /me/workspaces — pick from the list,
   // never type a number. Single workspace auto-selects.
@@ -481,6 +518,10 @@ export default function AddMountDialog({
     clientSecret: clientSecret || undefined,
     workspaceId: workspaceId.trim() || undefined,
     localPath: localPath.trim() || undefined,
+    megaEmail: megaEmail.trim() || undefined,
+    megaPassword: megaPassword || undefined,
+    megaTwoFactor: megaTwoFactor.trim() || undefined,
+    pcloudRegion: pcloudRegion || undefined,
   })
 
   const validateStep2 = (): string | null => {
@@ -500,7 +541,12 @@ export default function AddMountDialog({
       case 'dropbox':
       case 'drive':
       case 'onedrive':
+      case 'box':
+      case 'pcloud':
         if (!accessToken.trim() && !refreshToken.trim()) return '请先用授权码换取 Token，或直接粘贴 Access Token / Refresh Token。'
+        return null
+      case 'mega':
+        if (!megaEmail.trim() || !megaPassword) return '请填 MEGA 账号邮箱和密码。'
         return null
       case 'drime':
         // PAT-only: the wizard no longer shows any OAuth fields for
@@ -725,11 +771,15 @@ export default function AddMountDialog({
     }
     // Own app: remember it when asked, before authorizing — the
     // next add of this provider then fills the Client ID itself.
-    // A save failure never blocks the authorization.
+    // A save failure never blocks the authorization. Box/pCloud
+    // ALWAYS need the secret at exchange (no public-client
+    // option), so their secret is saved regardless of the
+    // needSecret checkbox, which their branches do not show.
     if (appSource === 'custom' && saveCustomAppChecked && clientId.trim()) {
+      const secretToSave = provider === 'box' || provider === 'pcloud' ? clientSecret : (needSecret ? clientSecret : '')
       try {
-        await api.saveCustomOAuthApp(provider, clientId.trim(), needSecret ? clientSecret : '')
-        setCustomApp({ clientId: clientId.trim(), clientSecret: needSecret ? clientSecret : '', hasSecret: needSecret && clientSecret.trim() !== '' })
+        await api.saveCustomOAuthApp(provider, clientId.trim(), secretToSave)
+        setCustomApp({ clientId: clientId.trim(), clientSecret: secretToSave, hasSecret: secretToSave.trim() !== '' })
         setCustomSavedMsg('已保存为“我的应用”，下次添加这个网盘时直接用，不用重填。')
       } catch {
         // Best-effort only: the authorization still proceeds.
@@ -744,7 +794,11 @@ export default function AddMountDialog({
     setShowManual(false)
     setPopupBlocked(false)
     try {
-      const start = await api.beginOAuth(provider, id.trim())
+      // pCloud only: the region picks the authorize/token host
+      // (US my/api.pcloud.com vs EU e/eapi.pcloud.com). Every
+      // other provider ignores the third argument.
+      const region = provider === 'pcloud' ? pcloudRegion : ''
+      const start = await api.beginOAuth(provider, id.trim(), region)
       if (!start) throw new Error('生成授权链接失败。')
       // A fresh link voids everything from the previous one: the
       // old code (if any) was issued for the old link's verifier
@@ -1144,6 +1198,124 @@ export default function AddMountDialog({
           </p>
         </>
       )}
+
+      {/* Box — its own form: Client ID / Client Secret from the
+          Box developer console. Box has NO public-client option:
+          the token exchange always needs the secret, so the
+          secret field is shown by default (no checkbox) and the
+          link is always generated with it. Fixed redirect port
+          57103, scope root_readwrite. */}
+      {provider === 'box' && (
+        <>
+          {/* The app-console guide is always visible (no triangle fold). */}
+          <div className="notice-box" style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 4 }}>{OAUTH_HELP.box.title}</div>
+            <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+              {OAUTH_HELP.box.steps.map((s, i) => (
+                <li key={i} className="muted" style={{ marginBottom: 4 }}>
+                  {s}
+                </li>
+              ))}
+            </ol>
+            <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={() => window.open('https://github.com/luckzk/zy-drive/blob/main/docs/oauth-apps/box.md', '_blank', 'noopener')}>
+              查看完整注册指南
+            </button>
+          </div>
+          <div className="field">
+            <label>Client ID（必填）</label>
+            <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Client Secret（必填，加密存在本机）</label>
+            <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+          </div>
+          <p className="muted">Box 换 Token 必须带 Client Secret：建应用时选 User Authentication (OAuth 2.0)，Redirect URI 填 http://localhost:57103。</p>
+          <p className="muted">本次授权请求的权限：root_readwrite（读写 Box 里的全部文件和文件夹）。</p>
+          <OAuthCodeFlow
+            authUrl={authUrl}
+            popupBlocked={popupBlocked}
+            onOpenAuthUrl={() => window.open(authUrl, '_blank', 'noopener')}
+            oauthBusy={oauthBusy}
+            oauthMsg={oauthMsg}
+            waiting={waiting}
+            onCancelWait={() => stopWaiting(false)}
+            genAuthLink={() => void genAuthLink(clientId, clientSecret)}
+            linkAt={linkAt}
+            authTest={authTest}
+            authTestMsg={authTestMsg}
+            onRetest={() => void runAuthTest()}
+            exchangeRetryable={exchangeRetryable}
+            onRetryExchange={() => void exchangeCode()}
+          />
+          {manualFallback}
+          <p className="muted">
+            直接粘贴也可以：已有 Access Token / Refresh Token 的话，粘贴后点“测试连接”，通过后就能下一步。
+          </p>
+        </>
+      )}
+
+      {/* pCloud — its own form: Client ID / Client Secret from the
+          pCloud console, plus the data-centre region selector.
+          Like Box, the exchange always needs the secret, so the
+          secret field is shown by default. Fixed redirect port
+          57104. Region 'auto' authorizes against the US host
+          first; an EU account fails at exchange and must switch
+          to 欧洲 and generate a new link. */}
+      {provider === 'pcloud' && (
+        <>
+          {/* The app-console guide is always visible (no triangle fold). */}
+          <div className="notice-box" style={{ marginBottom: 12 }}>
+            <div style={{ marginBottom: 4 }}>{OAUTH_HELP.pcloud.title}</div>
+            <ol style={{ margin: '8px 0 0', paddingLeft: 20 }}>
+              {OAUTH_HELP.pcloud.steps.map((s, i) => (
+                <li key={i} className="muted" style={{ marginBottom: 4 }}>
+                  {s}
+                </li>
+              ))}
+            </ol>
+            <button className="btn btn-sm" style={{ marginTop: 8 }} onClick={() => window.open('https://github.com/luckzk/zy-drive/blob/main/docs/oauth-apps/pcloud.md', '_blank', 'noopener')}>
+              查看完整注册指南
+            </button>
+          </div>
+          <div className="field">
+            <label>Client ID（必填）</label>
+            <input className="input" autoComplete="off" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>Client Secret（必填，加密存在本机）</label>
+            <input className="input" type="password" autoComplete="off" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+          </div>
+          <div className="field">
+            <label>账号所在区</label>
+            <select className="input" value={pcloudRegion} onChange={(e) => setPcloudRegion(e.target.value)}>
+              <option value="auto">自动（先试美区）</option>
+              <option value="us">美国（api.pcloud.com）</option>
+              <option value="eu">欧洲（eapi.pcloud.com）</option>
+            </select>
+          </div>
+          <p className="muted">pCloud 账号分美区 / 欧区两个数据中心：自动会先按美区授权；如果你的账号在欧洲，换 Token 时会失败，改选“欧洲”再重新生成链接。换 Token 必须带 Client Secret，Redirect URI 填 http://localhost:57104。</p>
+          <OAuthCodeFlow
+            authUrl={authUrl}
+            popupBlocked={popupBlocked}
+            onOpenAuthUrl={() => window.open(authUrl, '_blank', 'noopener')}
+            oauthBusy={oauthBusy}
+            oauthMsg={oauthMsg}
+            waiting={waiting}
+            onCancelWait={() => stopWaiting(false)}
+            genAuthLink={() => void genAuthLink(clientId, clientSecret)}
+            linkAt={linkAt}
+            authTest={authTest}
+            authTestMsg={authTestMsg}
+            onRetest={() => void runAuthTest()}
+            exchangeRetryable={exchangeRetryable}
+            onRetryExchange={() => void exchangeCode()}
+          />
+          {manualFallback}
+          <p className="muted">
+            直接粘贴也可以：已有 Access Token 的话，粘贴后点“测试连接”，通过后就能下一步（pCloud 的 Token 长期有效，没有 Refresh Token）。
+          </p>
+        </>
+      )}
     </>
   )
 
@@ -1325,6 +1497,27 @@ export default function AddMountDialog({
                     </>
                   )}
                 </div>
+              </>
+            )}
+
+            {provider === 'mega' && (
+              <>
+                <div className="notice-box" style={{ marginBottom: 12 }}>
+                  用 MEGA 账号的邮箱和密码登录。密码只在本次测试 / 保存时传给后端换会话，保存后只留会话（Session），密码不存本机；重启后用会话直接登录，不用再输密码。开了两步验证的话再填下面那栏。
+                </div>
+                <div className="field">
+                  <label>MEGA 账号邮箱</label>
+                  <input className="input" type="email" autoComplete="off" value={megaEmail} onChange={(e) => setMegaEmail(e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>密码</label>
+                  <input className="input" type="password" autoComplete="off" value={megaPassword} onChange={(e) => setMegaPassword(e.target.value)} />
+                </div>
+                <div className="field">
+                  <label>两步验证代码（可选，没开 2FA 就留空）</label>
+                  <input className="input" inputMode="numeric" autoComplete="off" value={megaTwoFactor} onChange={(e) => setMegaTwoFactor(e.target.value)} />
+                </div>
+                <p className="muted">MEGA 的文件在上传时就由客户端加密，服务端看不到明文；ZyDrive 通过官方 Go 客户端库（go-mega）接入，不自己写加密协议。</p>
               </>
             )}
 

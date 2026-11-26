@@ -65,3 +65,15 @@ ZyDrive 添加 Dropbox、Google Drive、OneDrive 时，要在各家的控制台�
 
 细节与每一步截图要点见各家文档：[Dropbox](dropbox.md)、
 [Google Drive](google-drive.md)、[OneDrive](onedrive.md)。
+
+## Box / pCloud：没有官方应用，只能用自己的应用
+
+Box 和 pCloud 不在上面的三家官方应用里——不是没注册，是注册了也没用：
+
+- 两家的 Token 端点换 Token 时**必须带 Client Secret**，而官方共享应用
+  只能共享 Client ID（Secret 不能公开）。所以 Box / pCloud 永远没有
+  “一键授权”，向导里只会出现“自己的应用”。
+- 用户按下面两份指南自己建应用、填 ID + Secret 就能用：
+  [Box](box.md)、[pCloud](pcloud.md)。
+- Box 重定向 URI 是固定端口 `http://localhost:57103`，pCloud 是
+  `http://localhost:57104`；pCloud 账号还分美区 / 欧区，向导里选区。

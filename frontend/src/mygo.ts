@@ -47,6 +47,14 @@ export interface AddMountInput {
   workspaceId?: string;
   /** local mount: absolute folder path */
   localPath?: string;
+  /** MEGA account email */
+  megaEmail?: string;
+  /** MEGA account password (never persisted; the exported session is stored instead) */
+  megaPassword?: string;
+  /** MEGA 2FA code (optional, one login only) */
+  megaTwoFactor?: string;
+  /** pCloud region: "auto" | "us" | "eu", default "auto" */
+  pcloudRegion?: string;
   /**
    * SkipProbe (C, one-page form): save without a connection
    * probe. The mount is then stored Verified=false ("未验证")
@@ -393,11 +401,54 @@ export interface PlanSummary {
 }
 
 /**
+ * PreviewCacheCleared is the single return value of
+ * ClearPreviewCache: how much "清理缓存" freed.
+ */
+export interface PreviewCacheCleared {
+  freedBytes: number;
+  fileCount: number;
+}
+
+/**
+ * PreviewCacheInfo is the single return value of
+ * PreviewCacheInfo: current size + file count + the configured
+ * limit, for Settings → 缓存.
+ */
+export interface PreviewCacheInfo {
+  sizeBytes: number;
+  fileCount: number;
+  limitMB: number;
+}
+
+/**
+ * PreviewTextResult is the single return value of PreviewText.
+ * Text is at most previewTextLimit bytes; Truncated says the file
+ * continues past it. Size is the full remote size.
+ */
+export interface PreviewTextResult {
+  text: string;
+  truncated: boolean;
+  size: number;
+}
+
+/**
+ * PreviewURLResult is the single return value of PreviewURL.
+ * Kind is "direct" (a provider-issued URL, short-lived by nature)
+ * or "proxy" (a zydrive-preview:// token URL, 10 minutes).
+ */
+export interface PreviewURLResult {
+  url: string;
+  kind: string;
+  mime: string;
+  size: number;
+}
+
+/**
  * ProviderKind identifies a cloud backend. Vendor names are only allowed
  * in driver directories, account settings pages and capability tables;
  * sync, transfer and generic UI must never branch on these values.
  */
-export type ProviderKind = "s3" | "dropbox" | "drive" | "onedrive" | "drime" | "local" | "facebook" | "instagram";
+export type ProviderKind = "s3" | "dropbox" | "drive" | "onedrive" | "drime" | "box" | "pcloud" | "mega" | "local" | "facebook" | "instagram";
 
 /** ProxyTestResult is what TestProxy returns. */
 export interface ProxyTestResult {
@@ -504,6 +555,15 @@ export interface Settings {
   proxyHttp: string;
   /** manual SOCKS5 proxy, "host:port" or full URL */
   proxySocks5: string;
+  /**
+   * Preview cache (Settings → 缓存， v0.9.1): the cap for
+   * downloaded "open with system app" copies, in MB — one of
+   * 512 / 1024 / 2048 / 5120, default 2048. ClearOnExit wipes
+   * the cache when the app quits (mygo has no OnExit hook, so
+   * main runs it after App.Run returns); default off.
+   */
+  previewCacheLimitMB: number;
+  previewCacheClearOnExit: boolean;
 }
 
 /**
@@ -664,10 +724,12 @@ export const DesktopService = {
   batchDownload: bind<[string, string[], string], BatchResult | null>("DesktopService.BatchDownload", (mountID: string, refs: string[], destDir: string) => [mountID, refs, destDir]),
   /**
    * BeginOAuth builds the authorize URL for Dropbox / Drive / Drime /
-   * OneDrive and starts the one-shot loopback listener that catches
-   * the code (A). The frontend polls PollOAuthCallback for it.
+   * OneDrive / Box / pCloud and starts the one-shot loopback listener
+   * that catches the code (A). The frontend polls PollOAuthCallback
+   * for it. region is the pCloud region ("auto" | "us" | "eu");
+   * it is ignored for every other provider.
    */
-  beginOAuth: bind<[ProviderKind, string], OAuthStart | null>("DesktopService.BeginOAuth", (provider: ProviderKind, clientID: string) => [provider, clientID]),
+  beginOAuth: bind<[ProviderKind, string, string], OAuthStart | null>("DesktopService.BeginOAuth", (provider: ProviderKind, clientID: string, region: string) => [provider, clientID, region]),
   /** Browse lists a directory (cache-first, background refresh). */
   browse: bind<[string, string], Node[]>("DesktopService.Browse", (mountID: string, ref: string) => [mountID, ref]),
   /**
@@ -687,6 +749,11 @@ export const DesktopService = {
    * instant feedback in the Settings page before saving.
    */
   checkDownloadDir: bind<[string], void>("DesktopService.CheckDownloadDir", (path: string) => [path]),
+  /**
+   * ClearPreviewCache deletes every cached preview copy. The cloud
+   * originals are untouched, so nothing is lost.
+   */
+  clearPreviewCache: bind<[], PreviewCacheCleared | null>("DesktopService.ClearPreviewCache", () => []),
   /**
    * DeleteCustomOAuthApp removes the user's own OAuth app for a
    * provider. The builtin official app is untouched — the wizard
@@ -757,13 +824,38 @@ export const DesktopService = {
    */
   mountQuotas: bind<[], (MountQuota | null)[]>("DesktopService.MountQuotas", () => []),
   /**
+   * OpenWithSystemApp downloads a file to the preview cache (or
+   * reuses the cached copy) and opens it with the system default
+   * app — macOS prefers Quick Look. It returns the local cached
+   * path.
+   */
+  openWithSystemApp: bind<[string, string], string>("DesktopService.OpenWithSystemApp", (mountID: string, ref: string) => [mountID, ref]),
+  /**
    * PollOAuthCallback reports whether the browser has jumped back
    * with a code for this state yet ("waiting" / "done" / "error" /
    * "expired"). It never blocks; the frontend polls it.
    */
   pollOAuthCallback: bind<[string], OAuthCallbackResult | null>("DesktopService.PollOAuthCallback", (state: string) => [state]),
+  /**
+   * PreviewCacheInfo reports the preview cache as it stands on disk
+   * (size, file count, configured limit) for Settings → 缓存.
+   */
+  previewCacheInfo: bind<[], PreviewCacheInfo | null>("DesktopService.PreviewCacheInfo", () => []),
   /** PreviewSync builds a sync plan for confirmation. */
   previewSync: bind<[SyncJob | null], Plan | null>("DesktopService.PreviewSync", (job: SyncJob | null) => [job]),
+  /**
+   * PreviewText reads the head of a text file (at most 512 KiB)
+   * for in-app rendering. Truncated says the file continues past
+   * it.
+   */
+  previewText: bind<[string, string], PreviewTextResult | null>("DesktopService.PreviewText", (mountID: string, ref: string) => [mountID, ref]),
+  /**
+   * PreviewURL resolves a file to a URL the webview renders
+   * directly (images, streaming video/audio, PDF). Kind is
+   * "direct" (a provider-issued short-lived URL) or "proxy" (a
+   * zydrive-preview:// token URL, 10 minutes).
+   */
+  previewURL: bind<[string, string], PreviewURLResult | null>("DesktopService.PreviewURL", (mountID: string, ref: string) => [mountID, ref]),
   /**
    * PushJobToAgent sends a job's latest config to its Agent (health
    * check + push; credentials are NOT pushed — those travel only in
@@ -784,6 +876,12 @@ export const DesktopService = {
    * files are never re-done (batch-level resume, V0.9.0).
    */
   retryTransfer: bind<[string], Transfer | null>("DesktopService.RetryTransfer", (id: string) => [id]),
+  /**
+   * RevealInFinder downloads a file to the preview cache (or reuses
+   * the cached copy) and shows it in the system file manager. It
+   * returns the local cached path.
+   */
+  revealInFinder: bind<[string, string], string>("DesktopService.RevealInFinder", (mountID: string, ref: string) => [mountID, ref]),
   /** RunSync executes a confirmed plan. */
   runSync: bind<[SyncJob | null, Plan | null], Run | null>("DesktopService.RunSync", (job: SyncJob | null, plan: Plan | null) => [job, plan]),
   /** SaveAgent adds or edits an Agent (name/address), persisting it. */

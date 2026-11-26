@@ -44,6 +44,14 @@ type App struct {
 	// resolve. Built lazily; local jobs never leave this machine.
 	localProv storage.Provider
 	events    *EventBus
+	// pproxy serves preview token URLs (v0.9.1): the loopback
+	// preview proxy for drivers without a direct URL. Created
+	// lazily by previewProxy(); never nil after first use.
+	pproxy *previewProxy
+	// pcache manages the preview cache (v0.9.1): downloaded copies
+	// for "open with system app". Created lazily by
+	// previewCacheManager(); never nil after first use.
+	pcache *previewCache
 	// transferLimiter is the single shared rate limiter for the
 	// whole app (Settings speed limit is a global cap, not
 	// per-transfer: 4 transfers at 1 MB/s each would otherwise

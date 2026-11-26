@@ -3,6 +3,7 @@ package dropbox
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -365,5 +366,24 @@ func TestDropboxQuotaSendsNullBody(t *testing.T) {
 	}
 	if fs.quotaBody != "null" {
 		t.Fatalf("Quota request body: %q, want JSON null", fs.quotaBody)
+	}
+}
+
+// TestDropboxDirectURL pins get_temporary_link as the preview URL:
+// the mock returns the same link Thumbnail uses, and the provider
+// advertises storage.DirectURLer.
+func TestDropboxDirectURL(t *testing.T) {
+	p, srv := newTestProvider(t)
+	defer srv.Close()
+	du, ok := any(p).(storage.DirectURLer)
+	if !ok {
+		t.Fatal("dropbox provider must implement storage.DirectURLer")
+	}
+	u, err := du.DirectURL(context.Background(), "/a.txt")
+	if err != nil {
+		t.Fatalf("DirectURL: %v", err)
+	}
+	if u != "https://dl.dropboxusercontent.com/s/tmp" {
+		t.Fatalf("DirectURL = %q, want the mock temporary link", u)
 	}
 }

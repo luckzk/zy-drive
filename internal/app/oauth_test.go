@@ -28,7 +28,7 @@ func challengeOf(verifier string) string {
 // code_verifier and omit client_secret entirely.
 func TestDrimeOAuthPKCE(t *testing.T) {
 	a := newTestApp(t)
-	start, err := a.BeginOAuth(domain.ProviderDrime, "drime-client-id")
+	start, err := a.BeginOAuth(domain.ProviderDrime, "drime-client-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth(drime): %v", err)
 	}
@@ -106,7 +106,7 @@ func TestDrimeOAuthPKCE(t *testing.T) {
 func TestOAuthPKCEOnForAllProviders(t *testing.T) {
 	a := newTestApp(t)
 	for _, p := range []domain.ProviderKind{domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive} {
-		start, err := a.BeginOAuth(p, "client-id")
+		start, err := a.BeginOAuth(p, "client-id", "")
 		if err != nil {
 			t.Fatalf("BeginOAuth(%s): %v", p, err)
 		}
@@ -138,7 +138,7 @@ func TestOAuthPKCEOnForAllProviders(t *testing.T) {
 // end to end, against a mock token endpoint.
 func TestOAuthCallbackAutoFlow(t *testing.T) {
 	a := newTestApp(t)
-	start, err := a.BeginOAuth(domain.ProviderDrive, "drive-client-id")
+	start, err := a.BeginOAuth(domain.ProviderDrive, "drive-client-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth(drive): %v", err)
 	}
@@ -221,7 +221,7 @@ func TestOAuthCallbackAutoFlow(t *testing.T) {
 // inject a code into a live flow.
 func TestOAuthCallbackWrongState(t *testing.T) {
 	a := newTestApp(t)
-	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth(dropbox): %v", err)
 	}
@@ -248,7 +248,7 @@ func TestOAuthCallbackWrongState(t *testing.T) {
 // is reported as an error poll result, not a silent hang.
 func TestOAuthCallbackDenied(t *testing.T) {
 	a := newTestApp(t)
-	start, err := a.BeginOAuth(domain.ProviderOneDrive, "od-id")
+	start, err := a.BeginOAuth(domain.ProviderOneDrive, "od-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth(onedrive): %v", err)
 	}
@@ -282,7 +282,7 @@ func TestOAuthCallbackDenied(t *testing.T) {
 // "授权链接已失效或已被用过" and the user was stuck.
 func TestExchangeRetryAfterFailureKeepsState(t *testing.T) {
 	a := newTestApp(t)
-	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth(dropbox): %v", err)
 	}
@@ -360,11 +360,11 @@ func TestExchangeRetryAfterFailureKeepsState(t *testing.T) {
 // right code.
 func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
 	a := newTestApp(t)
-	start1, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	start1, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth #1: %v", err)
 	}
-	start2, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	start2, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth #2: %v", err)
 	}
@@ -428,7 +428,7 @@ func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
 // mock token endpoint.
 func TestExchangeWithStaleStateReproducesExpiredMessage(t *testing.T) {
 	a := newTestApp(t)
-	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id")
+	start, err := a.BeginOAuth(domain.ProviderDropbox, "dbx-id", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth(dropbox): %v", err)
 	}

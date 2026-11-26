@@ -889,3 +889,29 @@ func TestOneDriveQuota(t *testing.T) {
 		t.Fatalf("Quota: got used=%d total=%d, want 236000000000 / 1099511627776", used, total)
 	}
 }
+
+// TestOneDriveDirectURL pins @microsoft.graph.downloadUrl as the
+// preview URL: the mock item carries one, DirectURL returns it
+// verbatim, and the provider advertises storage.DirectURLer.
+func TestOneDriveDirectURL(t *testing.T) {
+	p, m := newTestProvider(t, func(m *mockGraph) {
+		m.addItem("photo.png", "root", false, []byte("png-bytes"))
+	})
+	du, ok := any(p).(storage.DirectURLer)
+	if !ok {
+		t.Fatal("onedrive provider must implement storage.DirectURLer")
+	}
+	u, err := du.DirectURL(context.Background(), "photo.png")
+	if err != nil {
+		t.Fatalf("DirectURL: %v", err)
+	}
+	// The mock's item id is the sequence number (nextID starts at
+	// 100, so the first file is "101"): the download URL is base
+	// + "/dl/" + id.
+	if u != m.base+"/dl/101" {
+		t.Fatalf("DirectURL = %q, want %q", u, m.base+"/dl/101")
+	}
+	if _, err := du.DirectURL(context.Background(), "missing.png"); err == nil {
+		t.Fatal("DirectURL missing file: want an error")
+	}
+}

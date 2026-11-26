@@ -53,7 +53,9 @@ func (a *App) Download(ctx context.Context, mountID, ref, localPath string) erro
 }
 
 // Upload streams a local file to the cloud. The file is streamed, not
-// loaded into memory.
+// loaded into memory. When the destination implements
+// storage.ResumableUploader (Drime, v0.9.1) the upload resumes from
+// the next missing part instead of restarting from zero.
 func (a *App) Upload(ctx context.Context, mountID, ref, localPath string) (domain.Node, error) {
 	p, err := a.ProviderFor(mountID)
 	if err != nil {
@@ -67,6 +69,13 @@ func (a *App) Upload(ctx context.Context, mountID, ref, localPath string) (domai
 	st, err := f.Stat()
 	if err != nil {
 		return domain.Node{}, err
+	}
+	if ru, ok := p.(storage.ResumableUploader); ok {
+		node, err := ru.UploadResumable(ctx, ref, f, st.Size())
+		if err != nil {
+			return domain.Node{}, fmt.Errorf("app: upload %s: %w", ref, err)
+		}
+		return node, nil
 	}
 	node, err := p.Upload(ctx, ref, f, st.Size())
 	if err != nil {
@@ -120,8 +129,9 @@ type batchEntry struct {
 // "photos" creates destDir/photos/...). Files already downloaded
 // are never re-queued by a retry — only failed/interrupted ones
 // are (see Queue.Requeue). A single file still restarts from the
-// beginning on retry: no provider offers ranged reads yet, so a
-// mid-file resume is not possible in this version.
+// beginning on retry: the DOWNLOAD side has no ranged reads (only
+// Drime UPLOAD resumes mid-file, v0.9.1), so a mid-download resume
+// is not possible in this version.
 func (a *App) BatchDownload(ctx context.Context, mountID string, refs []string, destDir string) (*BatchResult, error) {
 	if len(refs) == 0 {
 		return nil, fmt.Errorf("app: 请先选要下载的文件或文件夹")
@@ -502,6 +512,24 @@ func (a *App) executeUpload(ctx context.Context, t *domain.Transfer, report func
 	if parent := path.Dir(t.DstRef); parent != "" && parent != "." && parent != "/" {
 		_ = dst.Mkdir(ctx, parent)
 	}
+	// Resumable path (Drime, v0.9.1): the source is a local file,
+	// so it is seekable, and the destination can continue a
+	// persisted multipart session instead of restarting from
+	// zero. Progress starts at the bytes already confirmed on the
+	// server, so a retry continues the bar instead of jumping
+	// back to 0. Cross-cloud copies (executeCopy) keep plain
+	// Upload: a pipe cannot re-read the parts it already sent.
+	if ru, ok := dst.(storage.ResumableUploader); ok {
+		if rs, ok := rc.(storage.SeekableSource); ok {
+			done, _ := ru.ResumeState(ctx, t.DstRef, t.Size)
+			rr := newResumableReader(rs, report, a.transferLimiter, done)
+			if _, err := ru.UploadResumable(ctx, t.DstRef, rr, t.Size); err != nil {
+				return fmt.Errorf("app: upload %s: %w", t.SrcRef, err)
+			}
+			report(t.Size, 0)
+			return nil
+		}
+	}
 	pr := newProgressReader(rc, report, a.transferLimiter)
 	if _, err := dst.Upload(ctx, t.DstRef, pr, t.Size); err != nil {
 		return fmt.Errorf("app: upload %s: %w", t.SrcRef, err)
@@ -574,4 +602,56 @@ func (p *progressReader) Read(b []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// resumableReader adapts a seekable source for UploadResumable
+// (Drime, v0.9.1). It is a storage.SeekableSource: the driver
+// reads parts with io.SectionReader, which needs ReadAt, and
+// verifies the already-uploaded parts with Seek+Read. Only ReadAt
+// counts toward progress and the limiter — that is the upload
+// path. Read is deliberately uncounted: verification reads are
+// local disk reads, not uploads, and counting them would push the
+// bar past the file size (done already starts at the confirmed
+// bytes). Seek passes through to the underlying file.
+type resumableReader struct {
+	rs      storage.SeekableSource
+	report  func(done, speedBps int64)
+	limiter *transfer.Limiter
+	start   time.Time
+	last    time.Time
+	done    int64 // seeded with the bytes already confirmed on the server
+}
+
+func newResumableReader(rs storage.SeekableSource, report func(done, speedBps int64), limiter *transfer.Limiter, done int64) *resumableReader {
+	now := time.Now()
+	return &resumableReader{rs: rs, report: report, limiter: limiter, start: now, last: now, done: done}
+}
+
+func (r *resumableReader) Read(b []byte) (int, error) {
+	return r.rs.Read(b)
+}
+
+func (r *resumableReader) ReadAt(b []byte, off int64) (int, error) {
+	n, err := r.rs.ReadAt(b, off)
+	if n > 0 {
+		if r.limiter != nil {
+			r.limiter.Wait(int64(n))
+		}
+		r.done += int64(n)
+		now := time.Now()
+		if now.Sub(r.last) >= 200*time.Millisecond {
+			elapsed := now.Sub(r.start).Seconds()
+			var speed int64
+			if elapsed > 0 {
+				speed = int64(float64(r.done) / elapsed)
+			}
+			r.report(r.done, speed)
+			r.last = now
+		}
+	}
+	return n, err
+}
+
+func (r *resumableReader) Seek(offset int64, whence int) (int64, error) {
+	return r.rs.Seek(offset, whence)
 }

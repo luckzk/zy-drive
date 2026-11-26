@@ -2,9 +2,9 @@
 
 桌面版 ZyDrive，走 Air Explorer 的功能路线，面向新手。
 
-一个窗口管理 Dropbox、Google Drive、OneDrive、S3 / R2 与 Drime：浏览、
-上传下载、单向复制与双向同步。桌面管配置和看，服务器 Agent 管定时执行。
-**不用 rclone，全部走各家官方 API 原生实现。**
+一个窗口管理 Dropbox、Google Drive、OneDrive、S3 / R2、Drime、Box、pCloud
+与 MEGA（9 家）：浏览、上传下载、单向复制与双向同步。桌面管配置和看，
+服务器 Agent 管定时执行。**不用 rclone，全部走各家官方 API 原生实现。**
 
 > 状态：V0.1 功能填充（2026-11-24 晚）。S3、Dropbox、Google Drive
 > 驱动均已真实现（API v2 / v3 HTTP，无第三方 SDK），本地文件夹
@@ -13,6 +13,7 @@
 > 架构设计见 `docs/architecture.md`（仓库版）与
 > `~/workspace/your_files/multi-cloud-manager-architecture/multi-cloud-manager-architecture.pdf`（18 页）。
 > 注册三家官方 OAuth 应用的步骤见 `docs/oauth-apps/`（README 总览 + dropbox / google-drive / onedrive 各一篇）；
+> Box / pCloud 没有官方应用（换 Token 必须带 Client Secret，只能用自己的应用，指南见同目录 box.md / pcloud.md）；
 > 内置官方应用的 Client ID 存在 `internal/app/builtin-oauth-clients.json`（公开标识，随程序发版），
 > 用户自己的应用单独存在本机 `~/.config/zy-drive/custom-oauth-clients.json`（Secret 加密），两者永不互相覆盖。
 

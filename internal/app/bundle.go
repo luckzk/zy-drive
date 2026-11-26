@@ -111,6 +111,7 @@ func (a *App) ExportAgentBundle(ctx context.Context, agentID, passphrase string)
 				AccessKey: creds.AccessKey, SecretKey: creds.SecretKey,
 				AccessToken: creds.AccessToken, RefreshToken: creds.RefreshToken,
 				ClientSecret: creds.ClientSecret,
+				MegaSession: creds.MegaSession, MegaMasterKey: creds.MegaMasterKey,
 			},
 		})
 	}
@@ -236,6 +237,14 @@ func (a *App) ImportBundle(data []byte, passphrase string) (*agentapi.Bundle, er
 		}
 		cfg.Extra["refresh_token"] = bm.Credentials.RefreshToken
 		cfg.Extra["client_secret"] = bm.Credentials.ClientSecret
+		// MEGA: the stored session (never the password).
+		if bm.Credentials.MegaSession != "" {
+			cfg.Extra["mega_session_id"] = bm.Credentials.MegaSession
+		}
+		if bm.Credentials.MegaMasterKey != "" {
+			cfg.Extra["mega_master_key"] = bm.Credentials.MegaMasterKey
+		}
+		a.mountRuntime(&cfg, bm.Mount.ID)
 		p, err := a.Registry.New(bm.Mount.Provider, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("app: 配置包里的网盘 %q 建不起来：%w", bm.Mount.DisplayName, err)
@@ -244,6 +253,7 @@ func (a *App) ImportBundle(data []byte, passphrase string) (*agentapi.Bundle, er
 			AccessKey: bm.Credentials.AccessKey, SecretKey: bm.Credentials.SecretKey,
 			AccessToken: bm.Credentials.AccessToken, RefreshToken: bm.Credentials.RefreshToken,
 			ClientSecret: bm.Credentials.ClientSecret,
+			MegaSession: bm.Credentials.MegaSession, MegaMasterKey: bm.Credentials.MegaMasterKey,
 		}
 		preparedMounts = append(preparedMounts, prepared{mount: bm.Mount, config: bm.Config, creds: creds, prov: p})
 	}

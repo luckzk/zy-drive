@@ -162,7 +162,35 @@ const STUB = `(() => {
         const mount = (${STUB_MOUNTS}).find((m) => m.id === args[0]) ?? (${STUB_MOUNTS})[0]
         return { ...mount, rootRef: '', rootLabel: args[1] + (args[2] ? '/' + args[2] : '') }
       }
-      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '/tmp/zy-downloads', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '' }
+      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '/tmp/zy-downloads', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '', previewCacheLimitMB: 2048, previewCacheClearOnExit: false }
+      // V0.9.1 预览桩：PreviewURL 按后缀给直链（图片用 240×120
+      // 品牌绿块 PNG data URL，真能渲染、肉眼可见；PDF 用最小合法
+      // PDF 的 data URL，真能渲染；视频/音频给 data-URL 的无效字
+      // 节，播不出来、走降级文案——断言只认元素存在与降级文案）。注意：桩里不能出现
+      // zydrive-preview:// URL——桩浏览器解析不了这个 scheme，
+      // 视频/iframe 子帧加载挂起后会卡死整页的真实鼠标输入（实
+      // 测：单开视频或单开 PDF 没事，两个都开过再关 Inspector，
+      // 连侧栏导航都点不动，刷新页面也恢复不了）；真机上 scheme
+      // 已注册，不存在这个问题，代理直链本身由 Go 测试覆盖。
+      // PreviewText 给两行文本；系统打开/显示返回假缓存路径；
+      // 缓存信息/清理给固定数字（设置页断言用）。
+      if (method === 'DesktopService.PreviewURL') {
+        const ref = args[1] || ''
+        if (/\.png$/i.test(ref)) return { url: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAAB4CAIAAABD1OhwAAABhUlEQVR4nO3SQQlDARTEwG+k10qqipquk5p4sBAGRkAOeT6/L2Q88wI4ZGhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpBiaFEOTYmhSDE2KoUkxNCmGJsXQpDzP+wUd+wI4tC+AQ/sCOLQvgEP7Aji0L4BD+wI4tC+AQ/sCOLQvgEP7Aji0L4BD+wI4tC+AQ/sCOLQvgEP7Aji0L4BD+wI4tC+AQ/sCOLQvgEP7Aji0L4BD+wI4tC+AQ/sCOLQvgEP7Aji0L4BD+wI4tC+AQ/sCuPMHtQuZPUOxqZAAAAAASUVORK5CYII=', kind: 'direct', mime: 'image/png', size: 456789 }
+        if (/\.mp4$/i.test(ref)) return { url: 'data:video/mp4;base64,AAAA', kind: 'proxy', mime: 'video/mp4', size: 12345678 }
+        if (/\.m4a$/i.test(ref)) return { url: 'data:audio/mp4;base64,AAAA', kind: 'proxy', mime: 'audio/mp4', size: 567890 }
+        if (/\.pdf$/i.test(ref)) return { url: 'data:application/pdf;base64,JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCAyMDAgMjAwXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCAzNiA+PgpzdHJlYW0KQlQgL0YxIDE4IFRmIDIwIDE4MCBUZCAoSGVsbG8pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzI3IDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKMzk3CiUlRU9GCg==', kind: 'proxy', mime: 'application/pdf', size: 123456 }
+        return { url: 'zydrive-preview://localhost/preview/stub-file', kind: 'proxy', mime: 'application/octet-stream', size: 1234 }
+      }
+      if (method === 'DesktopService.PreviewText') {
+        const ref = args[1] || ''
+        if (/\.go$/i.test(ref)) return { text: 'package main\\n\\n// hello from the stub\\nfunc main() {}\\n', truncated: false, size: 1234 }
+        return { text: 'line one\\nline two\\n', truncated: false, size: 1234 }
+      }
+      if (method === 'DesktopService.OpenWithSystemApp') return '/Users/zy/Library/Caches/com.luckzk.zy-drive/preview/stubkey_' + (args[1] || 'file').split('/').pop()
+      if (method === 'DesktopService.RevealInFinder') return '/Users/zy/Library/Caches/com.luckzk.zy-drive/preview/stubkey_' + (args[1] || 'file').split('/').pop()
+      if (method === 'DesktopService.PreviewCacheInfo') return { sizeBytes: 1234567, fileCount: 3, limitMB: 2048 }
+      if (method === 'DesktopService.ClearPreviewCache') return { freedBytes: 1234567, fileCount: 3 }
       // V0.9.0 桩：原地更新凭证（同 ID、改名/分组、标已验证）、
       // Drime 工作区列表（个人空间 + sese + 设计组）、批量传
       // 输、重试、Agent 推送/触发/运行记录、配置包导出、Token 保存。
@@ -326,7 +354,7 @@ try {
       }
     })
     console.log('provider grid:', JSON.stringify(providerGrid))
-    if (providerGrid.count !== 6) failures.push(`添加网盘第 1 步应有 6 张网盘卡片，实测 ${providerGrid.count} 张`)
+    if (providerGrid.count !== 9) failures.push(`添加网盘第 1 步应有 9 张网盘卡片，实测 ${providerGrid.count} 张`)
     if (providerGrid.columns !== 2) failures.push(`添加网盘第 1 步应是两列网格，实测 ${providerGrid.columns} 列`)
     if (!providerGrid.allHaveLogo) failures.push('添加网盘卡片里有卡片没有品牌 logo（SVG）')
     await page.screenshot({ path: path.join(SHOTS, '01a-wizard-providers.png') })
@@ -583,6 +611,85 @@ try {
     if (driveStep2?.includes('App key')) failures.push('Drive 第 2 步串了 Dropbox 的字段名“App key”')
     if (driveStep2?.includes('Dropbox App Console')) failures.push('Drive 第 2 步串了 Dropbox 的指引（Dropbox App Console）')
     await page.screenshot({ path: path.join(SHOTS, '01f-wizard-drive.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+
+    // 1f2. Box 向导（V0.9.1）：Box 必须可选，第 2 步是 OAuth
+    // 授权码流程——有 Client ID + Client Secret（Box 换 Token
+    // 必须带 Secret，没有公开客户端选项）、Box 开发者控制台
+    // 指引和 root_readwrite 权限；没有官方应用，所以“官方应用
+    // （一键授权）”卡片置灰、默认选“自己的应用”，并显示
+    // “一键授权还没配置”。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    // 注意：hasText 'Box' 会子串匹配到 Dropbox 卡（Playwright
+    // hasText 不区分大小写），必须用锚定的正则点名字元素本身。
+    await page.locator('.provider-card .provider-name', { hasText: /^Box$/ }).click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const boxStep2 = await page.locator('.dialog').textContent()
+    console.log('box step2:', JSON.stringify(boxStep2?.slice(0, 400)))
+    if (!boxStep2?.includes('这个网盘的官方应用还没注册好')) failures.push('Box 第 2 步没有“一键授权还没配置”的灰卡提示（这个网盘的官方应用还没注册好）')
+    if (!boxStep2?.includes('Client ID')) failures.push('Box 第 2 步没有 Client ID')
+    if (!boxStep2?.includes('Client Secret')) failures.push('Box 第 2 步没有 Client Secret（Box 换 Token 必须带 Secret）')
+    if (!boxStep2?.includes('Box 开发者控制台')) failures.push('Box 第 2 步没有自己的建应用指引（Box 开发者控制台）')
+    if (!boxStep2?.includes('root_readwrite')) failures.push('Box 第 2 步没有自己的权限说明（root_readwrite）')
+    if (!boxStep2?.includes('http://localhost:57103')) failures.push('Box 第 2 步没有固定重定向端口 57103 的说明')
+    if (boxStep2?.includes('Azure')) failures.push('Box 第 2 步串了 OneDrive 的指引（Azure）')
+    await page.screenshot({ path: path.join(SHOTS, '01f2-wizard-box.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+
+    // 1f3. pCloud 向导（V0.9.1）：pCloud 必须可选，第 2 步是
+    // OAuth 授权码流程——有 Client ID + Client Secret（同 Box，
+    // 换 Token 必须带 Secret）、pCloud 控制台指引和账号所在区
+    // 选择器（自动 / 美国 / 欧洲）；同样没有官方应用。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    await page.locator('.provider-card', { hasText: 'pCloud' }).first().click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const pcloudStep2 = await page.locator('.dialog').textContent()
+    console.log('pcloud step2:', JSON.stringify(pcloudStep2?.slice(0, 400)))
+    if (!pcloudStep2?.includes('这个网盘的官方应用还没注册好')) failures.push('pCloud 第 2 步没有“一键授权还没配置”的灰卡提示（这个网盘的官方应用还没注册好）')
+    if (!pcloudStep2?.includes('Client ID')) failures.push('pCloud 第 2 步没有 Client ID')
+    if (!pcloudStep2?.includes('Client Secret')) failures.push('pCloud 第 2 步没有 Client Secret（pCloud 换 Token 必须带 Secret）')
+    if (!pcloudStep2?.includes('账号所在区')) failures.push('pCloud 第 2 步没有账号所在区选择器')
+    if (!pcloudStep2?.includes('http://localhost:57104')) failures.push('pCloud 第 2 步没有固定重定向端口 57104 的说明')
+    const pcloudRegion = await page.evaluate(() => {
+      const sel = document.querySelector('.dialog select')
+      if (!sel) return { found: false }
+      return { found: true, value: sel.value, options: [...sel.options].map((o) => o.textContent?.trim()) }
+    })
+    console.log('pcloud region select:', JSON.stringify(pcloudRegion))
+    if (!pcloudRegion.found) failures.push('pCloud 第 2 步没有区选择下拉框')
+    if (pcloudRegion.found && pcloudRegion.value !== 'auto') failures.push(`pCloud 区选择默认应为“自动”，实测 ${pcloudRegion.value}`)
+    if (pcloudRegion.found && !pcloudRegion.options?.some((o) => o?.includes('欧洲'))) failures.push('pCloud 区选择里没有“欧洲”选项')
+    await page.screenshot({ path: path.join(SHOTS, '01f3-wizard-pcloud.png') })
+    await page.locator('.dialog-actions >> text=取消').click()
+    await page.waitForTimeout(400)
+
+    // 1f4. MEGA 向导（V0.9.1）：MEGA 必须可选，第 2 步是一页表单
+    // （没有第 3 步）——邮箱 + 密码 + 可选的两步验证代码；没有
+    // Client ID、没有“生成授权链接”、没有授权码；同一页上有
+    // “测试连接”与“保存”。
+    await page.getByRole('button', { name: '添加网盘', exact: true }).click()
+    await page.waitForTimeout(400)
+    await page.locator('.provider-card', { hasText: 'MEGA' }).first().click()
+    await page.waitForTimeout(300)
+    await page.getByRole('button', { name: '下一步', exact: true }).click()
+    await page.waitForTimeout(300)
+    const megaStep2 = await page.locator('.dialog').textContent()
+    console.log('mega step2:', JSON.stringify(megaStep2?.slice(0, 400)))
+    if (!megaStep2?.includes('MEGA 账号邮箱')) failures.push('MEGA 向导第 2 步没有“邮箱”字段')
+    if (!megaStep2?.includes('两步验证')) failures.push('MEGA 向导第 2 步没有“两步验证”字段')
+    if (megaStep2?.includes('Client ID')) failures.push('MEGA 向导第 2 步出现了 Client ID（邮箱+密码登录，不应有 OAuth 字段）')
+    if (megaStep2?.includes('生成授权链接')) failures.push('MEGA 向导第 2 步出现了“生成授权链接”（邮箱+密码登录，不应有）')
+    if (!megaStep2?.includes('测试连接')) failures.push('MEGA 一页表单里没有“测试连接”按钮')
+    if (megaStep2?.includes('第 3 步')) failures.push('MEGA 一页表单里不应出现“第 3 步”')
+    await page.screenshot({ path: path.join(SHOTS, '01f4-wizard-mega.png') })
     await page.locator('.dialog-actions >> text=取消').click()
     await page.waitForTimeout(400)
 
@@ -1014,6 +1121,86 @@ try {
     await page.waitForTimeout(300)
   }
 
+  // 2g. 文件预览（v0.9.1，VISUAL_MOUNTS）：点文件行出
+  // Inspector，里面的“预览”按格式分档——图片内嵌 <img>
+  //（桩给 1×1 PNG data URL，真能渲染出来）、文本/代码
+  // <pre> 显示内容、Office 只给“用系统应用打开”+ 显示入口
+  // （不假装能预览）、视频给 <video> 或诚实的降级文案
+  // （桩浏览器认不出 zydrive-preview://，播不出来是预期的）。
+  if (process.env.VISUAL_MOUNTS) {
+    const openPreview = async (name) => {
+      await page.locator('.file-table .row-name', { hasText: name }).first().click()
+      await page.waitForTimeout(600)
+      return await page.evaluate(() => {
+        // 注意：侧栏本身也是 <aside>，必须用 Inspector 的类名
+        // 定位，不能直接 querySelector('aside')。
+        const aside = document.querySelector('aside.inspector-enter, aside.inspector-exit')
+        if (!aside) return { found: false }
+        const text = aside.textContent ?? ''
+        const img = aside.querySelector('img')
+        return {
+          found: true,
+          hasPreviewHead: text.includes('预览'),
+          hasImg: !!img,
+          imgLoaded: img ? img.complete && img.naturalWidth > 0 : false,
+          imgWidth: img ? Math.round(img.getBoundingClientRect().width) : 0,
+          hasPre: !!aside.querySelector('pre'),
+          preText: aside.querySelector('pre')?.textContent ?? '',
+          hasVideo: !!aside.querySelector('video'),
+          hasIframe: !!aside.querySelector('iframe'),
+          hasSystemOpen: [...aside.querySelectorAll('button')].some((b) => b.textContent?.trim() === '用系统应用打开'),
+          hasReveal: [...aside.querySelectorAll('button')].some((b) => /中显示$/.test(b.textContent?.trim() ?? '')),
+          hasStreamNote: text.includes('流式播放中'),
+          hasVideoFallback: text.includes('播不出来'),
+          text: text.slice(0, 300),
+        }
+      })
+    }
+    // 图片：内嵌 img，真渲染出来（桩是 240×120 绿块，应占满预览区宽度）。
+    const pngPrev = await openPreview('封面.png')
+    console.log('preview png:', JSON.stringify(pngPrev))
+    if (!pngPrev.found || !pngPrev.hasPreviewHead) failures.push('点 封面.png 后 Inspector 里没有“预览”')
+    if (!pngPrev.hasImg) failures.push('图片预览里没有 <img>')
+    if (pngPrev.hasImg && !pngPrev.imgLoaded) failures.push('图片预览的 <img> 没有加载出来（桩是 240×120 PNG data URL，应能渲染）')
+    if (pngPrev.hasImg && pngPrev.imgWidth < 100) failures.push(`图片预览的 <img> 渲染宽度只有 ${pngPrev.imgWidth}px（桩图 240×120，应占满预览区）`)
+    await page.screenshot({ path: path.join(SHOTS, '02g-preview-png.png') })
+    // 文本/代码：<pre> 显示内容。
+    const goPrev = await openPreview('main.go')
+    console.log('preview go:', JSON.stringify(goPrev))
+    if (!goPrev.hasPre) failures.push('代码预览里没有 <pre>')
+    if (goPrev.hasPre && !goPrev.preText.includes('package main')) failures.push(`代码预览的 <pre> 里没有桩文本，实测 ${JSON.stringify(goPrev.preText.slice(0, 100))}`)
+    await page.screenshot({ path: path.join(SHOTS, '02g-preview-text.png') })
+    // Office：不假装能预览，只给两个系统入口；点“用系统应用
+    // 打开”后桩返回假缓存路径，显示“已用系统应用打开”。
+    const xlsxPrev = await openPreview('预算.xlsx')
+    console.log('preview xlsx:', JSON.stringify(xlsxPrev))
+    if (!xlsxPrev.hasSystemOpen) failures.push('Office 预览里没有“用系统应用打开”按钮')
+    if (!xlsxPrev.hasReveal) failures.push('Office 预览里没有“在 Finder / 文件管理器中显示”入口')
+    if (xlsxPrev.hasImg || xlsxPrev.hasVideo || xlsxPrev.hasIframe) failures.push('Office 文件不应在应用内渲染（不应出现 img/video/iframe）')
+    await page.getByRole('button', { name: '用系统应用打开', exact: true }).click()
+    await page.waitForTimeout(500)
+    const openedMsg = await page.evaluate(() => document.querySelector('aside.inspector-enter, aside.inspector-exit')?.textContent ?? '')
+    if (!openedMsg.includes('已用系统应用打开')) failures.push(`点“用系统应用打开”后没有成功提示，实测 ${JSON.stringify(openedMsg.slice(0, 200))}`)
+    await page.screenshot({ path: path.join(SHOTS, '02g-preview-xlsx.png') })
+    // 视频：<video> 存在（桩浏览器播不出是预期的，降级文案也
+    // 接受），两种状态都不能是空白。
+    const mp4Prev = await openPreview('旅行.mp4')
+    console.log('preview mp4:', JSON.stringify(mp4Prev))
+    if (!mp4Prev.hasVideo && !mp4Prev.hasVideoFallback) failures.push('视频预览既没有 <video> 也没有降级文案（空白）')
+    if (mp4Prev.hasVideo && !mp4Prev.hasStreamNote) failures.push('视频预览有 <video> 但没有“流式播放中”的说明')
+    if (!mp4Prev.hasVideo && mp4Prev.hasStreamNote) failures.push('视频播不出来时不应再显示“流式播放中”')
+    if (!mp4Prev.hasVideo && !mp4Prev.hasSystemOpen) failures.push('视频播不出来时应给出系统应用打开入口')
+    await page.screenshot({ path: path.join(SHOTS, '02g-preview-video.png') })
+    // PDF：<iframe> 内嵌。
+    const pdfPrev = await openPreview('行程.pdf')
+    console.log('preview pdf:', JSON.stringify(pdfPrev))
+    if (!pdfPrev.hasIframe) failures.push('PDF 预览里没有 <iframe>')
+    await page.screenshot({ path: path.join(SHOTS, '02g-preview-pdf.png') })
+    // 关掉 Inspector，恢复干净态。
+    await page.locator('aside.inspector-enter button[aria-label="关闭详情"]').click().catch(() => {})
+    await page.waitForTimeout(300)
+  }
+
   // 3. 同步任务页：先列已保存任务（零任务空态）
   await page.locator('.nav-item', { hasText: '同步任务' }).click()
   await page.waitForTimeout(600)
@@ -1321,7 +1508,7 @@ try {
     }
   })
   console.log('settings cards:', JSON.stringify(settingsCards))
-  if (settingsCards.cardCount < 6) failures.push(`设置页分组卡片应至少 6 张（通用/网络/网盘/同步默认/Agent/关于），实测 ${settingsCards.cardCount} 张`)
+  if (settingsCards.cardCount < 7) failures.push(`设置页分组卡片应至少 7 张（通用/网络/网盘/同步默认/缓存/Agent/关于），实测 ${settingsCards.cardCount} 张`)
   for (const c of settingsCards.cardInfo) {
     if (c.bg !== 'rgb(245, 245, 245)') failures.push(`设置卡片背景应为 --card #F5F5F5，实测 ${c.bg}`)
     if (c.radius !== '16px') failures.push(`设置卡片圆角应为 16px，实测 ${c.radius}`)
@@ -1393,6 +1580,41 @@ try {
     if (!proxyTest) failures.push('点“测试代理”后没有显示连通结果（桩应返回经代理连通）')
     const networkCard = page.locator('.settings-card').nth(1)
     await networkCard.screenshot({ path: path.join(SHOTS, '04b-settings-network.png') })
+  }
+
+  // 4b2a. 设置页缓存卡（v0.9.1）：显示当前占用 + 文件数 + 上限
+  // （桩：1.2 MB、3 个文件、上限 2 GB）、上限选择框默认 2 GB、
+  // “退出时清理缓存”开关、点“清理缓存”后提示释放了多少。
+  {
+    const cacheCard = await page.evaluate(() => {
+      const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '缓存')
+      if (!card) return { found: false }
+      const select = card.querySelector('select')
+      return {
+        found: true,
+        text: card.textContent ?? '',
+        limitValue: select?.value ?? null,
+        hasClearBtn: [...card.querySelectorAll('button')].some((b) => b.textContent?.trim() === '清理缓存'),
+        hasExitToggle: [...card.querySelectorAll('label')].some((l) => l.textContent?.includes('退出时清理缓存')),
+      }
+    })
+    console.log('cache card:', JSON.stringify(cacheCard))
+    if (!cacheCard.found) failures.push('设置页里没有“缓存”卡')
+    if (cacheCard.found && !cacheCard.text.includes('1.2 MB')) failures.push(`缓存卡没有显示当前占用“1.2 MB”（桩 PreviewCacheInfo.sizeBytes=1234567），实测 ${JSON.stringify(cacheCard.text.slice(0, 200))}`)
+    if (cacheCard.found && !cacheCard.text.includes('3 个文件')) failures.push('缓存卡没有显示文件数“3 个文件”')
+    if (cacheCard.found && cacheCard.limitValue !== '2048') failures.push(`缓存上限选择框默认应是 2 GB（2048），实测 ${cacheCard.limitValue}`)
+    if (cacheCard.found && !cacheCard.hasClearBtn) failures.push('缓存卡里没有“清理缓存”按钮')
+    if (cacheCard.found && !cacheCard.hasExitToggle) failures.push('缓存卡里没有“退出时清理缓存”开关')
+    if (cacheCard.found && cacheCard.hasClearBtn) {
+      await page.locator('.settings-card', { hasText: '缓存' }).getByRole('button', { name: '清理缓存', exact: true }).click()
+      await page.waitForTimeout(500)
+      const cleared = await page.evaluate(() => {
+        const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '缓存')
+        return card?.textContent ?? ''
+      })
+      if (!cleared.includes('已清理预览缓存，释放了 1.2 MB（3 个文件）')) failures.push(`点“清理缓存”后没有释放提示，实测 ${JSON.stringify(cleared.slice(0, 200))}`)
+      await page.locator('.settings-card', { hasText: '缓存' }).screenshot({ path: path.join(SHOTS, '04b2a-settings-cache.png') })
+    }
   }
 
   // 4b2b. 设置页 S3 “修改桶 / 前缀”（问题 1，VISUAL_MOUNTS）：

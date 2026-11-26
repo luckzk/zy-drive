@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -717,7 +718,7 @@ func TestBeginExchangeOAuth(t *testing.T) {
 	// clients. The authorize URL must carry the PKCE challenge,
 	// the Files.ReadWrite.All + offline_access scopes, and no
 	// client secret anywhere.
-	start, err := a.BeginOAuth(domain.ProviderOneDrive, "cid-od")
+	start, err := a.BeginOAuth(domain.ProviderOneDrive, "cid-od", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth(onedrive): %v", err)
 	}
@@ -773,7 +774,7 @@ func TestBeginExchangeOAuth(t *testing.T) {
 	if _, err := a.ExchangeOAuthCode(domain.ProviderOneDrive, "cid-od", "", "code-od", start.State, tokenSrv.URL); err == nil {
 		t.Fatalf("replayed onedrive state must be rejected")
 	}
-	start, err = a.BeginOAuth(domain.ProviderDropbox, "cid-1")
+	start, err = a.BeginOAuth(domain.ProviderDropbox, "cid-1", "")
 	if err != nil {
 		t.Fatalf("BeginOAuth: %v", err)
 	}
@@ -1018,4 +1019,169 @@ func TestUpdateMountCredentials(t *testing.T) {
 	}); err == nil {
 		t.Fatal("re-auth on a local mount must be rejected")
 	}
+}
+
+// TestBeginExchangeOAuthBoxPcloud pins the Box/pCloud OAuth
+// shape (v0.9.1): fixed loopback ports (Box 57103, pCloud
+// 57104 — the redirect URI must match exactly), no PKCE
+// challenge and no verifier on the exchange (the Client Secret
+// is the authentication), Box scope root_readwrite, pCloud no
+// scope parameter at all, pCloud EU authorize endpoint on
+// region "eu", and pCloud's dropped state tolerated when the
+// single pending flow is a pCloud flow.
+func TestBeginExchangeOAuthBoxPcloud(t *testing.T) {
+	a := newTestApp(t)
+	// --- Box: fixed port, scope, no PKCE. ---
+	start, err := a.BeginOAuth(domain.ProviderBox, "cid-box", "")
+	if err != nil {
+		t.Fatalf("BeginOAuth(box): %v", err)
+	}
+	authURL, _ := url.Parse(start.AuthURL)
+	if authURL.Host != "account.box.com" || !strings.HasPrefix(authURL.Path, "/api/oauth2/authorize") {
+		t.Fatalf("box auth URL host/path: %q", start.AuthURL)
+	}
+	if got := authURL.Query().Get("redirect_uri"); got != "http://localhost:57103" {
+		t.Fatalf("box redirect_uri: got %q, want http://localhost:57103", got)
+	}
+	if got := authURL.Query().Get("scope"); got != "root_readwrite" {
+		t.Fatalf("box scope: got %q, want root_readwrite", got)
+	}
+	if authURL.Query().Get("code_challenge") != "" {
+		t.Fatalf("box auth URL must not carry a PKCE challenge: %q", start.AuthURL)
+	}
+	// The fixed port is really bound: occupying it first must
+	// fail plainly (no silent random-port fallback — the
+	// provider would reject any other URI). The first flow is
+	// cancelled first so it frees the port.
+	a.CancelOAuth(start.State)
+	occupy, err := net.Listen("tcp", "127.0.0.1:57103")
+	if err != nil {
+		t.Fatalf("cannot occupy 57103 to test the bind failure: %v", err)
+	}
+	_, err = a.BeginOAuth(domain.ProviderBox, "cid-box", "")
+	_ = occupy.Close()
+	if err == nil || !strings.Contains(err.Error(), "57103") {
+		t.Fatalf("BeginOAuth(box) with 57103 occupied: got %v, want an error naming the port", err)
+	}
+	// Start a fresh Box flow for the exchange test below.
+	start, err = a.BeginOAuth(domain.ProviderBox, "cid-box", "")
+	if err != nil {
+		t.Fatalf("BeginOAuth(box) again: %v", err)
+	}
+	authURL, _ = url.Parse(start.AuthURL)
+	// --- Box exchange: secret required, verifier rejected. ---
+	wantRedirect := authURL.Query().Get("redirect_uri")
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if r.Form.Get("code") != "code-box" || r.Form.Get("redirect_uri") != wantRedirect {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Form.Get("client_secret") == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_client","error_description":"missing client_secret"}`))
+			return
+		}
+		if r.Form.Get("code_verifier") != "" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_request","error_description":"unexpected code_verifier"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "acc-box", "refresh_token": "ref-box",
+		})
+	}))
+	defer tokenSrv.Close()
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderBox, "cid-box", "csec-box", "code-box", start.State, tokenSrv.URL)
+	if err != nil {
+		t.Fatalf("ExchangeOAuthCode(box): %v", err)
+	}
+	if tokens.AccessToken != "acc-box" || tokens.RefreshToken != "ref-box" {
+		t.Fatalf("box tokens: %+v", tokens)
+	}
+	// --- pCloud US ("auto"): fixed port, no scope, no PKCE. ---
+	start, err = a.BeginOAuth(domain.ProviderPCloud, "cid-pc", "auto")
+	if err != nil {
+		t.Fatalf("BeginOAuth(pcloud auto): %v", err)
+	}
+	authURL, _ = url.Parse(start.AuthURL)
+	if authURL.Host != "my.pcloud.com" || !strings.HasPrefix(authURL.Path, "/oauth2/authorize") {
+		t.Fatalf("pcloud auto auth URL: %q", start.AuthURL)
+	}
+	if got := authURL.Query().Get("redirect_uri"); got != "http://localhost:57104" {
+		t.Fatalf("pcloud redirect_uri: got %q, want http://localhost:57104", got)
+	}
+	if _, ok := authURL.Query()["scope"]; ok {
+		t.Fatalf("pcloud auth URL must not carry a scope: %q", start.AuthURL)
+	}
+	if authURL.Query().Get("code_challenge") != "" {
+		t.Fatalf("pcloud auth URL must not carry a PKCE challenge: %q", start.AuthURL)
+	}
+	// A fixed port admits only one pending flow at a time: the
+	// auto flow is cancelled before the EU flow starts.
+	a.CancelOAuth(start.State)
+	// --- pCloud EU: the authorize endpoint switches host. ---
+	euStart, err := a.BeginOAuth(domain.ProviderPCloud, "cid-pc", "eu")
+	if err != nil {
+		t.Fatalf("BeginOAuth(pcloud eu): %v", err)
+	}
+	euAuthURL, _ := url.Parse(euStart.AuthURL)
+	if euAuthURL.Host != "e.pcloud.com" {
+		t.Fatalf("pcloud eu auth URL host: got %q, want e.pcloud.com", euAuthURL.Host)
+	}
+	// The EU flow remembers its region (the exchange picks the
+	// EU token endpoint from it).
+	oauthMu.Lock()
+	region := oauthStates[euStart.State].region
+	oauthMu.Unlock()
+	if region != "eu" {
+		t.Fatalf("pcloud eu flow region: got %q, want eu", region)
+	}
+	a.CancelOAuth(euStart.State)
+	// --- pCloud drops state: a stateless callback to the sole
+	// pending pCloud flow must still land the code. ---
+	start, err = a.BeginOAuth(domain.ProviderPCloud, "cid-pc", "auto")
+	if err != nil {
+		t.Fatalf("BeginOAuth(pcloud auto) again: %v", err)
+	}
+	authURL, _ = url.Parse(start.AuthURL)
+	redirect := authURL.Query().Get("redirect_uri")
+	resp, err := http.Get(redirect + "/?code=code-pc")
+	if err != nil {
+		t.Fatalf("stateless callback GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	res, err := a.PollOAuthCallback(start.State)
+	if err != nil {
+		t.Fatalf("PollOAuthCallback(pcloud): %v", err)
+	}
+	if res.Status != "done" || res.Code != "code-pc" {
+		t.Fatalf("stateless pcloud callback: got %+v, want done/code-pc", res)
+	}
+	// --- A stateless callback must NOT land on a non-pCloud
+	// flow: with only a Dropbox flow pending, it gets the error
+	// page and the flow stays waiting. ---
+	dbStart, err := a.BeginOAuth(domain.ProviderDropbox, "cid-db", "")
+	if err != nil {
+		t.Fatalf("BeginOAuth(dropbox): %v", err)
+	}
+	dbAuthURL, _ := url.Parse(dbStart.AuthURL)
+	dbRedirect := dbAuthURL.Query().Get("redirect_uri")
+	resp, err = http.Get(dbRedirect + "/?code=code-db")
+	if err != nil {
+		t.Fatalf("stateless dropbox callback GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("stateless dropbox callback: got HTTP %d, want 400", resp.StatusCode)
+	}
+	res, err = a.PollOAuthCallback(dbStart.State)
+	if err != nil {
+		t.Fatalf("PollOAuthCallback(dropbox): %v", err)
+	}
+	if res.Status != "waiting" {
+		t.Fatalf("stateless dropbox callback: got %+v, want waiting", res)
+	}
+	a.CancelOAuth(dbStart.State)
 }

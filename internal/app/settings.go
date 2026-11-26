@@ -46,6 +46,13 @@ type Settings struct {
 	ProxyMode   string `json:"proxyMode"`   // system | manual | direct
 	ProxyHTTP   string `json:"proxyHttp"`   // manual HTTP proxy, "host:port" or full URL
 	ProxySOCKS5 string `json:"proxySocks5"` // manual SOCKS5 proxy, "host:port" or full URL
+	// Preview cache (Settings → 缓存， v0.9.1): the cap for
+	// downloaded "open with system app" copies, in MB — one of
+	// 512 / 1024 / 2048 / 5120, default 2048. ClearOnExit wipes
+	// the cache when the app quits (mygo has no OnExit hook, so
+	// main runs it after App.Run returns); default off.
+	PreviewCacheLimitMB    int  `json:"previewCacheLimitMB"`
+	PreviewCacheClearOnExit bool `json:"previewCacheClearOnExit"`
 }
 
 // DefaultSettings is what a fresh install (or a missing key) gets.
@@ -61,6 +68,8 @@ func DefaultSettings() Settings {
 		ProxyMode:          string(netproxy.ModeSystem),
 		ProxyHTTP:          "",
 		ProxySOCKS5:        "",
+		PreviewCacheLimitMB:    previewCacheLimitDefaultMB,
+		PreviewCacheClearOnExit: false,
 	}
 }
 
@@ -123,6 +132,17 @@ func (a *App) GetSettings() (Settings, error) {
 	if v, ok := a.getSetting("proxy.socks5"); ok {
 		s.ProxySOCKS5 = v
 	}
+	if v, ok := a.getSetting("preview.cache_limit_mb"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			switch n {
+			case 512, 1024, 2048, 5120:
+				s.PreviewCacheLimitMB = n
+			}
+		}
+	}
+	if v, ok := a.getSetting("preview.cache_clear_on_exit"); ok {
+		s.PreviewCacheClearOnExit = v == "1"
+	}
 	return s, nil
 }
 
@@ -149,6 +169,15 @@ func (a *App) SaveSettings(s Settings) error {
 	}
 	if s.SyncConflict != "keep-both" {
 		return fmt.Errorf("app: 冲突处理只有“保留双方”已实现，其他策略在后续版本提供")
+	}
+	switch s.PreviewCacheLimitMB {
+	case 0:
+		// An empty value (old clients, hand-built structs) is the
+		// default, not an error.
+		s.PreviewCacheLimitMB = previewCacheLimitDefaultMB
+	case 512, 1024, 2048, 5120:
+	default:
+		return fmt.Errorf("app: 预览缓存上限只能是 500 MB、1 GB、2 GB 或 5 GB")
 	}
 	// An empty mode (old clients, hand-built structs) is the
 	// system default, not an error.
@@ -193,6 +222,13 @@ func (a *App) SaveSettings(s Settings) error {
 		"proxy.mode":             s.ProxyMode,
 		"proxy.http":             s.ProxyHTTP,
 		"proxy.socks5":           s.ProxySOCKS5,
+		"preview.cache_limit_mb": strconv.Itoa(s.PreviewCacheLimitMB),
+		"preview.cache_clear_on_exit": func() string {
+			if s.PreviewCacheClearOnExit {
+				return "1"
+			}
+			return "0"
+		}(),
 	}
 	for k, v := range kv {
 		if err := a.DB.SetSetting(k, v); err != nil {
@@ -208,6 +244,15 @@ func (a *App) SaveSettings(s Settings) error {
 	// And the transfer engine: concurrency + speed limit take
 	// effect for the next transfer / sync run, no restart.
 	a.ApplyTransferSettings()
+	// And the preview cache: shrinking the limit trims to the new
+	// cap right away (a cache failure here is best-effort — the
+	// settings themselves are already saved, and the next cache
+	// use trims again).
+	if pc, err := a.previewCacheManager(); err == nil {
+		pc.mu.Lock()
+		_ = pc.trimLocked(s.PreviewCacheLimitMB)
+		pc.mu.Unlock()
+	}
 	return nil
 }
 

@@ -13,6 +13,7 @@ import (
 	"io"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -204,6 +205,23 @@ func (p *Provider) OpenRead(ctx context.Context, ref string) (io.ReadCloser, err
 		return nil, p.wrap("OpenRead", err)
 	}
 	return out.Body, nil
+}
+
+// DirectURL implements storage.DirectURLer: a short-lived (15
+// minute) presigned GET URL, signed locally — no network round-trip
+// to mint it. The webview loads it directly for in-app preview
+// (<img>/<video>/<iframe>), which needs a URL that works without
+// extra headers. A presigned URL carries its own signature in the
+// query string; it never carries the raw credentials.
+func (p *Provider) DirectURL(ctx context.Context, ref string) (string, error) {
+	presigner := s3.NewPresignClient(p.client)
+	req, err := presigner.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(p.bucket), Key: aws.String(p.key(ref)),
+	}, s3.WithPresignExpires(15*time.Minute))
+	if err != nil {
+		return "", p.wrap("DirectURL", err)
+	}
+	return req.URL, nil
 }
 
 // Upload writes a file, using multipart upload for large files.

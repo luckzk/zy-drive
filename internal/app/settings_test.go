@@ -36,6 +36,10 @@ func TestSettingsRoundTripAcrossRestart(t *testing.T) {
 		SyncCompare: "checksum", SyncConcurrency: 8,
 		SyncSpeedLimitKBps: 1024, SyncConflict: "keep-both",
 		ProxyMode: "manual", ProxyHTTP: "http://127.0.0.1:18080", ProxySOCKS5: "",
+		// Preview cache (v0.9.1): non-default values, so the
+		// round-trip actually covers them. (A limit of 0 is not a
+		// valid value — SaveSettings turns it into the 2 GB default.)
+		PreviewCacheLimitMB: 1024, PreviewCacheClearOnExit: true,
 	}
 	if err := a.SaveSettings(want); err != nil {
 		t.Fatalf("SaveSettings: %v", err)

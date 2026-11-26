@@ -57,6 +57,10 @@ type AddMountInput struct {
 	RootID       string              `json:"rootId,omitempty"`       // Drive root folder id, default "root"
 	WorkspaceID  string              `json:"workspaceId,omitempty"`  // Drime workspace id, default "" = personal workspace (0)
 	LocalPath    string              `json:"localPath,omitempty"`    // local mount: absolute folder path
+	MegaEmail    string              `json:"megaEmail,omitempty"`    // MEGA account email
+	MegaPassword string              `json:"megaPassword,omitempty"` // MEGA account password (never persisted; the exported session is stored instead)
+	MegaTwoFactor string             `json:"megaTwoFactor,omitempty"` // MEGA 2FA code (optional, one login only)
+	PCloudRegion string              `json:"pcloudRegion,omitempty"` // pCloud region: "auto" | "us" | "eu", default "auto"
 	// SkipProbe (C, one-page form): save without a connection
 	// probe. The mount is then stored Verified=false ("未验证")
 	// and the user re-tests it later from Settings. When false
@@ -75,6 +79,12 @@ type mountCredentials struct {
 	AccessToken  string `json:"accessToken,omitempty"`
 	RefreshToken string `json:"refreshToken,omitempty"`
 	ClientSecret string `json:"clientSecret,omitempty"`
+	// MEGA exported session (v0.9.1): the session ID + base64
+	// master key, exported after a password login and stored
+	// encrypted at rest. Restarts log in with LoginWithKeys —
+	// the password itself is NEVER stored.
+	MegaSession   string `json:"megaSession,omitempty"`
+	MegaMasterKey string `json:"megaMasterKey,omitempty"`
 }
 
 func (c mountCredentials) empty() bool {
@@ -85,6 +95,21 @@ func (c mountCredentials) empty() bool {
 // stored as Mount.AccountID, so the mount always names its own
 // credential reference and never a secret value.
 func secretIDFor(mountID string) string { return "mount:" + mountID }
+
+// mountRuntime fills the per-mount runtime fields of a driver
+// Config: the mount id (resume sessions are keyed by it) and the
+// SQLite store they persist in. Call it at every site that builds
+// a provider for a SAVED mount (LoadMounts, TestMount,
+// UpdateMountCredentials, UpdateMountRoot, ImportBundle, and the
+// wizard's AddMountWithCredentials once the id is minted). Probe
+// paths for not-yet-saved mounts (TestMountConfig) leave it
+// unset — and so does the driver's resume, which is exactly
+// right: a probe never uploads. A nil DB (tests) also disables
+// resume, never a crash.
+func (a *App) mountRuntime(cfg *storage.Config, mountID string) {
+	cfg.MountID = mountID
+	cfg.ResumeStore = a.DB
+}
 
 // AddMount registers a Mount and builds its provider from the registry.
 // The provider is constructed from a storage.Config assembled by the
@@ -127,7 +152,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		return nil, fmt.Errorf("app: 请给网盘起个名字")
 	}
 	switch in.Provider {
-	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderLocal:
+	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderBox, domain.ProviderPCloud, domain.ProviderMega, domain.ProviderLocal:
 	default:
 		return nil, fmt.Errorf("app: %s 还在 V0.2 接入，现在加不了", in.Provider)
 	}
@@ -140,6 +165,17 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 	if err != nil {
 		return nil, err
 	}
+	// Mint the id BEFORE building the provider: the driver needs
+	// it (MountID + ResumeStore) to persist per-mount state such
+	// as Drime resume sessions, and the probe builds the very
+	// provider that becomes the live one after save.
+	now := time.Now().UTC()
+	var idBytes [8]byte
+	if _, err := rand.Read(idBytes[:]); err != nil {
+		return nil, fmt.Errorf("app: add mount: %w", err)
+	}
+	id := "mnt-" + hex.EncodeToString(idBytes[:])
+	a.mountRuntime(&cfg, id)
 	// Probe first (unless the caller explicitly asked to save
 	// unverified): one cheap List of the root. S3 lists the bucket
 	// root, Dropbox/Drive list their root folder, local lists the
@@ -165,12 +201,6 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		}
 		verified = true
 	}
-	now := time.Now().UTC()
-	var idBytes [8]byte
-	if _, err := rand.Read(idBytes[:]); err != nil {
-		return nil, fmt.Errorf("app: add mount: %w", err)
-	}
-	id := "mnt-" + hex.EncodeToString(idBytes[:])
 	m := &domain.Mount{
 		ID:           id,
 		DisplayName:  strings.TrimSpace(in.DisplayName),
@@ -186,6 +216,14 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		Verified:     verified,
 		CreatedAt:    now,
 		UpdatedAt:    now,
+	}
+	// MEGA: the probe just logged in with the password — export
+	// the session now and store THAT, never the password (see
+	// exportMegaSession). A failed export aborts the save.
+	if in.Provider == domain.ProviderMega {
+		if err := exportMegaSession(ctx, p, &creds); err != nil {
+			return nil, err
+		}
 	}
 	// Persist: mount row first, then the encrypted credential blob.
 	// A mount without its secret can never be rebuilt, so if the
@@ -243,7 +281,7 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 		if in.PathStyle {
 			cfg.Extra["pathStyle"] = "true"
 		}
-	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive:
+	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderBox, domain.ProviderPCloud:
 		if strings.TrimSpace(in.AccessToken) == "" && strings.TrimSpace(in.RefreshToken) == "" {
 			return cfg, creds, fmt.Errorf("app: 需要填 Access Token 或 Refresh Token（用授权码换取，或直接粘贴）")
 		}
@@ -266,6 +304,38 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 		if in.Provider == domain.ProviderDrime && strings.TrimSpace(in.WorkspaceID) != "" {
 			cfg.Extra["workspace_id"] = strings.TrimSpace(in.WorkspaceID)
 		}
+		if in.Provider == domain.ProviderPCloud {
+			// The region is the user's choice ("auto" | "us" |
+			// "eu"); the driver resolves the host from it
+			// ("auto" = probe both hosts on first use).
+			region := strings.ToLower(strings.TrimSpace(in.PCloudRegion))
+			if region == "" {
+				region = "auto"
+			}
+			cfg.Extra["pcloud_region"] = region
+			switch region {
+			case "us":
+				cfg.Extra["pcloud_host"] = "api.pcloud.com"
+			case "eu":
+				cfg.Extra["pcloud_host"] = "eapi.pcloud.com"
+			default:
+				cfg.Extra["pcloud_host"] = ""
+			}
+		}
+	case domain.ProviderMega:
+		// MEGA logs in with email + password (optionally a 2FA
+		// code). The password is in-memory only: after the
+		// probe, AddMountWithCredentials / UpdateMountCredentials
+		// export the session and store THAT (see
+		// exportMegaSession) — the password never reaches disk.
+		if strings.TrimSpace(in.MegaEmail) == "" || strings.TrimSpace(in.MegaPassword) == "" {
+			return cfg, creds, fmt.Errorf("app: MEGA 需要填邮箱和密码")
+		}
+		cfg.Extra["mega_email"] = strings.TrimSpace(in.MegaEmail)
+		cfg.Extra["mega_password"] = in.MegaPassword
+		if strings.TrimSpace(in.MegaTwoFactor) != "" {
+			cfg.Extra["mega_twofactor"] = strings.TrimSpace(in.MegaTwoFactor)
+		}
 	case domain.ProviderLocal:
 		abs, err := filepath.Abs(strings.TrimSpace(in.LocalPath))
 		if err != nil || strings.TrimSpace(in.LocalPath) == "" {
@@ -283,6 +353,29 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 	return cfg, creds, nil
 }
 
+// exportMegaSession stores a MEGA provider's exported session
+// into the credential blob (in place of the password, which is
+// never persisted). It is called after a successful probe in
+// AddMountWithCredentials and UpdateMountCredentials: the login
+// just succeeded, so the export is a local read of the session
+// ID + master key — if it fails, the mount is NOT saved, because
+// without a stored session it could never survive a restart
+// (the password is not stored, so there would be nothing to log
+// in with next time).
+func exportMegaSession(ctx context.Context, p storage.Provider, creds *mountCredentials) error {
+	se, ok := p.(storage.SessionExporter)
+	if !ok {
+		return fmt.Errorf("app: MEGA 驱动不支持导出会话")
+	}
+	sid, secret, err := se.ExportSession(ctx)
+	if err != nil {
+		return fmt.Errorf("app: MEGA 登录成功了，但没能保存会话（%v），请重试", err)
+	}
+	creds.MegaSession = sid
+	creds.MegaMasterKey = secret
+	return nil
+}
+
 // nonSecretConfig is the per-mount driver config that is safe to
 // store in plaintext in the mounts table. It never contains a token,
 // key or client secret.
@@ -297,7 +390,7 @@ func nonSecretConfig(in AddMountInput) map[string]string {
 		if in.PathStyle {
 			cfg["pathStyle"] = "true"
 		}
-	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive:
+	case domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderBox, domain.ProviderPCloud:
 		cfg["client_id"] = strings.TrimSpace(in.ClientID)
 		if strings.TrimSpace(in.TokenURL) != "" {
 			cfg["token_url"] = strings.TrimSpace(in.TokenURL)
@@ -311,6 +404,30 @@ func nonSecretConfig(in AddMountInput) map[string]string {
 		if in.Provider == domain.ProviderDrime && strings.TrimSpace(in.WorkspaceID) != "" {
 			cfg["workspace_id"] = strings.TrimSpace(in.WorkspaceID)
 		}
+		if in.Provider == domain.ProviderPCloud {
+			// The region (the user's choice) and the resolved
+			// host (what the driver reads) are both non-secret.
+			region := strings.ToLower(strings.TrimSpace(in.PCloudRegion))
+			if region == "" {
+				region = "auto"
+			}
+			cfg["pcloud_region"] = region
+			switch region {
+			case "us":
+				cfg["pcloud_host"] = "api.pcloud.com"
+			case "eu":
+				cfg["pcloud_host"] = "eapi.pcloud.com"
+			default:
+				cfg["pcloud_host"] = ""
+			}
+		}
+	case domain.ProviderMega:
+		// The email is an identifier, not a secret (like a
+		// client_id): it is stored so the re-auth dialog can
+		// prefill it. The password and the 2FA code are never
+		// stored — only the exported session (in the secrets
+		// blob) survives a restart.
+		cfg["mega_email"] = strings.TrimSpace(in.MegaEmail)
 	case domain.ProviderLocal:
 		abs, _ := filepath.Abs(strings.TrimSpace(in.LocalPath))
 		cfg["root"] = abs
@@ -494,6 +611,7 @@ func (a *App) LoadMounts() error {
 			Region:   pm.Config["region"],
 			Extra:    pm.Config,
 		}
+		a.mountRuntime(&cfg, m.ID)
 		if a.secrets != nil {
 			if ct, err := a.DB.LoadSecret(m.AccountID); err == nil {
 				plain, err := a.secrets.Decrypt(ct)
@@ -513,6 +631,16 @@ func (a *App) LoadMounts() error {
 				cfg.Token = creds.AccessToken
 				cfg.Extra["refresh_token"] = creds.RefreshToken
 				cfg.Extra["client_secret"] = creds.ClientSecret
+				// MEGA: the stored session (never the password).
+				// A mount saved before v0.9.1 has no session and
+				// the driver then refuses to build — the user
+				// re-authorizes it once from Settings.
+				if creds.MegaSession != "" {
+					cfg.Extra["mega_session_id"] = creds.MegaSession
+				}
+				if creds.MegaMasterKey != "" {
+					cfg.Extra["mega_master_key"] = creds.MegaMasterKey
+				}
 			} else if !errors.Is(err, sql.ErrNoRows) {
 				m.Status = domain.MountError
 				a.mounts[m.ID] = MountHandle{Mount: m}
@@ -610,6 +738,7 @@ func (a *App) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*
 		Region:   newCfg["region"],
 		Extra:    newCfg,
 	}
+	a.mountRuntime(&cfg, id)
 	if a.secrets != nil {
 		creds, found, err := a.decryptMountCreds(h.Mount.AccountID)
 		if err != nil {
@@ -678,6 +807,7 @@ func (a *App) UpdateMountCredentials(ctx context.Context, id string, in AddMount
 	if err != nil {
 		return nil, err
 	}
+	a.mountRuntime(&cfg, id)
 	p, err := a.Registry.New(in.Provider, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("app: 创建驱动失败：%w", err)
@@ -692,6 +822,14 @@ func (a *App) UpdateMountCredentials(ctx context.Context, id string, in AddMount
 			return nil, humanProbeError(in.Provider, err)
 		}
 		verified = true
+	}
+	// MEGA: the probe just logged in with the password — export
+	// the session now and store THAT, never the password (see
+	// exportMegaSession). A failed export aborts the re-auth.
+	if in.Provider == domain.ProviderMega {
+		if err := exportMegaSession(ctx, p, &creds); err != nil {
+			return nil, err
+		}
 	}
 	plain, err := json.Marshal(creds)
 	if err != nil {
@@ -799,7 +937,7 @@ func (a *App) TestMountConfig(ctx context.Context, in AddMountInput) error {
 	// connection failure. The name is still required at save
 	// (AddMountWithCredentials) and by the wizard's Next gating.
 	switch in.Provider {
-	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderLocal:
+	case domain.ProviderS3, domain.ProviderDropbox, domain.ProviderDrive, domain.ProviderDrime, domain.ProviderOneDrive, domain.ProviderBox, domain.ProviderPCloud, domain.ProviderMega, domain.ProviderLocal:
 	default:
 		return fmt.Errorf("app: %s 还在 V0.2 接入，现在加不了", in.Provider)
 	}
@@ -876,6 +1014,7 @@ func (a *App) TestMount(ctx context.Context, id string) (*domain.Mount, error) {
 		Region:   cfgMap["region"],
 		Extra:    cfgMap,
 	}
+	a.mountRuntime(&cfg, id)
 	if a.secrets != nil {
 		creds, found, err := a.decryptMountCreds(h.Mount.AccountID)
 		if err != nil {
@@ -887,6 +1026,13 @@ func (a *App) TestMount(ctx context.Context, id string) (*domain.Mount, error) {
 			cfg.Token = creds.AccessToken
 			cfg.Extra["refresh_token"] = creds.RefreshToken
 			cfg.Extra["client_secret"] = creds.ClientSecret
+			// MEGA: the stored session (never the password).
+			if creds.MegaSession != "" {
+				cfg.Extra["mega_session_id"] = creds.MegaSession
+			}
+			if creds.MegaMasterKey != "" {
+				cfg.Extra["mega_master_key"] = creds.MegaMasterKey
+			}
 		}
 	}
 	p, err := a.Registry.New(h.Mount.Provider, cfg)

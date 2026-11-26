@@ -56,6 +56,29 @@ type mockDrime struct {
 	// a test can prove the driver asked for the mount's workspace
 	// instead of the account default.
 	spaceUsageSeen []int
+	// partPUTs counts every presigned part PUT the mock received
+	// (including retries); failPartPUTsAfter, when > 0, makes
+	// every part PUT after that count fail with 500 — the
+	// interrupt injection for resume tests (v0.9.1).
+	partPUTs         int
+	failPartPUTsAfter int
+}
+
+// partPUTCount returns how many presigned part PUTs the mock has
+// received so far (including retries).
+func (m *mockDrime) partPUTCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.partPUTs
+}
+
+// expireUpload deletes a server-side multipart session, so the
+// next get-uploaded-parts for it answers 404 — the "session
+// expired" case for resume tests.
+func (m *mockDrime) expireUpload(uploadID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.uploads, uploadID)
 }
 
 func newMockDrime() *mockDrime {
@@ -155,10 +178,19 @@ func (m *mockDrime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		up := r.URL.Query().Get("up")
 		n, _ := strconv.Atoi(r.URL.Query().Get("part"))
 		m.mu.Lock()
-		if u, ok := m.uploads[up]; ok {
-			u.parts[n] = data
+		m.partPUTs++
+		fail := m.failPartPUTsAfter > 0 && m.partPUTs > m.failPartPUTsAfter
+		if !fail {
+			if u, ok := m.uploads[up]; ok {
+				u.parts[n] = data
+			}
 		}
 		m.mu.Unlock()
+		if fail {
+			// The part is NOT stored: the server never saw it.
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		w.Header().Set("ETag", fmt.Sprintf("\"etag-%d-%d\"", n, len(data)))
 		w.WriteHeader(http.StatusOK)
 		return
@@ -208,6 +240,8 @@ func (m *mockDrime) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		m.handleSign(w, r)
 	case p == "/s3/multipart/complete" && r.Method == http.MethodPost:
 		m.handleComplete(w, r)
+	case p == "/s3/multipart/get-uploaded-parts" && r.Method == http.MethodPost:
+		m.handleUploadedParts(w, r)
 	case p == "/s3/multipart/abort" && r.Method == http.MethodPost:
 		m.writeJSON(w, http.StatusOK, map[string]any{"status": "success"})
 	case p == "/s3/entries" && r.Method == http.MethodPost:
@@ -524,6 +558,39 @@ func (m *mockDrime) handleComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	u.content = buf.Bytes()
 	m.writeJSON(w, http.StatusOK, map[string]any{"location": "https://mock/r2/" + u.key, "status": "success"})
+}
+
+func (m *mockDrime) handleUploadedParts(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key      string `json:"key"`
+		UploadID string `json:"uploadId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		m.writeErr(w, http.StatusBadRequest, "bad body")
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	u, ok := m.uploads[body.UploadID]
+	if !ok {
+		// The real endpoint answers 4xx for an unknown upload
+		// id; the driver treats that as "session expired".
+		m.writeErr(w, http.StatusNotFound, "upload not found")
+		return
+	}
+	var parts []map[string]any
+	for n, data := range u.parts {
+		parts = append(parts, map[string]any{
+			"PartNumber": n,
+			// Opaque on purpose (like a non-MD5 ETag): the
+			// driver verifies parts with the MD5 it recorded
+			// locally, never with this value.
+			"ETag": fmt.Sprintf("\"etag-%d-%d\"", n, len(data)),
+			"Size": len(data),
+		})
+	}
+	sort.Slice(parts, func(i, j int) bool { return parts[i]["PartNumber"].(int) < parts[j]["PartNumber"].(int) })
+	m.writeJSON(w, http.StatusOK, map[string]any{"parts": parts, "status": "success"})
 }
 
 func (m *mockDrime) handleRegister(w http.ResponseWriter, r *http.Request) {

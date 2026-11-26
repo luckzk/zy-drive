@@ -21,11 +21,14 @@ import (
 	"github.com/luckzk/zy-drive/internal/cache"
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/storage"
+	"github.com/luckzk/zy-drive/internal/storage/providers/box"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drime"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
 	"github.com/luckzk/zy-drive/internal/storage/providers/dropbox"
 	"github.com/luckzk/zy-drive/internal/storage/providers/local"
+	"github.com/luckzk/zy-drive/internal/storage/providers/mega"
 	"github.com/luckzk/zy-drive/internal/storage/providers/onedrive"
+	"github.com/luckzk/zy-drive/internal/storage/providers/pcloud"
 	"github.com/luckzk/zy-drive/internal/storage/providers/s3"
 	"github.com/luckzk/zy-drive/internal/transfer"
 	"github.com/luckzk/zy-drive/internal/version"
@@ -80,6 +83,9 @@ func main() {
 	registry.Register(domain.ProviderDrive, drive.New)
 	registry.Register(domain.ProviderDrime, drime.New)
 	registry.Register(domain.ProviderOneDrive, onedrive.New)
+	registry.Register(domain.ProviderBox, box.New)
+	registry.Register(domain.ProviderPCloud, pcloud.New)
+	registry.Register(domain.ProviderMega, mega.New)
 	registry.Register(domain.ProviderLocal, local.New)
 
 	queue := transfer.NewQueue(db)
@@ -122,6 +128,13 @@ func main() {
 		log.Printf("desktop: restore mounts: %v", err)
 	}
 
+	// Preview cache (v0.9.1): reconcile the manifest with disk
+	// and trim to the configured limit. A stale cache must never
+	// block startup, so a failure is only logged.
+	if err := application.InitPreviewCache(); err != nil {
+		log.Printf("desktop: preview cache: %v", err)
+	}
+
 	// Transfer worker: executes queued moves (cross-cloud copies and
 	// drag-drop uploads) via app.ExecuteTransfer — streaming, never
 	// staged on local disk. Concurrency and the speed limit come
@@ -146,4 +159,11 @@ func main() {
 	// when no system webview is available. Blocks until quit (mygo)
 	// or signal (dev shell).
 	runDesktop(application, *addr, *devShell, *frontendDir, ctx)
+
+	// "退出时清理缓存" (Settings → 缓存): mygo has no OnExit
+	// hook, so the cleanup runs here, after the window loop
+	// returns on quit. When the setting is off it is a no-op.
+	if err := application.ClearPreviewCacheOnExit(); err != nil {
+		log.Printf("desktop: clear preview cache on exit: %v", err)
+	}
 }

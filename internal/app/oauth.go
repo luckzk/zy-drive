@@ -18,13 +18,19 @@ import (
 )
 
 // oauth.go — the desktop OAuth Authorization Code flow for Dropbox,
-// Google Drive, Drime and OneDrive.
+// Google Drive, Drime, OneDrive, Box and pCloud.
 //
 // Flow (A, loopback callback first, manual paste as fallback):
 //   1. BeginOAuth starts a temporary HTTP listener on 127.0.0.1
 //      with a RANDOM port (never a fixed one) that lives only for
 //      this one authorization, and builds the authorize URL with
 //      redirect_uri=http://localhost:<random-port> (no path).
+//      EXCEPTION — Box and pCloud require an EXACT redirect-URI
+//      match, so they listen on a FIXED port instead (Box 57103,
+//      pCloud 57104; the registration guides register exactly
+//      http://localhost:<that port>). A fixed-port bind failure
+//      is a plain error naming the port — there is no random-port
+//      fallback, because the provider would reject the URI.
 //      The browser authorizes and jumps back to the loopback
 //      address; the listener validates `state`, catches the `code`,
 //      answers a small "授权成功，可以关掉这个页面" page and
@@ -75,6 +81,30 @@ import (
 // public client ("Mobile and desktop applications"), PKCE S256,
 // no secret; scopes Files.ReadWrite.All + offline_access, and
 // the "common" tenant accepts personal and work/school accounts.
+//
+// Box specifics (developer.box.com): the authorize URL needs
+// scope root_readwrite; the code exchange needs a Client Secret,
+// so even a built-in Client ID could never one-click — Box is
+// own-app only (the wizard says so). The redirect URI must match
+// exactly, hence the fixed loopback port 57103. Box's token
+// endpoint accepts the PKCE-less exchange (no code_challenge is
+// sent); the scopes and the secret are the proof instead.
+//
+// pCloud specifics (docs.pcloud.com): TWO data centers — US
+// (api.pcloud.com, authorize at my.pcloud.com) and EU
+// (eapi.pcloud.com, authorize at e.pcloud.com). The wizard lets
+// the user pick 自动 / 美国 / 欧洲 (BeginOAuth's region
+// argument): 自动 authorizes on the US endpoint and the driver
+// later probes both hosts; an EU account whose US token exchange
+// fails gets a plain message telling the user to pick 欧洲
+// explicitly. The authorize URL carries NO scope parameter and
+// NO PKCE challenge; the token endpoint needs a Client Secret,
+// so pCloud is own-app only, like Box. The redirect URI must
+// match exactly, hence the fixed loopback port 57104. pCloud
+// DROPS the state parameter on the callback (rclone documents
+// this): the handler tolerates a missing state when exactly one
+// pending flow exists and it is a pCloud flow — an ambiguous
+// multi-flow callback still gets the error page.
 
 type oauthProvider struct {
 	authEndpoint string
@@ -82,6 +112,15 @@ type oauthProvider struct {
 	scopes       []string
 	extra        map[string]string // extra authorize-query params
 	pkce         bool              // PKCE (RFC 7636, S256); on for every provider now
+	// fixedPort is the loopback port this provider's redirect URI
+	// is registered on. 0 = random port per flow (the default);
+	// non-zero = Box/pCloud, whose redirect URIs must match
+	// exactly (see the file header).
+	fixedPort int
+	// authEndpointEU / tokenURLEU are the EU data-center
+	// endpoints (pCloud only; empty for everyone else).
+	authEndpointEU string
+	tokenURLEU     string
 }
 
 var oauthProviders = map[domain.ProviderKind]oauthProvider{
@@ -124,6 +163,27 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 		scopes: []string{"Files.ReadWrite.All", "offline_access"},
 		pkce:   true,
 	},
+	domain.ProviderBox: {
+		authEndpoint: "https://account.box.com/api/oauth2/authorize",
+		tokenURL:     "https://api.box.com/oauth2/token",
+		// root_readwrite is the whole-drive scope the app must
+		// also have configured in the Box console. The exchange
+		// needs a Client Secret (own-app only — no one-click),
+		// so PKCE is off: the secret is the authentication.
+		scopes:    []string{"root_readwrite"},
+		pkce:      false,
+		fixedPort: 57103,
+	},
+	domain.ProviderPCloud: {
+		authEndpoint:   "https://my.pcloud.com/oauth2/authorize",
+		tokenURL:       "https://api.pcloud.com/oauth2/token",
+		authEndpointEU: "https://e.pcloud.com/oauth2/authorize",
+		tokenURLEU:     "https://eapi.pcloud.com/oauth2_token",
+		// No scope parameter on the authorize URL, no PKCE, and
+		// the exchange needs a Client Secret (own-app only).
+		pkce:      false,
+		fixedPort: 57104,
+	},
 }
 
 // oauthPending is one in-flight authorization: the state the
@@ -142,10 +202,12 @@ var oauthProviders = map[domain.ProviderKind]oauthProvider{
 // reading the outcome.
 type oauthPending struct {
 	expiry      time.Time
-	verifier    string // PKCE code_verifier
-	redirectURI string // http://localhost:<random-port>, this flow only
+	verifier    string // PKCE code_verifier ("" when the provider has PKCE off)
+	redirectURI string // http://localhost:<port>, this flow only
 	code        string // set by the callback handler
 	codeErr     string // provider-side error (e.g. access_denied)
+	provider    domain.ProviderKind // which provider this flow belongs to
+	region      string              // pCloud region: "auto" | "us" | "eu" ("" = auto)
 	done        chan struct{}
 	listener    net.Listener
 	server      *http.Server
@@ -159,7 +221,14 @@ func (p *oauthPending) closeListener() {
 			// written by the time this runs; there is nothing left
 			// to drain, and the port must be freed at once.
 			_ = p.server.Close()
-		} else if p.listener != nil {
+		}
+		// Close the listener directly too: server.Close only
+		// frees listeners Serve has already registered, and the
+		// Serve goroutine may not have run yet when this is
+		// called (CancelOAuth right after BeginOAuth) — then the
+		// port would leak until the flow expired. Closing the
+		// listener is idempotent with Serve's own tracking.
+		if p.listener != nil {
 			_ = p.listener.Close()
 		}
 	})
@@ -198,7 +267,12 @@ type OAuthCallbackResult struct {
 // BeginOAuth builds the authorize URL for a provider and starts the
 // one-shot loopback listener that will catch the code. The user
 // opens the URL in their own browser; no token is involved yet.
-func (a *App) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthStart, error) {
+// region is the pCloud region ("auto" | "us" | "eu"); it is
+// ignored for every other provider. "auto" authorizes on the US
+// endpoint and the driver later probes both hosts (see the pCloud
+// driver); an EU account whose US token exchange fails gets a
+// plain message telling the user to pick 欧洲 explicitly.
+func (a *App) BeginOAuth(provider domain.ProviderKind, clientID, region string) (*OAuthStart, error) {
 	p, ok := oauthProviders[provider]
 	if !ok {
 		return nil, fmt.Errorf("app: %s 不支持 OAuth 授权流程", provider)
@@ -210,22 +284,38 @@ func (a *App) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthS
 	if err != nil {
 		return nil, err
 	}
-	verifier, err := auth.NewPKCEVerifier()
-	if err != nil {
-		return nil, err
+	// PKCE only when the provider uses it (Box/pCloud do not):
+	// a verifier is generated only then, and ExchangeCode only
+	// sends code_verifier when it is non-empty — so a
+	// PKCE-less provider never sees a stray verifier.
+	var verifier string
+	if p.pkce {
+		verifier, err = auth.NewPKCEVerifier()
+		if err != nil {
+			return nil, err
+		}
 	}
-	// One-shot loopback listener: 127.0.0.1 only (never 0.0.0.0),
-	// random port (never a fixed one — the port is minted per flow
-	// and the authorize URL carries it). If the bind fails (a
-	// sandbox that forbids listening at all), the flow still
-	// proceeds: the user can paste the code by hand, and the
-	// frontend says so instead of failing the whole authorization.
+	// One-shot loopback listener: 127.0.0.1 only (never 0.0.0.0).
+	// Default: a random port, minted per flow, carried in the
+	// authorize URL. Box/pCloud: a FIXED port (their redirect
+	// URIs must match exactly); a bind failure there is a plain
+	// error naming the port, with no random-port fallback — the
+	// provider would reject any other URI.
 	pending := &oauthPending{
 		expiry:   time.Now().Add(10 * time.Minute),
 		verifier: verifier,
+		provider: provider,
+		region:   strings.ToLower(strings.TrimSpace(region)),
 		done:     make(chan struct{}),
 	}
-	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
+	if pending.region == "" {
+		pending.region = "auto"
+	}
+	listenAddr := "127.0.0.1:0"
+	if p.fixedPort > 0 {
+		listenAddr = fmt.Sprintf("127.0.0.1:%d", p.fixedPort)
+	}
+	if ln, err := net.Listen("tcp", listenAddr); err == nil {
 		port := ln.Addr().(*net.TCPAddr).Port
 		pending.redirectURI = fmt.Sprintf("http://localhost:%d", port)
 		pending.listener = ln
@@ -235,6 +325,11 @@ func (a *App) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthS
 			// other error just ends this one flow.
 			_ = pending.server.Serve(ln)
 		}()
+	} else if p.fixedPort > 0 {
+		// The registered URI is exactly this port: a random port
+		// would be rejected by the provider, so say so plainly
+		// instead of silently falling back.
+		return nil, fmt.Errorf("app: 本机 %d 端口被占用了（%s 要求重定向地址固定是 http://localhost:%d）：请关掉占用这个端口的程序，或改用手动粘贴授权码", p.fixedPort, provider, p.fixedPort)
 	} else {
 		// No listener: fall back to the bare loopback URI so the
 		// authorize URL is still valid; the code then only ever
@@ -266,18 +361,27 @@ func (a *App) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthS
 		pending.closeListener()
 	}()
 
+	// pCloud: the authorize endpoint follows the region.
+	authEndpoint := p.authEndpoint
+	if provider == domain.ProviderPCloud && pending.region == "eu" && p.authEndpointEU != "" {
+		authEndpoint = p.authEndpointEU
+	}
 	q := url.Values{}
 	q.Set("client_id", strings.TrimSpace(clientID))
 	q.Set("response_type", "code")
 	q.Set("redirect_uri", pending.redirectURI)
-	q.Set("scope", strings.Join(p.scopes, " "))
+	if len(p.scopes) > 0 {
+		q.Set("scope", strings.Join(p.scopes, " "))
+	}
 	q.Set("state", state)
 	for k, v := range p.extra {
 		q.Set(k, v)
 	}
-	q.Set("code_challenge", auth.ChallengeForVerifier(verifier))
-	q.Set("code_challenge_method", "S256")
-	return &OAuthStart{AuthURL: p.authEndpoint + "?" + q.Encode(), State: state}, nil
+	if p.pkce {
+		q.Set("code_challenge", auth.ChallengeForVerifier(verifier))
+		q.Set("code_challenge_method", "S256")
+	}
+	return &OAuthStart{AuthURL: authEndpoint + "?" + q.Encode(), State: state}, nil
 }
 
 // oauthCallbackHandler serves the one-shot loopback listener. It
@@ -292,6 +396,23 @@ func oauthCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
 	oauthMu.Lock()
 	pending, known := oauthStates[state]
+	// pCloud DROPS the state parameter on the callback (rclone
+	// documents this): when no state arrives (or it names
+	// nothing), fall back to the single pending flow — but ONLY
+	// when there is exactly one and it is a pCloud flow. Two
+	// concurrent authorizations stay ambiguous and get the error
+	// page, exactly as before.
+	if !known {
+		var sole *oauthPending
+		count := 0
+		for _, p := range oauthStates {
+			count++
+			sole = p
+		}
+		if count == 1 && sole != nil && sole.provider == domain.ProviderPCloud {
+			pending, known = sole, true
+		}
+	}
 	oauthMu.Unlock()
 	if !known || time.Now().After(pending.expiry) {
 		w.WriteHeader(http.StatusBadRequest)
@@ -417,6 +538,12 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 	}
 	if tokenURL == "" {
 		tokenURL = p.tokenURL
+		// pCloud: the token endpoint follows the region the
+		// flow authorized on (EU authorizations exchange on
+		// the EU host).
+		if provider == domain.ProviderPCloud && pending.region == "eu" && p.tokenURLEU != "" {
+			tokenURL = p.tokenURLEU
+		}
 	}
 	// Consistency log (never the code itself): the two things a
 	// provider checks besides the code — the PKCE verifier that

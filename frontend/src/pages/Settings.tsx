@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Settings — sections: 通用 / 网盘 / 同步默认 / Agent / 关于.
+// Settings — sections: 通用 / 网络 / 网盘 / 同步默认 / 缓存 / Agent / 关于.
 // The Agent section: add / edit / delete / test connection /
 // set-default, plus the API token field and the encrypted bundle
 // export (V0.9.0); the other sections are new in V0.3.
@@ -18,13 +18,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { Agent, Mount, MountQuota, Settings, SystemProxyInfo, VersionInfo } from '../mygo'
 import { api, friendlyError } from '../api/client'
-import { formatTime, mountStatusLabel, newId } from '../lib/format'
+import { formatSize, formatTime, mountStatusLabel, newId } from '../lib/format'
 import { t, type Lang } from '../lib/i18n'
 import { FRONTEND_VERSION } from '../version'
 import { Reveal, Skeleton, staggerStyle, useClosing } from '../components/motion'
 import { SectionIcon } from '../components/icons'
 
-type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network'
+type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network' | 'cache'
 
 // SectionHead — one Settings section's title row: flat-color-icons
 // glyph + 18px title (weight stays 400) + one-line description,
@@ -166,6 +166,40 @@ export default function SettingsPage({
   // draft is saved (the backend applies on save, immediately).
   const [lastSavedProxy, setLastSavedProxy] = useState<{ mode: string; http: string; socks5: string } | null>(null)
 
+  // ---- 缓存（v0.9.1 预览缓存） ----
+  // cacheInfo is the live size/count/limit from the backend; it is
+  // loaded on mount and refreshed after a clear or a limit save.
+  // cacheMsg reports the last clear ("已释放 …") or its error.
+  const [cacheInfo, setCacheInfo] = useState<import('../mygo').PreviewCacheInfo | null>(null)
+  const [cacheLoading, setCacheLoading] = useState(false)
+  const [cacheMsg, setCacheMsg] = useState<string | null>(null)
+  const [clearingCache, setClearingCache] = useState(false)
+
+  const loadCacheInfo = useCallback(async () => {
+    setCacheLoading(true)
+    try {
+      setCacheInfo(await api.previewCacheInfo())
+    } catch {
+      setCacheInfo(null)
+    } finally {
+      setCacheLoading(false)
+    }
+  }, [])
+
+  const clearCache = async () => {
+    setClearingCache(true)
+    setCacheMsg(null)
+    try {
+      const r = await api.clearPreviewCache()
+      setCacheMsg(`已清理预览缓存，释放了 ${formatSize(r.freedBytes)}（${r.fileCount} 个文件）。云端有原件，什么都没丢。`)
+      await loadCacheInfo()
+    } catch (e) {
+      setCacheMsg(friendlyError(e))
+    } finally {
+      setClearingCache(false)
+    }
+  }
+
   const loadSystemProxy = useCallback(async () => {
     try {
       setSystemProxy(await api.getSystemProxy())
@@ -204,6 +238,7 @@ export default function SettingsPage({
     void loadSettings()
     void loadMounts()
     void loadSystemProxy()
+    void loadCacheInfo()
     void api
       .getVersions()
       .then(setVersions)
@@ -220,7 +255,7 @@ export default function SettingsPage({
         setOpenAtLogin(null)
         setLoginNote(friendlyError(e))
       })
-  }, [loadSettings, loadMounts, loadSystemProxy])
+  }, [loadSettings, loadMounts, loadSystemProxy, loadCacheInfo])
 
   const saveDraft = async (next: Settings) => {
     setBusy(true)
@@ -845,6 +880,69 @@ export default function SettingsPage({
                 {t(lang, 'save')}
               </button>
             </div>
+          </>
+        )}
+        </section>
+      </Reveal>
+
+      {/* ---- 缓存（v0.9.1 预览缓存） ---- */}
+      <Reveal>
+        <section className="settings-card">
+        <SectionHead section="cache" title="缓存" desc="预览缓存：用系统应用打开文件时下载下来的副本。云端有原件，清理不会丢东西；应用内直接预览不进缓存。" />
+        {settingsLoading || !draft ? (
+          <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载缓存设置">
+            <Skeleton height={36} width="60%" />
+            <Skeleton height={36} width="40%" />
+          </div>
+        ) : (
+          <>
+            <p style={{ margin: '0 0 12px' }}>
+              {cacheLoading
+                ? '正在读取缓存大小…'
+                : cacheInfo
+                  ? `当前占用 ${formatSize(cacheInfo.sizeBytes)}（${cacheInfo.fileCount} 个文件），上限 ${cacheInfo.limitMB >= 1024 ? `${cacheInfo.limitMB / 1024} GB` : `${cacheInfo.limitMB} MB`}。`
+                  : '缓存信息暂不可用（后端没返回）。'}
+            </p>
+            <div className="field">
+              <label>缓存上限</label>
+              <select
+                className="select"
+                value={draft.previewCacheLimitMB}
+                onChange={(e) => setDraft({ ...draft, previewCacheLimitMB: Number(e.target.value) })}
+              >
+                <option value={512}>500 MB</option>
+                <option value={1024}>1 GB</option>
+                <option value={2048}>2 GB</option>
+                <option value={5120}>5 GB</option>
+              </select>
+              <div className="hint">超上限时按最后访问时间淘汰最久没用的文件；最近 5 分钟内打开过的文件不会被淘汰。改小上限保存后立即裁剪。</div>
+            </div>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+              <input
+                type="checkbox"
+                checked={draft.previewCacheClearOnExit}
+                onChange={(e) => setDraft({ ...draft, previewCacheClearOnExit: e.target.checked })}
+              />
+              退出时清理缓存
+            </label>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <button
+                className="btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  void saveDraft(draft).then(() => void loadCacheInfo())
+                }}
+              >
+                {t(lang, 'save')}
+              </button>
+              <button className="btn" disabled={clearingCache} onClick={() => void clearCache()}>
+                {clearingCache ? '清理中…' : '清理缓存'}
+              </button>
+            </div>
+            {cacheMsg && <div className="notice-box">{cacheMsg}</div>}
+            <p className="muted" style={{ marginBottom: 0 }}>
+              “清理缓存”只清预览缓存，不碰挂载、同步任务和本地索引。
+            </p>
           </>
         )}
         </section>

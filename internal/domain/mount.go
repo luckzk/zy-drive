@@ -18,6 +18,14 @@ const (
 	ProviderDrive    ProviderKind = "drive"
 	ProviderOneDrive ProviderKind = "onedrive"
 	ProviderDrime    ProviderKind = "drime"
+	// ProviderBox is Box, OAuth 2.0 + REST, v0.9.1.
+	ProviderBox ProviderKind = "box"
+	// ProviderPCloud is pCloud, OAuth 2.0 + REST (US/EU data
+	// centers), v0.9.1.
+	ProviderPCloud ProviderKind = "pcloud"
+	// ProviderMega is MEGA, encrypted private protocol via the
+	// go-mega client library, email+password login, v0.9.1.
+	ProviderMega ProviderKind = "mega"
 	// ProviderLocal is a folder on this machine ("local://..."). It is
 	// not a cloud; it only ever runs on the desktop itself.
 	ProviderLocal ProviderKind = "local"

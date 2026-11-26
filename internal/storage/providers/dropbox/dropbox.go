@@ -534,16 +534,33 @@ func (p *Provider) Share(ctx context.Context, ref string) (string, error) {
 	return resp.URL, nil
 }
 
-// Thumbnail implements storage.Thumber via get_temporary_link.
-func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
+// DirectURL implements storage.DirectURLer via get_temporary_link:
+// a short-lived (4 hour) link Dropbox mints for one file. The
+// webview loads it directly for in-app preview (<img>/<video>/
+// <iframe>), which needs a URL that works without extra headers.
+func (p *Provider) DirectURL(ctx context.Context, ref string) (string, error) {
+	return p.tempLink(ctx, "DirectURL", ref)
+}
+
+// tempLink is the shared get_temporary_link call behind Thumbnail
+// and DirectURL. op names the caller for error context.
+func (p *Provider) tempLink(ctx context.Context, op, ref string) (string, error) {
 	var resp struct {
 		Link string `json:"link"`
 	}
-	if err := p.rpc(ctx, "Thumbnail", "/2/files/get_temporary_link",
+	if err := p.rpc(ctx, op, "/2/files/get_temporary_link",
 		map[string]any{"path": normRef(ref)}, &resp); err != nil {
 		return "", err
 	}
+	if resp.Link == "" {
+		return "", p.wrap(op, fmt.Errorf("dropbox: get_temporary_link returned no link for %q", ref))
+	}
 	return resp.Link, nil
+}
+
+// Thumbnail implements storage.Thumber via get_temporary_link.
+func (p *Provider) Thumbnail(ctx context.Context, ref string) (string, error) {
+	return p.tempLink(ctx, "Thumbnail", ref)
 }
 
 // Quota implements storage.QuotaSource via POST

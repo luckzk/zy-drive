@@ -35,11 +35,14 @@ import (
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/platform/scheduler"
 	"github.com/luckzk/zy-drive/internal/storage"
+	"github.com/luckzk/zy-drive/internal/storage/providers/box"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drive"
 	"github.com/luckzk/zy-drive/internal/storage/providers/drime"
 	"github.com/luckzk/zy-drive/internal/storage/providers/dropbox"
 	"github.com/luckzk/zy-drive/internal/storage/providers/local"
+	"github.com/luckzk/zy-drive/internal/storage/providers/mega"
 	"github.com/luckzk/zy-drive/internal/storage/providers/onedrive"
+	"github.com/luckzk/zy-drive/internal/storage/providers/pcloud"
 	"github.com/luckzk/zy-drive/internal/storage/providers/s3"
 	"github.com/luckzk/zy-drive/internal/transfer"
 	"github.com/luckzk/zy-drive/internal/version"
@@ -108,6 +111,9 @@ func buildAgentApp(dir string) (*app.App, *cache.DB, error) {
 	registry.Register(domain.ProviderDrive, drive.New)
 	registry.Register(domain.ProviderDrime, drime.New)
 	registry.Register(domain.ProviderOneDrive, onedrive.New)
+	registry.Register(domain.ProviderBox, box.New)
+	registry.Register(domain.ProviderPCloud, pcloud.New)
+	registry.Register(domain.ProviderMega, mega.New)
 	registry.Register(domain.ProviderLocal, local.New)
 	a := app.New(db, registry, transfer.NewQueue(db))
 	a.SetSecrets(secrets)

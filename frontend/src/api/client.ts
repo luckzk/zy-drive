@@ -22,6 +22,15 @@ function nonNull<T>(xs: (T | null)[] | null | undefined): T[] {
   return (xs ?? []).filter((x): x is T => x !== null)
 }
 
+// nonNullOne is nonNull for single-object binds: a null return
+// means the backend produced nothing, which is a bug, not an
+// empty value — throw instead of letting the caller dereference
+// null.
+function nonNullOne<T>(x: T | null | undefined): T {
+  if (x === null || x === undefined) throw new Error('后端没有返回数据。')
+  return x
+}
+
 /** friendlyError turns a backend/Bind error into plain language. */
 export function friendlyError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e)
@@ -86,7 +95,7 @@ export const api = {
   removeMount: (id: string) => DesktopService.removeMount(id),
   testMountConfig: (input: AddMountInput) => DesktopService.testMountConfig(input),
   testMount: (id: string) => DesktopService.testMount(id),
-  beginOAuth: (provider: ProviderKind, clientID: string) => DesktopService.beginOAuth(provider, clientID),
+  beginOAuth: (provider: ProviderKind, clientID: string, region = '') => DesktopService.beginOAuth(provider, clientID, region),
   pollOAuthCallback: (state: string) => DesktopService.pollOAuthCallback(state),
   cancelOAuth: (state: string) => DesktopService.cancelOAuth(state),
   builtinOAuthClientID: (provider: ProviderKind) => DesktopService.builtinOAuthClientID(provider),
@@ -116,6 +125,17 @@ export const api = {
   listJobRuns: async (jobID: string) => nonNull(await DesktopService.listJobRuns(jobID)),
   exportAgentBundle: (agentID: string, passphrase: string) => DesktopService.exportAgentBundle(agentID, passphrase),
   saveAgentToken: (agentID: string, token: string) => DesktopService.saveAgentToken(agentID, token),
+  // V0.9.1 file preview: in-app URL / text head for the renderable
+  // tier, system-app open + reveal for the rest, cache info/clear
+  // for Settings → 缓存. previewURL/previewText return null only
+  // when the backend returns nothing (a bug) — errors surface as
+  // thrown errors, like every other call here.
+  previewURL: async (mountID: string, ref: string) => nonNullOne(await DesktopService.previewURL(mountID, ref)),
+  previewText: async (mountID: string, ref: string) => nonNullOne(await DesktopService.previewText(mountID, ref)),
+  openWithSystemApp: (mountID: string, ref: string) => DesktopService.openWithSystemApp(mountID, ref),
+  revealInFinder: (mountID: string, ref: string) => DesktopService.revealInFinder(mountID, ref),
+  previewCacheInfo: async () => nonNullOne(await DesktopService.previewCacheInfo()),
+  clearPreviewCache: async () => nonNullOne(await DesktopService.clearPreviewCache()),
   // Settings → 网络: what the OS has configured (for display),
   // and a one-shot connectivity test through the current setup.
   getSystemProxy: () => DesktopService.getSystemProxy(),

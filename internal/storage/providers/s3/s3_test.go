@@ -2,6 +2,8 @@
 package s3
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/luckzk/zy-drive/internal/storage"
@@ -18,5 +20,36 @@ func TestS3HasNoQuota(t *testing.T) {
 	}
 	if _, ok := any(p).(storage.QuotaSource); ok {
 		t.Fatal("s3 provider must NOT implement storage.QuotaSource (no quota API exists)")
+	}
+}
+
+// TestS3DirectURL pins the presigned GET: minting is purely local
+// signing (no network), the URL carries the bucket/key and a
+// signature, and the provider advertises storage.DirectURLer.
+func TestS3DirectURL(t *testing.T) {
+	p, err := New(storage.Config{
+		AccessKey: "test-access",
+		SecretKey: "test-secret",
+		Extra:     map[string]string{"bucket": "test-bucket"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	du, ok := any(p).(storage.DirectURLer)
+	if !ok {
+		t.Fatal("s3 provider must implement storage.DirectURLer")
+	}
+	u, err := du.DirectURL(context.Background(), "hello.txt")
+	if err != nil {
+		t.Fatalf("DirectURL: %v", err)
+	}
+	if !strings.Contains(u, "hello.txt") {
+		t.Fatalf("DirectURL %q does not contain the object key", u)
+	}
+	if !strings.Contains(u, "X-Amz-Signature=") {
+		t.Fatalf("DirectURL %q is not a signed URL (no X-Amz-Signature)", u)
+	}
+	if !strings.Contains(u, "test-bucket") {
+		t.Fatalf("DirectURL %q does not name the bucket", u)
 	}
 }

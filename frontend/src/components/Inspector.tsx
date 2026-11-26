@@ -13,6 +13,7 @@ import type { Caps, Mount, MountQuota, Node } from '../mygo'
 import { formatSize, formatTime } from '../lib/format'
 import { Accordion } from './motion'
 import { IconChevronDown, IconClose } from './icons'
+import PreviewPane from './PreviewPane'
 import QuotaBar from './QuotaBar'
 
 function capsList(caps: Caps): string[] {
@@ -66,6 +67,11 @@ export default function Inspector({ node, mount, quota, closing, onClose }: { no
         </p>
       )}
       {node.mime && <p className="muted">类型：{node.mime}</p>}
+
+      {/* File preview (v0.9.1): files only, never folders. The
+          pane fetches its own URL/text for the selected file and
+          re-fetches when the selection changes. */}
+      {mount && !node.isDir && <PreviewPane mountID={mount.id} node={node} />}
 
       <div style={{ marginTop: 16 }}>
         <button className="btn btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }} onClick={() => setAdvancedOpen((v) => !v)}>

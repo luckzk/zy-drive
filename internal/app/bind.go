@@ -46,6 +46,48 @@ func (s *DesktopService) Browse(ctx context.Context, mountID, ref string) ([]dom
 	return s.app.Browse(ctx, mountID, ref)
 }
 
+// PreviewURL resolves a file to a URL the webview renders
+// directly (images, streaming video/audio, PDF). Kind is
+// "direct" (a provider-issued short-lived URL) or "proxy" (a
+// zydrive-preview:// token URL, 10 minutes).
+func (s *DesktopService) PreviewURL(ctx context.Context, mountID, ref string) (*PreviewURLResult, error) {
+	return s.app.PreviewURL(ctx, mountID, ref)
+}
+
+// PreviewText reads the head of a text file (at most 512 KiB)
+// for in-app rendering. Truncated says the file continues past
+// it.
+func (s *DesktopService) PreviewText(ctx context.Context, mountID, ref string) (*PreviewTextResult, error) {
+	return s.app.PreviewText(ctx, mountID, ref)
+}
+
+// OpenWithSystemApp downloads a file to the preview cache (or
+// reuses the cached copy) and opens it with the system default
+// app — macOS prefers Quick Look. It returns the local cached
+// path.
+func (s *DesktopService) OpenWithSystemApp(ctx context.Context, mountID, ref string) (string, error) {
+	return s.app.OpenWithSystemApp(ctx, mountID, ref)
+}
+
+// RevealInFinder downloads a file to the preview cache (or reuses
+// the cached copy) and shows it in the system file manager. It
+// returns the local cached path.
+func (s *DesktopService) RevealInFinder(ctx context.Context, mountID, ref string) (string, error) {
+	return s.app.RevealInFinder(ctx, mountID, ref)
+}
+
+// PreviewCacheInfo reports the preview cache as it stands on disk
+// (size, file count, configured limit) for Settings → 缓存.
+func (s *DesktopService) PreviewCacheInfo() (*PreviewCacheInfo, error) {
+	return s.app.PreviewCacheInfo()
+}
+
+// ClearPreviewCache deletes every cached preview copy. The cloud
+// originals are untouched, so nothing is lost.
+func (s *DesktopService) ClearPreviewCache() (*PreviewCacheCleared, error) {
+	return s.app.ClearPreviewCache()
+}
+
 // SearchResult is the single return value of DesktopService.Search.
 // mygo.Bind allows at most one value plus an error, so the
 // (nodes, localOnly) pair is wrapped in this struct.
@@ -141,10 +183,12 @@ func (s *DesktopService) TestMount(ctx context.Context, id string) (*domain.Moun
 }
 
 // BeginOAuth builds the authorize URL for Dropbox / Drive / Drime /
-// OneDrive and starts the one-shot loopback listener that catches
-// the code (A). The frontend polls PollOAuthCallback for it.
-func (s *DesktopService) BeginOAuth(provider domain.ProviderKind, clientID string) (*OAuthStart, error) {
-	return s.app.BeginOAuth(provider, clientID)
+// OneDrive / Box / pCloud and starts the one-shot loopback listener
+// that catches the code (A). The frontend polls PollOAuthCallback
+// for it. region is the pCloud region ("auto" | "us" | "eu");
+// it is ignored for every other provider.
+func (s *DesktopService) BeginOAuth(provider domain.ProviderKind, clientID, region string) (*OAuthStart, error) {
+	return s.app.BeginOAuth(provider, clientID, region)
 }
 
 // PollOAuthCallback reports whether the browser has jumped back

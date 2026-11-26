@@ -56,6 +56,11 @@ type BundleCredentials struct {
 	AccessToken  string `json:"accessToken,omitempty"`
 	RefreshToken string `json:"refreshToken,omitempty"`
 	ClientSecret string `json:"clientSecret,omitempty"`
+	// MEGA exported session (v0.9.1): the session ID + base64
+	// master key, so an Agent import can log in with
+	// LoginWithKeys. The password is never in a bundle.
+	MegaSession   string `json:"megaSession,omitempty"`
+	MegaMasterKey string `json:"megaMasterKey,omitempty"`
 }
 
 // bundleEnvelope is the on-disk format: versioned, salted,

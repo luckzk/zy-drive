@@ -168,6 +168,44 @@ var migrations = []string{
 	// (the old wizard refused to save an unprobed mount), so
 	// treating old rows as verified is honest, not a guess.
 	`ALTER TABLE mounts ADD COLUMN verified INTEGER NOT NULL DEFAULT 1`,
+	// v21 (2026-11-25, Drime resume): resumable-upload sessions —
+	// one row per (mount, ref, size). parts_json is the Session
+	// JSON (parts with their ETags), remote_id the driver session
+	// handle (Drime uploadId), remote_key the server object key
+	// (Drime S3 key). A session is deleted when its upload
+	// completes; an interrupted upload keeps its row so the next
+	// attempt resumes from the next missing part.
+	`CREATE TABLE IF NOT EXISTS upload_sessions (
+		mount_id TEXT NOT NULL,
+		ref TEXT NOT NULL,
+		size INTEGER NOT NULL,
+		session_id TEXT NOT NULL DEFAULT '',
+		remote_id TEXT NOT NULL DEFAULT '',
+		remote_key TEXT NOT NULL DEFAULT '',
+		parts_json TEXT NOT NULL DEFAULT '[]',
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (mount_id, ref, size)
+	)`,
+	// v22 (2026-11-25, preview cache): the manifest of the
+	// "system app open" preview cache (docs/roadmap-next.md,
+	// "预览缓存管理规则"). One row per cached copy: key is
+	// sha256(mount_id + ref), filename the file's name inside the
+	// mount's cache dir (it keeps the original extension so the OS
+	// picks the right app), size + remote_mtime the remote file
+	// the copy was made from (reuse only when both still match),
+	// last_access the LRU clock. The manifest is reconciled with
+	// the disk at startup: a row without a file is dropped, a file
+	// without a row (orphan, or a half-written .part) is deleted.
+	`CREATE TABLE IF NOT EXISTS preview_cache (
+		key TEXT PRIMARY KEY,
+		mount_id TEXT NOT NULL,
+		ref TEXT NOT NULL,
+		filename TEXT NOT NULL,
+		size INTEGER NOT NULL DEFAULT -1,
+		remote_mtime TEXT NOT NULL DEFAULT '',
+		last_access TEXT NOT NULL,
+		updated_at TEXT NOT NULL
+	)`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.
