@@ -97,8 +97,8 @@ func newWithBases(cfg storage.Config, apiBase, uploadBase string) (*Provider, er
 		if tokenURL == "" {
 			tokenURL = "https://oauth2.googleapis.com/token"
 		}
-		refresher = oauth.FormRefresher(tokenURL,
-			cfg.Extra["client_id"], cfg.Extra["client_secret"])
+		refresher = oauth.FormRefresherWithProxy(tokenURL,
+			cfg.Extra["client_id"], cfg.Extra["client_secret"], cfg.Proxy)
 	}
 	ts := oauth.NewTokenSource(&oauth.Token{
 		AccessToken:  cfg.Token,
@@ -114,7 +114,7 @@ func newWithBases(cfg storage.Config, apiBase, uploadBase string) (*Provider, er
 	if p.rootID == "" {
 		p.rootID = "root"
 	}
-	p.client = shttp.New(nil)
+	p.client = shttp.NewWithProxy(nil, cfg.Proxy)
 	p.client.OnAuthExpired = func(ctx context.Context) error {
 		_, err := ts.Refresh(ctx)
 		return err

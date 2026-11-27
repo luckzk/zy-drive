@@ -182,8 +182,11 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 		}
 		// Drime desktop apps are public clients: no client secret
 		// is ever sent (Drime refuses one from a public client).
-		refresher = oauth.FormRefresher(tokenURL,
-			cfg.Extra["client_id"], cfg.Extra["client_secret"])
+		// The refresh travels through the mount's own proxy
+		// (cfg.Proxy, v0.18.0), like every other request this
+		// driver makes.
+		refresher = oauth.FormRefresherWithProxy(tokenURL,
+			cfg.Extra["client_id"], cfg.Extra["client_secret"], cfg.Proxy)
 	}
 	ts := oauth.NewTokenSource(&oauth.Token{
 		AccessToken:  cfg.Token,
@@ -196,10 +199,10 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 		mountID:     cfg.MountID,
 		store:       cfg.ResumeStore,
 		idMap:       map[string]int64{},
-		partClient:  &http.Client{Timeout: 180 * time.Second},
+		partClient:  &http.Client{Timeout: 180 * time.Second, Transport: netproxy.TransportOrShared(cfg.Proxy)},
 		resumeLocks: map[string]*sync.Mutex{},
 	}
-	p.client = shttp.New(drimePolicy)
+	p.client = shttp.NewWithProxy(drimePolicy, cfg.Proxy)
 	// The Authorization header is attached by the transport on
 	// EVERY attempt, not when the request is built: after a 401 the
 	// shared client refreshes the token once and replays the
@@ -209,7 +212,7 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 	// 401-refresh path has exactly that flaw. Drime does it right.)
 	p.client.HTTP = &http.Client{
 		Timeout:   120 * time.Second,
-		Transport: authTransport{base: netproxy.Transport(), tokens: ts},
+		Transport: authTransport{base: netproxy.TransportOrShared(cfg.Proxy), tokens: ts},
 	}
 	// Refresh only when a refresher exists: a personal access token
 	// never expires, so a 401 on it means wrong/revoked — the

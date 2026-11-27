@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	neturl "net/url"
+	"strings"
 	"time"
 
 	"github.com/luckzk/zy-drive/internal/netproxy"
@@ -72,15 +74,35 @@ type ProxyTestResult struct {
 	Detail string `json:"detail"`
 }
 
-// TestProxy sends one request through the current transport to the
-// Dropbox token host and reports pass/fail with the reason — so the
-// user no longer has to guess whether their proxy works. A failure
-// distinguishes "cannot reach the proxy itself" (the 2026-11-25
-// 7890 case: nothing was listening) from "the proxy cannot reach
-// the target" and "direct is blocked".
-func (a *App) TestProxy() ProxyTestResult {
-	target := "https://api.dropboxapi.com/oauth2/token"
-	client := netproxy.NewClient(15)
+// TestProxy sends one request through the resolved proxy and
+// reports pass/fail with the reason — so the user no longer has to
+// guess whether their proxy works. A failure distinguishes "cannot
+// reach the proxy itself" (the 2026-11-25 7890 case: nothing was
+// listening) from "the proxy cannot reach the target" and "direct
+// is blocked".
+//
+// url is the target to test (v0.18.0, custom test URL): empty means
+// the old default (the Dropbox token host). The URL must be
+// http(s) with a host; anything else is rejected with a
+// plain-language error instead of a confusing network failure.
+// proxyRef resolves like a mount's ProxyRef ("", "direct", or a
+// proxy-list id) — "" tests the current global setting, "direct"
+// tests a direct connection, an id tests exactly that proxy.
+// The request runs with a 15s timeout and never sends credentials,
+// codes or tokens. Any HTTP response — even a 400/404 — proves the
+// path works: the point is reachability, not the status code.
+func (a *App) TestProxy(url, proxyRef string) ProxyTestResult {
+	target := strings.TrimSpace(url)
+	if target == "" {
+		target = "https://api.dropboxapi.com/oauth2/token"
+	}
+	u, err := neturl.Parse(target)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ProxyTestResult{OK: false, Detail: "请填写 http(s) 网址，例如 https://api.dropboxapi.com/oauth2/token"}
+	}
+	host := u.Hostname()
+	cfg := a.resolveMountProxyConfig(proxyRef)
+	client := netproxy.NewClientFor(cfg, 15)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
@@ -89,7 +111,10 @@ func (a *App) TestProxy() ProxyTestResult {
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		kind, proxyAddr := netproxy.ClassifyError(target, err)
+		// Classify against the proxy this request actually used
+		// (see ClassifyErrorWith): a dead per-mount proxy must
+		// read as proxy-down, never as a direct failure.
+		kind, proxyAddr := netproxy.ClassifyErrorWith(cfg, target, err)
 		switch kind {
 		case netproxy.KindProxyDown:
 			if proxyAddr != "" {
@@ -97,15 +122,15 @@ func (a *App) TestProxy() ProxyTestResult {
 			}
 			return ProxyTestResult{OK: false, Detail: "连不上代理：请检查代理软件是否在运行、端口是否正确"}
 		case netproxy.KindProxyTarget:
-			return ProxyTestResult{OK: false, Detail: "代理已连上，但代理连不上 api.dropboxapi.com：请检查代理节点或规则"}
+			return ProxyTestResult{OK: false, Detail: fmt.Sprintf("代理已连上，但代理连不上 %s：请检查代理节点或规则", host)}
 		case netproxy.KindDirect:
-			return ProxyTestResult{OK: false, Detail: "直连 api.dropboxapi.com 被挡：请打开代理（跟随系统代理，或手动填代理地址）再试"}
+			return ProxyTestResult{OK: false, Detail: fmt.Sprintf("直连 %s 被挡：请打开代理（跟随系统代理，或手动填代理地址）再试", host)}
 		default:
 			return ProxyTestResult{OK: false, Detail: fmt.Sprintf("代理测试失败：%v", err)}
 		}
 	}
 	defer resp.Body.Close()
-	addr, via := netproxy.ProxyForURL(target)
+	addr, via := netproxy.ProxyForURLWith(cfg, target)
 	if addr == "" {
 		return ProxyTestResult{OK: true, Detail: fmt.Sprintf("直连通（%s），不需要代理", resp.Status)}
 	}

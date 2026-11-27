@@ -70,7 +70,7 @@ func TestDrimeOAuthPKCE(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderDrime, "drime-client-id", "", "auth-code-1", start.State, srv.URL)
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDrime, "drime-client-id", "", "auth-code-1", start.State, srv.URL, "")
 	if err != nil {
 		t.Fatalf("ExchangeOAuthCode(drime): %v", err)
 	}
@@ -92,7 +92,7 @@ func TestDrimeOAuthPKCE(t *testing.T) {
 		t.Fatalf("code_verifier does not match code_challenge")
 	}
 	// Single-use: the same state cannot be exchanged twice.
-	if _, err := a.ExchangeOAuthCode(domain.ProviderDrime, "drime-client-id", "", "auth-code-2", start.State, srv.URL); err == nil {
+	if _, err := a.ExchangeOAuthCode(domain.ProviderDrime, "drime-client-id", "", "auth-code-2", start.State, srv.URL, ""); err == nil {
 		t.Fatalf("second exchange with the same state: want an error")
 	}
 }
@@ -191,7 +191,7 @@ func TestOAuthCallbackAutoFlow(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderDrive, "drive-client-id", "drive-secret", res.Code, start.State, srv.URL)
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDrive, "drive-client-id", "drive-secret", res.Code, start.State, srv.URL, "")
 	if err != nil {
 		t.Fatalf("ExchangeOAuthCode(drive): %v", err)
 	}
@@ -313,7 +313,7 @@ func TestExchangeRetryAfterFailureKeepsState(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL)
+	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL, "")
 	if err == nil {
 		t.Fatal("first exchange should fail (mock 500)")
 	}
@@ -327,7 +327,7 @@ func TestExchangeRetryAfterFailureKeepsState(t *testing.T) {
 		t.Fatalf("failed exchange must not leak the raw provider error: %v", err)
 	}
 
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL)
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL, "")
 	if err != nil {
 		t.Fatalf("retry with the same code+state must succeed: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestExchangeRetryAfterFailureKeepsState(t *testing.T) {
 		}
 	}
 	// Success consumed the state: a third exchange reports it used.
-	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL); err == nil || !strings.Contains(err.Error(), "已失效或已被用过") {
+	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-1", start.State, srv.URL, ""); err == nil || !strings.Contains(err.Error(), "已失效或已被用过") {
 		t.Fatalf("third exchange: got err %v, want the state-used message", err)
 	}
 }
@@ -370,7 +370,7 @@ func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
 	}
 	// The wizard drops the previous link before minting a new one.
 	a.CancelOAuth(start1.State)
-	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-1", start1.State, ""); err == nil || !strings.Contains(err.Error(), "已失效或已被用过") {
+	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-1", start1.State, "", ""); err == nil || !strings.Contains(err.Error(), "已失效或已被用过") {
 		t.Fatalf("old state exchange: got err %v, want the state-used message", err)
 	}
 
@@ -392,7 +392,7 @@ func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-1", start2.State, srv.URL)
+	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-1", start2.State, srv.URL, "")
 	if err == nil {
 		t.Fatal("old code against the new flow must fail")
 	}
@@ -403,7 +403,7 @@ func TestExchangeOldCodeAfterRegenerate(t *testing.T) {
 		t.Fatalf("invalid_grant must tell the user to regenerate the link, got: %v", err)
 	}
 	// The state survived the failed exchange: the right code works.
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-2", start2.State, srv.URL)
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", "code-for-flow-2", start2.State, srv.URL, "")
 	if err != nil {
 		t.Fatalf("retry with the flow's own code must succeed: %v", err)
 	}
@@ -457,7 +457,7 @@ func TestExchangeWithStaleStateReproducesExpiredMessage(t *testing.T) {
 	defer srv.Close()
 
 	// The stale closure's exchange: state '' on the first flow.
-	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", res.Code, "", srv.URL)
+	_, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", res.Code, "", srv.URL, "")
 	if err == nil {
 		t.Fatal("exchange with an empty (stale) state must fail")
 	}
@@ -466,7 +466,7 @@ func TestExchangeWithStaleStateReproducesExpiredMessage(t *testing.T) {
 	}
 	// The failed exchange must NOT have consumed the code: the
 	// same code with the flow's own state still succeeds.
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", res.Code, start.State, srv.URL)
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "dbx-id", "", res.Code, start.State, srv.URL, "")
 	if err != nil {
 		t.Fatalf("exchange with the correct state must succeed after the stale attempt: %v", err)
 	}

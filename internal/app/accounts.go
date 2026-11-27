@@ -10,11 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -63,6 +61,12 @@ type AddMountInput struct {
 	MegaPassword  string              `json:"megaPassword,omitempty"`  // MEGA account password (never persisted; the exported session is stored instead)
 	MegaTwoFactor string              `json:"megaTwoFactor,omitempty"` // MEGA 2FA code (optional, one login only)
 	PCloudRegion  string              `json:"pcloudRegion,omitempty"`  // pCloud region: "auto" | "us" | "eu", default "auto"
+	// ProxyRef selects this mount's proxy (v0.18.0, per-mount
+	// proxy): "" = follow the global proxy setting, "direct" =
+	// direct, anything else = a proxy-list entry id. The OAuth
+	// code exchange (ExchangeOAuthCode) takes the same value so
+	// the exchange travels through the proxy the mount will use.
+	ProxyRef string `json:"proxyRef,omitempty"`
 	// SkipProbe (C, one-page form): save without a connection
 	// probe. The mount is then stored Verified=false ("未验证")
 	// and the user re-tests it later from Settings. When false
@@ -132,7 +136,7 @@ func (a *App) AddMount(ctx context.Context, m *domain.Mount, cfg storage.Config)
 	_ = caps
 	m.Caps = caps
 	m.Status = domain.MountOK
-	a.mounts[m.ID] = MountHandle{Mount: m, Provider: p}
+	a.setHandle(m.ID, MountHandle{Mount: m, Provider: p})
 	return nil
 }
 
@@ -213,6 +217,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		WorkspaceLabel: workspaceLabelFor(in),
 		EndpointHost:   endpointHost(in.Endpoint),
 		Group:          strings.TrimSpace(in.Group),
+		ProxyRef:       strings.TrimSpace(in.ProxyRef),
 		Caps:           p.Caps(),
 		Status:         domain.MountOK,
 		Verified:       verified,
@@ -222,7 +227,9 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 	// New mounts go at the end of their group (sort_order =
 	// max+1 there; the first mount in a group gets 0). The same
 	// value is what upsertMount persists, so memory and SQLite
-	// agree without a reload.
+	// agree without a reload. Computed and inserted under the
+	// write lock so two concurrent adds cannot take the same slot.
+	a.mountsMu.Lock()
 	sortOrder := -1
 	for _, h := range a.mounts {
 		if h.Mount.Group == m.Group && h.Mount.SortOrder > sortOrder {
@@ -230,6 +237,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 		}
 	}
 	m.SortOrder = sortOrder + 1
+	a.mountsMu.Unlock()
 	// MEGA: the probe just logged in with the password — export
 	// the session now and store THAT, never the password (see
 	// exportMegaSession). A failed export aborts the save.
@@ -263,7 +271,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 			}
 		}
 	}
-	a.mounts[id] = MountHandle{Mount: m, Provider: p}
+	a.setHandle(id, MountHandle{Mount: m, Provider: p})
 	return m, nil
 }
 
@@ -368,6 +376,12 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 	// builtin ID so the first token refresh after the access
 	// token expires does not fail with invalid_client.
 	a.fillBuiltinClientID(in.Provider, cfg.Extra)
+	// Per-mount proxy (v0.18.0): the driver (and its token
+	// refresher) is built on this config, so the proxy travels
+	// with the mount from the probe on. It is also part of the
+	// test memo key (testMemoKey hashes the whole Config), so a
+	// proxy change voids a passed probe memo.
+	cfg.Proxy = a.resolveMountProxyConfig(strings.TrimSpace(in.ProxyRef))
 	return cfg, creds, nil
 }
 
@@ -454,6 +468,13 @@ func (a *App) nonSecretConfig(in AddMountInput) map[string]string {
 	// through the one-click flow stores the builtin Client ID,
 	// so a later refresh does not fail with invalid_client.
 	a.fillBuiltinClientID(in.Provider, cfg)
+	// Per-mount proxy (v0.18.0): persisted in the config map as
+	// "proxy_ref" — no new mounts-table column. "" (follow
+	// global) is omitted: absence means the same thing, and old
+	// rows without the key keep working.
+	if ref := strings.TrimSpace(in.ProxyRef); ref != "" {
+		cfg["proxy_ref"] = ref
+	}
 	return cfg
 }
 
@@ -583,153 +604,13 @@ func healedRoot(provider domain.ProviderKind, cfg map[string]string) (rootRef, r
 	}
 }
 
-// LoadMounts rebuilds every persisted mount after a restart: the
-// mount row gives metadata + non-secret config, the secrets table
-// gives the encrypted credentials (decrypted in memory only). A
-// mount whose provider cannot be rebuilt (bad/expired credentials,
-// missing master key) is kept in the list with status "error" and no
-// provider, so the user still sees it and can remove or re-add it —
-// it is never silently dropped. Call once at startup, after the
-// master key store is attached.
-func (a *App) LoadMounts() error {
-	if a.DB == nil {
-		return nil
-	}
-	persisted, err := a.DB.ListMounts()
-	if err != nil {
-		return err
-	}
-	for _, pm := range persisted {
-		m := pm.Mount
-		// Display-only endpoint host, recomputed from the stored
-		// non-secret config on every load (older rows never had
-		// the field; nothing is persisted for it here).
-		m.EndpointHost = endpointHost(pm.Config["endpoint"])
-		// Workspace label (Drime only): recomputed from the stored
-		// non-secret config on every load, so mounts saved before
-		// this field existed still show their workspace.
-		m.WorkspaceLabel = workspaceLabelFromConfig(m.Provider, pm.Config)
-		// Self-heal (2026-11-25, S3 root fix): mounts saved before
-		// the fix carry RootRef "bucket" or "bucket/prefix", which
-		// the browse/sync/upload code treats as a key prefix — the
-		// bucket root then looks empty and uploads land under
-		// bucket/bucket/. Recompute from the stored config
-		// (bucket/prefix are untouched by the bug) and write the
-		// corrected row back, so the user's existing R2 mount just
-		// works on the next start with no delete-and-re-add. A row
-		// whose own prefix repeats the bucket name cannot be healed
-		// this way — that needs the Settings "修改桶 / 前缀" entry.
-		if wantRef, wantLabel, ok := healedRoot(m.Provider, pm.Config); ok && (m.RootRef != wantRef || m.RootLabel != wantLabel) {
-			m.RootRef = wantRef
-			m.RootLabel = wantLabel
-			m.UpdatedAt = time.Now().UTC()
-			// Best effort: a failed write-back only means the heal
-			// retries on the next start; the in-memory mount is
-			// already corrected.
-			_ = a.DB.SaveMount(m, pm.Config)
-		}
-		cfg := storage.Config{
-			Endpoint: pm.Config["endpoint"],
-			Region:   pm.Config["region"],
-			Extra:    pm.Config,
-		}
-		a.mountRuntime(&cfg, m.ID)
-		if a.secrets != nil {
-			if ct, err := a.DB.LoadSecret(m.AccountID); err == nil {
-				plain, err := a.secrets.Decrypt(ct)
-				if err != nil {
-					m.Status = domain.MountError
-					a.mounts[m.ID] = MountHandle{Mount: m}
-					continue
-				}
-				var creds mountCredentials
-				if err := json.Unmarshal(plain, &creds); err != nil {
-					m.Status = domain.MountError
-					a.mounts[m.ID] = MountHandle{Mount: m}
-					continue
-				}
-				cfg.AccessKey = creds.AccessKey
-				cfg.SecretKey = creds.SecretKey
-				cfg.Token = creds.AccessToken
-				cfg.Extra["refresh_token"] = creds.RefreshToken
-				cfg.Extra["client_secret"] = creds.ClientSecret
-				// MEGA: the stored session (never the password).
-				// A mount saved before v0.9.1 has no session and
-				// the driver then refuses to build — the user
-				// re-authorizes it once from Settings.
-				if creds.MegaSession != "" {
-					cfg.Extra["mega_session_id"] = creds.MegaSession
-				}
-				if creds.MegaMasterKey != "" {
-					cfg.Extra["mega_master_key"] = creds.MegaMasterKey
-				}
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				m.Status = domain.MountError
-				a.mounts[m.ID] = MountHandle{Mount: m}
-				continue
-			}
-			// No secret row: a local mount (no credentials). Fine.
-		} else if m.Provider != domain.ProviderLocal {
-			m.Status = domain.MountError
-			a.mounts[m.ID] = MountHandle{Mount: m}
-			continue
-		}
-		// Self-heal (2026-11-27, builtin client_id fix): mounts
-		// authorized through the one-click builtin flow were saved
-		// without a client_id, so the first token refresh after
-		// the access token expired failed with invalid_client.
-		// Fill the builtin ID here so existing mounts heal
-		// without re-authorisation; the corrected row is written
-		// back best-effort, like the S3 root heal above. A stored
-		// custom Client ID is never overwritten.
-		if a.fillBuiltinClientID(m.Provider, cfg.Extra) {
-			_ = a.DB.SaveMount(m, pm.Config)
-		}
-		p, err := a.Registry.New(m.Provider, cfg)
-		if err != nil {
-			// Log the real reason: the UI only shows a status,
-			// so without this line the cause (e.g. an expired
-			// MEGA session) is invisible anywhere. Provider
-			// errors never contain credential values, so this
-			// is safe to log.
-			log.Printf("mounts: mount=%s provider=%s: %v", m.ID, m.Provider, err)
-			if errors.Is(err, storage.ErrSessionExpired) {
-				// The stored session is dead; only a fresh
-				// login revives the mount. The UI already
-				// renders this status as "授权过期了，重新授权
-				// 后就能继续浏览。"
-				m.Status = domain.MountAuthExpired
-			} else {
-				m.Status = domain.MountError
-			}
-			a.mounts[m.ID] = MountHandle{Mount: m}
-			continue
-		}
-		m.Caps = p.Caps()
-		if m.Status != domain.MountOK {
-			m.Status = domain.MountOK
-		}
-		a.mounts[m.ID] = MountHandle{Mount: m, Provider: p}
-	}
-	return nil
-}
-
 // ListMounts returns the registered mounts in creation order.
+// During a background LoadMountsAsync it returns the mounts
+// loaded so far — the caller polls MountsLoading for completion.
 func (a *App) ListMounts() []*domain.Mount {
-	out := make([]*domain.Mount, 0, len(a.mounts))
-	for _, h := range a.mounts {
-		out = append(out, h.Mount)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].SortOrder != out[j].SortOrder {
-			return out[i].SortOrder < out[j].SortOrder
-		}
-		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
-		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
-	})
-	return out
+	a.mountsMu.RLock()
+	defer a.mountsMu.RUnlock()
+	return a.listMountsLocked()
 }
 
 // RemoveMount unregisters a mount and deletes its local records
@@ -738,12 +619,14 @@ func (a *App) ListMounts() []*domain.Mount {
 // the group closes ranks, in memory and in SQLite, so sort_order
 // stays dense.
 func (a *App) RemoveMount(id string) error {
-	h, ok := a.mounts[id]
+	h, ok := a.Mount(id)
 	if !ok {
 		return fmt.Errorf("app: unknown mount %q", id)
 	}
 	group, sortOrder := h.Mount.Group, h.Mount.SortOrder
+	a.mountsMu.Lock()
 	delete(a.mounts, id)
+	a.mountsMu.Unlock()
 	if a.DB != nil {
 		if err := a.DB.DeleteMount(id); err != nil {
 			return err
@@ -751,11 +634,16 @@ func (a *App) RemoveMount(id string) error {
 		// Best effort: a local mount has no secret row.
 		_ = a.DB.DeleteSecret(secretIDFor(id))
 	}
+	// Close ranks in memory under the write lock: SortOrder is
+	// mutated in place, so no ListMounts reader may run
+	// concurrently (it takes the read lock).
+	a.mountsMu.Lock()
 	for _, h2 := range a.mounts {
 		if h2.Mount.Group == group && h2.Mount.SortOrder > sortOrder {
 			h2.Mount.SortOrder--
 		}
 	}
+	a.mountsMu.Unlock()
 	return nil
 }
 
@@ -767,7 +655,7 @@ func (a *App) RemoveMount(id string) error {
 // bucket/prefix and the old provider stay in place, and the caller
 // gets a plain-language error.
 func (a *App) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*domain.Mount, error) {
-	h, ok := a.mounts[id]
+	h, ok := a.Mount(id)
 	if !ok {
 		return nil, fmt.Errorf("app: unknown mount %q", id)
 	}
@@ -797,6 +685,9 @@ func (a *App) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*
 		Region:   newCfg["region"],
 		Extra:    newCfg,
 	}
+	// The mount keeps its own proxy (v0.18.0): the rebuilt driver
+	// must travel through it, not the global setting.
+	cfg.Proxy = a.resolveMountProxyConfig(newCfg["proxy_ref"])
 	a.mountRuntime(&cfg, id)
 	if a.secrets != nil {
 		creds, found, err := a.decryptMountCreds(h.Mount.AccountID)
@@ -821,15 +712,19 @@ func (a *App) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*
 	if prefix != "" {
 		label = bucket + "/" + prefix
 	}
-	h.Provider = p
-	h.Mount.RootRef = ""
-	h.Mount.RootLabel = label
-	h.Mount.UpdatedAt = time.Now().UTC()
-	a.mounts[id] = h
-	if err := a.DB.SaveMount(h.Mount, newCfg); err != nil {
+	// Copy-on-write: the shared *domain.Mount is never mutated in
+	// place, so a concurrent ListMounts reader cannot see a
+	// half-updated mount.
+	m := *h.Mount
+	m.RootRef = ""
+	m.RootLabel = label
+	m.LoadError = ""
+	m.UpdatedAt = time.Now().UTC()
+	a.setHandle(id, MountHandle{Mount: &m, Provider: p})
+	if err := a.DB.SaveMount(&m, newCfg); err != nil {
 		return nil, err
 	}
-	return h.Mount, nil
+	return &m, nil
 }
 
 // UpdateMountCredentials re-authorizes an existing mount IN PLACE
@@ -849,7 +744,7 @@ func (a *App) UpdateMountRoot(ctx context.Context, id, bucket, prefix string) (*
 // the input also take effect (re-auth doubles as a root change);
 // for Drime the workspace id in the input takes effect.
 func (a *App) UpdateMountCredentials(ctx context.Context, id string, in AddMountInput) (*domain.Mount, error) {
-	h, ok := a.mounts[id]
+	h, ok := a.Mount(id)
 	if !ok {
 		return nil, fmt.Errorf("app: unknown mount %q", id)
 	}
@@ -903,12 +798,14 @@ func (a *App) UpdateMountCredentials(ctx context.Context, id string, in AddMount
 		m.DisplayName = name
 	}
 	m.Group = strings.TrimSpace(in.Group)
+	m.ProxyRef = strings.TrimSpace(in.ProxyRef)
 	m.RootRef = rootRefFor(in)
 	m.RootLabel = rootLabelFor(in)
 	m.WorkspaceLabel = workspaceLabelFor(in)
 	m.EndpointHost = endpointHost(in.Endpoint)
 	m.Caps = p.Caps()
 	m.Status = domain.MountOK
+	m.LoadError = ""
 	m.Verified = verified
 	m.UpdatedAt = time.Now().UTC()
 	if a.DB != nil {
@@ -916,7 +813,7 @@ func (a *App) UpdateMountCredentials(ctx context.Context, id string, in AddMount
 			return nil, err
 		}
 	}
-	a.mounts[id] = MountHandle{Mount: &m, Provider: p}
+	a.setHandle(id, MountHandle{Mount: &m, Provider: p})
 	return &m, nil
 }
 
@@ -965,23 +862,29 @@ func (a *App) decryptMountCreds(accountID string) (mountCredentials, bool, error
 // same group is a no-op. (Drag-sort uses MoveMount, which places
 // the mount at an exact index instead.)
 func (a *App) UpdateMountGroup(id, group string) error {
-	h, ok := a.mounts[id]
+	h, ok := a.Mount(id)
 	if !ok {
 		return fmt.Errorf("app: unknown mount %q", id)
 	}
 	if h.Mount.Group == group {
 		return nil
 	}
+	// Copy-on-write under the write lock (see RemoveMount): the
+	// group/slot computation and the swap are one critical
+	// section, so two concurrent moves cannot take the same slot.
+	a.mountsMu.Lock()
 	sortOrder := -1
 	for _, h2 := range a.mounts {
 		if h2.Mount.Group == group && h2.Mount.SortOrder > sortOrder {
 			sortOrder = h2.Mount.SortOrder
 		}
 	}
-	h.Mount.Group = group
-	h.Mount.SortOrder = sortOrder + 1
-	h.Mount.UpdatedAt = time.Now().UTC()
-	a.mounts[id] = h
+	m := *h.Mount
+	m.Group = group
+	m.SortOrder = sortOrder + 1
+	m.UpdatedAt = time.Now().UTC()
+	a.mounts[id] = MountHandle{Mount: &m, Provider: h.Provider}
+	a.mountsMu.Unlock()
 	if a.DB != nil {
 		return a.DB.UpdateMountGroup(id, group)
 	}
@@ -998,13 +901,21 @@ func (a *App) UpdateMountGroup(id, group string) error {
 // UpdatedAt is untouched.
 func (a *App) MoveMount(ctx context.Context, id, group string, index int) (*domain.Mount, error) {
 	_ = ctx
+	// The whole read-compute-renumber runs under the write lock:
+	// renumbering mutates Group/SortOrder in place, and the
+	// member snapshot must not change mid-move (a background
+	// load finishing, or a concurrent move). The DB write happens
+	// after the unlock — it is quick SQLite, and the in-memory
+	// order is already final either way.
+	a.mountsMu.Lock()
 	h, ok := a.mounts[id]
 	if !ok {
+		a.mountsMu.Unlock()
 		return nil, fmt.Errorf("app: unknown mount %q", id)
 	}
 	// Current members per group, in sort_order order.
 	members := map[string][]*domain.Mount{}
-	for _, m := range a.ListMounts() {
+	for _, m := range a.listMountsLocked() {
 		members[m.Group] = append(members[m.Group], m)
 	}
 	srcGroup := h.Mount.Group
@@ -1017,6 +928,7 @@ func (a *App) MoveMount(ctx context.Context, id, group string, index int) (*doma
 		}
 	}
 	if cur < 0 {
+		a.mountsMu.Unlock()
 		return nil, fmt.Errorf("app: mount %q not in its group", id)
 	}
 	dst := members[group]
@@ -1030,6 +942,7 @@ func (a *App) MoveMount(ctx context.Context, id, group string, index int) (*doma
 		index = len(dst)
 	}
 	if group == srcGroup && index == cur {
+		a.mountsMu.Unlock()
 		return h.Mount, nil
 	}
 	newDst := make([]*domain.Mount, 0, len(dst)+1)
@@ -1057,6 +970,7 @@ func (a *App) MoveMount(ctx context.Context, id, group string, index int) (*doma
 		renumber(srcGroup, newSrc)
 		renumber(group, newDst)
 	}
+	a.mountsMu.Unlock()
 	if a.DB != nil {
 		if err := a.DB.UpdateMountOrders(orders); err != nil {
 			return nil, err
@@ -1140,29 +1054,26 @@ func (a *App) testedRecently(provider domain.ProviderKind, cfg storage.Config, c
 	return ok && time.Since(at) <= 5*time.Minute
 }
 
-// TestMount re-probes a saved mount (C, Settings → "重新测试"):
-// it rebuilds the provider from the stored config + credentials
-// and lists the root. On success the mount is marked
-// Verified=true and persisted; on failure nothing changes — the
-// mount stays "未验证" and the caller gets the plain-language
-// error. It never deletes the mount or its credentials.
-func (a *App) TestMount(ctx context.Context, id string) (*domain.Mount, error) {
-	h, ok := a.mounts[id]
+// buildSavedMountProvider rebuilds a saved mount's provider from a
+// config map (persisted non-secret config, optionally with keys
+// overridden by the caller) plus the decrypted credentials, and
+// probes the root. It is the rebuild path TestMount and
+// UpdateMountProxy share: the caller swaps the live handle only on
+// success, so a failed rebuild leaves the old provider untouched.
+// The mount's own proxy (cfgMap["proxy_ref"], v0.18.0) is resolved
+// into cfg.Proxy here, so the rebuilt driver — and its token
+// refresher — travel through the mount's proxy.
+func (a *App) buildSavedMountProvider(ctx context.Context, id string, cfgMap map[string]string) (storage.Provider, error) {
+	h, ok := a.Mount(id)
 	if !ok {
 		return nil, fmt.Errorf("app: unknown mount %q", id)
-	}
-	if a.DB == nil {
-		return nil, fmt.Errorf("app: 本地数据库还没初始化，测不了这个网盘")
-	}
-	cfgMap, err := a.persistedConfig(id)
-	if err != nil {
-		return nil, err
 	}
 	cfg := storage.Config{
 		Endpoint: cfgMap["endpoint"],
 		Region:   cfgMap["region"],
 		Extra:    cfgMap,
 	}
+	cfg.Proxy = a.resolveMountProxyConfig(cfgMap["proxy_ref"])
 	a.mountRuntime(&cfg, id)
 	if a.secrets != nil {
 		creds, found, err := a.decryptMountCreds(h.Mount.AccountID)
@@ -1193,16 +1104,47 @@ func (a *App) TestMount(ctx context.Context, id string) (*domain.Mount, error) {
 	if err := probeRoot(probeCtx, p); err != nil {
 		return nil, humanProbeError(h.Mount.Provider, err)
 	}
-	h.Provider = p
-	h.Mount.Caps = p.Caps()
-	h.Mount.Status = domain.MountOK
-	h.Mount.Verified = true
-	h.Mount.UpdatedAt = time.Now().UTC()
-	a.mounts[id] = h
-	if err := a.DB.SaveMount(h.Mount, cfgMap); err != nil {
+	return p, nil
+}
+
+// TestMount re-probes a saved mount (C, Settings → "重新测试"):
+// it rebuilds the provider from the stored config + credentials
+// and lists the root. On success the mount is marked
+// Verified=true and persisted; on failure nothing changes — the
+// mount stays "未验证" and the caller gets the plain-language
+// error. It never deletes the mount or its credentials. A
+// successful test also clears LoadError (v0.18.0): the mount is
+// healthy again, so the old load failure must not linger.
+func (a *App) TestMount(ctx context.Context, id string) (*domain.Mount, error) {
+	h, ok := a.Mount(id)
+	if !ok {
+		return nil, fmt.Errorf("app: unknown mount %q", id)
+	}
+	if a.DB == nil {
+		return nil, fmt.Errorf("app: 本地数据库还没初始化，测不了这个网盘")
+	}
+	cfgMap, err := a.persistedConfig(id)
+	if err != nil {
 		return nil, err
 	}
-	return h.Mount, nil
+	p, err := a.buildSavedMountProvider(ctx, id, cfgMap)
+	if err != nil {
+		return nil, err
+	}
+	// Copy-on-write: the shared *domain.Mount is never mutated in
+	// place, so a concurrent ListMounts reader cannot see a
+	// half-updated mount.
+	m := *h.Mount
+	m.Caps = p.Caps()
+	m.Status = domain.MountOK
+	m.LoadError = ""
+	m.Verified = true
+	m.UpdatedAt = time.Now().UTC()
+	a.setHandle(id, MountHandle{Mount: &m, Provider: p})
+	if err := a.DB.SaveMount(&m, cfgMap); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // humanProbeError turns a probe failure into plain language for the

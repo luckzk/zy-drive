@@ -11,6 +11,7 @@ import (
 	"io"
 
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/netproxy"
 	"github.com/luckzk/zy-drive/internal/storage/upload"
 )
 
@@ -42,6 +43,17 @@ type Config struct {
 	SecretKey string            `json:"secretKey,omitempty"` // S3 SK, memory only
 	Token     string            `json:"token,omitempty"`     // OAuth access token, memory only
 	Extra     map[string]string `json:"extra,omitempty"`
+	// Proxy is this mount's own proxy (v0.18.0, per-mount proxy),
+	// already resolved by the app layer from the mount's ProxyRef
+	// ("" = global, "direct" = no proxy, an id = that proxy-list
+	// entry). The zero Config means "not set": drivers treat it
+	// as the global config (netproxy.Current()) so configs built
+	// before this field existed keep working. It IS part of the
+	// app's test memo key (testMemoKey hashes the whole Config),
+	// so changing a mount's proxy voids a passed probe memo and
+	// the new proxy is really tested. storage importing netproxy
+	// cannot cycle: netproxy depends on no internal package.
+	Proxy netproxy.Config `json:"proxy,omitempty"`
 	// MountID is the mount this config belongs to ("" while the
 	// mount is unsaved). Drivers that persist per-mount state
 	// (Drime resume sessions) key it by this id. json:"-" on

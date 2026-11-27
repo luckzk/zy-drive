@@ -8,9 +8,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
 
-export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -112,8 +112,11 @@ export const api = {
   saveCustomOAuthApp: (provider: ProviderKind, clientID: string, clientSecret: string) =>
     DesktopService.saveCustomOAuthApp(provider, clientID, clientSecret),
   deleteCustomOAuthApp: (provider: ProviderKind) => DesktopService.deleteCustomOAuthApp(provider),
-  exchangeOAuthCode: (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) =>
-    DesktopService.exchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL),
+  // v0.18.0: the exchange travels through the wizard's chosen
+  // per-mount proxy (7th arg): "" follows the global setting,
+  // "direct" goes direct, an id uses that proxy-list entry.
+  exchangeOAuthCode: (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string, proxyRef = '') =>
+    DesktopService.exchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL, proxyRef),
   getSettings: () => DesktopService.getSettings(),
   saveSettings: (s: Settings) => DesktopService.saveSettings(s),
   // V0.9.0: in-place re-authorization (same mount, new credentials),
@@ -157,8 +160,16 @@ export const api = {
   clearPreviewCache: async () => nonNullOne(await DesktopService.clearPreviewCache()),
   // Settings → 网络: what the OS has configured (for display),
   // and a one-shot connectivity test through the current setup.
+  // v0.18.0: testProxy takes the target URL + which proxy to
+  // test ("": global setting, "direct": direct, id: that entry).
   getSystemProxy: () => DesktopService.getSystemProxy(),
-  testProxy: () => DesktopService.testProxy(),
+  testProxy: (url: string, proxyRef: string) => DesktopService.testProxy(url, proxyRef),
+  // v0.18.0: per-mount proxy list + async startup mount load.
+  mountsLoading: () => DesktopService.mountsLoading(),
+  listProxies: async () => (await DesktopService.listProxies()) ?? [],
+  saveProxy: (p: ProxyEntry) => DesktopService.saveProxy(p),
+  deleteProxy: (id: string) => DesktopService.deleteProxy(id),
+  updateMountProxy: (id: string, proxyRef: string) => DesktopService.updateMountProxy(id, proxyRef),
   checkDownloadDir: (path: string) => DesktopService.checkDownloadDir(path),
   getOpenAtLogin: () => DesktopService.getOpenAtLogin(),
   setOpenAtLogin: (on: boolean) => DesktopService.setOpenAtLogin(on),

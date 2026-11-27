@@ -60,6 +60,15 @@ type Client struct {
 
 // New returns a Client with the given policy (DefaultPolicy when nil).
 func New(policy *RetryPolicy) *Client {
+	return NewWithProxy(policy, netproxy.Current())
+}
+
+// NewWithProxy is New on a transport bound to one proxy config
+// (v0.18.0, per-mount proxy): drivers whose mount picked its own
+// proxy build their client here instead of on the shared global
+// transport. A zero proxy config falls back to the current global
+// one, so drivers that do not set cfg.Proxy keep working.
+func NewWithProxy(policy *RetryPolicy, proxy netproxy.Config) *Client {
 	p := DefaultPolicy
 	if policy != nil {
 		p = *policy
@@ -68,8 +77,9 @@ func New(policy *RetryPolicy) *Client {
 		// Shared proxy-aware transport: every driver request
 		// (Dropbox/Drive/Drime/OneDrive) follows the proxy the
 		// user configured in Settings -> Network (system / manual
-		// / direct), not just ProxyFromEnvironment.
-		HTTP:   netproxy.NewClient(120),
+		// / direct), not just ProxyFromEnvironment — or, with
+		// NewWithProxy, the mount's own proxy.
+		HTTP:   netproxy.NewClientFor(proxy, 120),
 		Policy: p,
 	}
 }

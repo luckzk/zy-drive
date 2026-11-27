@@ -53,6 +53,9 @@ export default function App() {
   const [syncJobCount, setSyncJobCount] = useState(0)
   const [activeMountId, setActiveMountId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  // v0.18.0: async startup mount load — true while the backend
+  // is still building mounts (the window is already open).
+  const [mountsLoading, setMountsLoading] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [showPalette, setShowPalette] = useState(false)
   const [showAddMount, setShowAddMount] = useState(false)
@@ -150,6 +153,47 @@ export default function App() {
     void Promise.all([loadMounts(), loadAgents(), loadTransfers(), loadSettings(), loadQuotas(), loadSyncJobCount()]).finally(() => setLoading(false))
   }, [loadMounts, loadAgents, loadTransfers, loadSettings, loadQuotas, loadSyncJobCount])
 
+  // v0.18.0: the backend loads mounts asynchronously after the
+  // window opens, so poll mountsLoading() every 2s and refresh
+  // the list while it is true — mounts fill in as they arrive.
+  // Timeout chain (not a resident interval): stops when loading
+  // ends, after 120s, on error, or on unmount.
+  const mountsPollTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    let elapsed = 0
+    const tick = async () => {
+      if (cancelled) return
+      let stillLoading = false
+      try {
+        stillLoading = await api.mountsLoading()
+      } catch {
+        // Dev shell / no backend: no async load to wait for.
+        setMountsLoading(false)
+        return
+      }
+      if (cancelled) return
+      if (!stillLoading) {
+        setMountsLoading(false)
+        return
+      }
+      setMountsLoading(true)
+      await loadMounts()
+      if (cancelled) return
+      elapsed += 2000
+      if (elapsed >= 120000) {
+        setMountsLoading(false)
+        return
+      }
+      mountsPollTimer.current = setTimeout(() => void tick(), 2000)
+    }
+    void tick()
+    return () => {
+      cancelled = true
+      if (mountsPollTimer.current) clearTimeout(mountsPollTimer.current)
+    }
+  }, [loadMounts])
+
   // 回到文件浏览页时重数一次（任务在同步页里增删）。
   useEffect(() => {
     if (page === 'browse') void loadSyncJobCount()
@@ -226,6 +270,7 @@ export default function App() {
           page={page}
           lang={lang}
           loading={loading}
+          mountsLoading={mountsLoading}
           onNavigate={setPage}
           mounts={mounts}
           quotas={quotas}

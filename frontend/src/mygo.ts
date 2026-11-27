@@ -56,6 +56,14 @@ export interface AddMountInput {
   /** pCloud region: "auto" | "us" | "eu", default "auto" */
   pcloudRegion?: string;
   /**
+   * ProxyRef selects this mount's proxy (v0.18.0, per-mount
+   * proxy): "" = follow the global proxy setting, "direct" =
+   * direct, anything else = a proxy-list entry id. The OAuth
+   * code exchange (ExchangeOAuthCode) takes the same value so
+   * the exchange travels through the proxy the mount will use.
+   */
+  proxyRef?: string;
+  /**
    * SkipProbe (C, one-page form): save without a connection
    * probe. The mount is then stored Verified=false ("未验证")
    * and the user re-tests it later from Settings. When false
@@ -278,6 +286,23 @@ export interface Mount {
   caps: Caps;
   status: MountStatus;
   /**
+   * LoadError is why the last load (v0.18.0, async startup load)
+   * failed, in plain language: a mount that could not be built
+   * stays listed with status "error" and this reason, instead of
+   * disappearing or failing silently. Runtime-only: it is never
+   * persisted to the mounts table, and a successful TestMount /
+   * rebuild clears it.
+   */
+  loadError?: string;
+  /**
+   * ProxyRef selects this mount's proxy (v0.18.0, per-mount
+   * proxy): "" follows the global proxy setting, "direct" means
+   * no proxy at all, anything else is a proxy-list entry id.
+   * Persisted in the mount's config map as "proxy_ref", never
+   * as a mounts-table column.
+   */
+  proxyRef: string;
+  /**
    * Verified is whether the mount passed a connection probe at
    * least once (C, one-page form): mounts saved from the wizard
    * after a passed test are verified; mounts saved without a
@@ -470,6 +495,16 @@ export interface PreviewURLResult {
  * sync, transfer and generic UI must never branch on these values.
  */
 export type ProviderKind = "s3" | "dropbox" | "drive" | "onedrive" | "drime" | "box" | "pcloud" | "mega" | "local" | "facebook" | "instagram";
+
+/** ProxyEntry is one saved proxy in the proxy list. */
+export interface ProxyEntry {
+  id: string;
+  name: string;
+  /** "http" | "socks5" */
+  type: string;
+  /** normalized "scheme://host:port" */
+  addr: string;
+}
 
 /** ProxyTestResult is what TestProxy returns. */
 export interface ProxyTestResult {
@@ -796,10 +831,21 @@ export const DesktopService = {
    * fails itself, the rest still run.
    */
   deleteNodes: bind<[string, string[]], FileOpResult | null>("DesktopService.DeleteNodes", (mountID: string, refs: string[]) => [mountID, refs]),
+  /**
+   * DeleteProxy removes one proxy-list entry (v0.18.0). Mounts that
+   * referenced it fall back to the global proxy setting; they are
+   * not rejected and not changed.
+   */
+  deleteProxy: bind<[string], void>("DesktopService.DeleteProxy", (id: string) => [id]),
   /** DeleteSyncJob removes a saved sync job. It never touches cloud data. */
   deleteSyncJob: bind<[string], void>("DesktopService.DeleteSyncJob", (id: string) => [id]),
-  /** ExchangeOAuthCode swaps a pasted authorization code for tokens. */
-  exchangeOAuthCode: bind<[ProviderKind, string, string, string, string, string], OAuthTokens | null>("DesktopService.ExchangeOAuthCode", (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string) => [provider, clientID, clientSecret, code, state, tokenURL]),
+  /**
+   * ExchangeOAuthCode swaps a pasted authorization code for tokens.
+   * proxyRef (v0.18.0) is the wizard's chosen per-mount proxy for the
+   * mount being authorized: "" follows the global setting, "direct"
+   * goes direct, an id uses that proxy-list entry.
+   */
+  exchangeOAuthCode: bind<[ProviderKind, string, string, string, string, string, string], OAuthTokens | null>("DesktopService.ExchangeOAuthCode", (provider: ProviderKind, clientID: string, clientSecret: string, code: string, state: string, tokenURL: string, proxyRef: string) => [provider, clientID, clientSecret, code, state, tokenURL, proxyRef]),
   /**
    * ExportAgentBundle writes the encrypted config bundle for one
    * Agent (its jobs + the mounts they touch) and returns the file
@@ -849,6 +895,8 @@ export const DesktopService = {
   listJobRuns: bind<[string], RunResponse[]>("DesktopService.ListJobRuns", (jobID: string) => [jobID]),
   /** ListMounts returns mounts for the sidebar. */
   listMounts: bind<[], (Mount | null)[]>("DesktopService.ListMounts", () => []),
+  /** ListProxies returns the saved per-mount proxy list (v0.18.0). */
+  listProxies: bind<[], ProxyEntry[]>("DesktopService.ListProxies", () => []),
   /** ListSyncJobs returns saved sync jobs (creation order). */
   listSyncJobs: bind<[], (SyncJob | null)[]>("DesktopService.ListSyncJobs", () => []),
   /**
@@ -866,6 +914,12 @@ export const DesktopService = {
    * others — see internal/app/quotas.go).
    */
   mountQuotas: bind<[], (MountQuota | null)[]>("DesktopService.MountQuotas", () => []),
+  /**
+   * MountsLoading reports whether the background startup mount load
+   * is still running (v0.18.0): the frontend polls it while the
+   * sidebar fills in mount by mount.
+   */
+  mountsLoading: bind<[], boolean>("DesktopService.MountsLoading", () => []),
   /**
    * MoveMount moves a mount to a position inside a group (v0.11.0,
    * sidebar drag-sort): index is clamped to the target group, the
@@ -973,6 +1027,11 @@ export const DesktopService = {
    */
   saveCustomOAuthApp: bind<[ProviderKind, string, string], void>("DesktopService.SaveCustomOAuthApp", (provider: ProviderKind, clientID: string, clientSecret: string) => [provider, clientID, clientSecret]),
   /**
+   * SaveProxy creates or updates one proxy-list entry (v0.18.0): an
+   * empty ID mints a new one, an existing ID updates it in place.
+   */
+  saveProxy: bind<[ProxyEntry], ProxyEntry>("DesktopService.SaveProxy", (in_: ProxyEntry) => [in_]),
+  /**
    * SaveSettings validates and persists the whole settings struct.
    * An invalid download folder (or enum value) fails the whole save.
    */
@@ -1003,10 +1062,12 @@ export const DesktopService = {
    */
   testMountConfig: bind<[AddMountInput], void>("DesktopService.TestMountConfig", (in_: AddMountInput) => [in_]),
   /**
-   * TestProxy sends one request through the current proxy setup and
-   * reports pass/fail with the reason.
+   * TestProxy sends one request to url through proxyRef's proxy and
+   * reports pass/fail with the reason (v0.18.0, custom test URL).
+   * An empty url tests the Dropbox token host; proxyRef is "",
+   * "direct", or a proxy-list id.
    */
-  testProxy: bind<[], ProxyTestResult>("DesktopService.TestProxy", () => []),
+  testProxy: bind<[string, string], ProxyTestResult>("DesktopService.TestProxy", (url: string, proxyRef: string) => [url, proxyRef]),
   /** Transfers lists transfers for the bottom queue panel. */
   transfers: bind<[], (Transfer | null)[]>("DesktopService.Transfers", () => []),
   /**
@@ -1023,6 +1084,12 @@ export const DesktopService = {
   updateMountCredentials: bind<[string, AddMountInput], Mount | null>("DesktopService.UpdateMountCredentials", (id: string, in_: AddMountInput) => [id, in_]),
   /** UpdateMountGroup changes a mount's sidebar group. */
   updateMountGroup: bind<[string, string], void>("DesktopService.UpdateMountGroup", (id: string, group: string) => [id, group]),
+  /**
+   * UpdateMountProxy changes one mount's proxy choice and rebuilds
+   * its provider through the new proxy (v0.18.0). proxyRef is "",
+   * "direct", or an existing proxy-list id.
+   */
+  updateMountProxy: bind<[string, string], Mount | null>("DesktopService.UpdateMountProxy", (id: string, proxyRef: string) => [id, proxyRef]),
   /**
    * UpdateMountRoot changes an S3 mount's bucket/prefix (only the
    * non-secret config; credentials untouched). It probes the new root

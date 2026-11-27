@@ -55,7 +55,7 @@
 // Credentials are typed on the user's own Mac, encrypted at rest
 // (AES-256-GCM, master key in the config dir), and never uploaded.
 import { useEffect, useRef, useState } from 'react'
-import type { AddMountInput, CustomOAuthApp, Mount, ProviderKind } from '../mygo'
+import type { AddMountInput, CustomOAuthApp, Mount, ProviderKind, ProxyEntry } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { useClosing } from './motion'
 import { BrandLogo, IconCheck } from './icons'
@@ -298,6 +298,20 @@ export default function AddMountDialog({
   const [provider, setProvider] = useState<ProviderKind | null>(initialProvider ?? null)
   const [displayName, setDisplayName] = useState(initialName ?? '')
   const [group, setGroup] = useState(initialGroup ?? '')
+  // v0.18.0: this mount's proxy — "" follows the global setting,
+  // "direct" goes direct, an id uses that proxy-list entry. The
+  // OAuth code exchange (below) travels through it too; the
+  // Drime workspace list fetch still uses the global proxy
+  // (there is no mount yet at that point). Re-auth prefills the
+  // mount's saved choice.
+  const [proxyRef, setProxyRef] = useState(reauthMount?.proxyRef ?? '')
+  const [proxies, setProxies] = useState<ProxyEntry[]>([])
+  useEffect(() => {
+    void api
+      .listProxies()
+      .then(setProxies)
+      .catch(() => setProxies([]))
+  }, [])
   // S3
   const [endpoint, setEndpoint] = useState('')
   const [region, setRegion] = useState('us-east-1')
@@ -549,6 +563,10 @@ export default function AddMountDialog({
     megaPassword: megaPassword || undefined,
     megaTwoFactor: megaTwoFactor.trim() || undefined,
     pcloudRegion: pcloudRegion || undefined,
+    // "" is explicit here (follow the global setting), not
+    // "unset": the wizard always records the choice, including
+    // re-auth (which would otherwise silently keep the old one).
+    proxyRef,
   })
 
   const validateStep2 = (): string | null => {
@@ -890,7 +908,7 @@ export default function AddMountDialog({
       // answers "链接已失效" for a perfectly good code
       // (2026-11-25, user report on 0.8.4).
       const useState = stateOverride ?? oauthStateRef.current
-      const tokens = await api.exchangeOAuthCode(provider, useClientId, useSecret, useCode, useState, '')
+      const tokens = await api.exchangeOAuthCode(provider, useClientId, useSecret, useCode, useState, '', proxyRef)
       if (!tokens) throw new Error('换取 Token 失败。')
       setAccessToken(tokens.accessToken)
       if (tokens.refreshToken) setRefreshToken(tokens.refreshToken)
@@ -1005,6 +1023,26 @@ export default function AddMountDialog({
         <input className="input" type="password" autoComplete="off" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} />
       </div>
     </>
+  )
+
+  // v0.18.0: per-mount proxy picker, shared by the key-form
+  // and OAuth step-2 branches (a <select>, not an <input>, so
+  // the harness's `.dialog input` indices do not shift). Empty
+  // list = only 跟随全局 / 直连, never invented entries.
+  const proxyField = (
+    <div className="field">
+      <label>代理</label>
+      <select className="select" value={proxyRef} onChange={(e) => setProxyRef(e.target.value)}>
+        <option value="">跟随全局</option>
+        <option value="direct">直连</option>
+        {proxies.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+      <div className="hint">这个网盘走哪个代理：跟随全局就是设置 → 网络里的代理；直连是不走任何代理。授权换 Token 也走这里选的代理。</div>
+    </div>
   )
 
   // Manual fallback (collapsed by default): the code box, the
@@ -1427,6 +1465,7 @@ export default function AddMountDialog({
               <label>分组（可选）</label>
               <input className="input" placeholder="例如：工作、个人，留空为“未分组”" value={group} onChange={(e) => setGroup(e.target.value)} />
             </div>
+            {proxyField}
 
             {provider === 's3' && (
               <>
@@ -1608,6 +1647,7 @@ export default function AddMountDialog({
               <label>分组（可选）</label>
               <input className="input" placeholder="例如：工作、个人，留空为“未分组”" value={group} onChange={(e) => setGroup(e.target.value)} />
             </div>
+            {proxyField}
 
             {/* (B) 授权方式二选一：两个并排的选项卡片，与第 1 步
                 大图标网格的选中态一致（品牌绿边框 + 淡绿底 +

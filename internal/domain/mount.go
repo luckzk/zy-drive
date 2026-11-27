@@ -90,6 +90,19 @@ type Mount struct {
 	SortOrder int         `json:"sortOrder"`
 	Caps      Caps        `json:"caps"`
 	Status    MountStatus `json:"status"`
+	// LoadError is why the last load (v0.18.0, async startup load)
+	// failed, in plain language: a mount that could not be built
+	// stays listed with status "error" and this reason, instead of
+	// disappearing or failing silently. Runtime-only: it is never
+	// persisted to the mounts table, and a successful TestMount /
+	// rebuild clears it.
+	LoadError string `json:"loadError,omitempty"`
+	// ProxyRef selects this mount's proxy (v0.18.0, per-mount
+	// proxy): "" follows the global proxy setting, "direct" means
+	// no proxy at all, anything else is a proxy-list entry id.
+	// Persisted in the mount's config map as "proxy_ref", never
+	// as a mounts-table column.
+	ProxyRef string `json:"proxyRef"`
 	// Verified is whether the mount passed a connection probe at
 	// least once (C, one-page form): mounts saved from the wizard
 	// after a passed test are verified; mounts saved without a

@@ -245,8 +245,11 @@ func (s *DesktopService) DeleteCustomOAuthApp(provider domain.ProviderKind) erro
 }
 
 // ExchangeOAuthCode swaps a pasted authorization code for tokens.
-func (s *DesktopService) ExchangeOAuthCode(ctx context.Context, provider domain.ProviderKind, clientID, clientSecret, code, state, tokenURL string) (*OAuthTokens, error) {
-	return s.app.ExchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL)
+// proxyRef (v0.18.0) is the wizard's chosen per-mount proxy for the
+// mount being authorized: "" follows the global setting, "direct"
+// goes direct, an id uses that proxy-list entry.
+func (s *DesktopService) ExchangeOAuthCode(ctx context.Context, provider domain.ProviderKind, clientID, clientSecret, code, state, tokenURL, proxyRef string) (*OAuthTokens, error) {
+	return s.app.ExchangeOAuthCode(provider, clientID, clientSecret, code, state, tokenURL, proxyRef)
 }
 
 // MoveMount moves a mount to a position inside a group (v0.11.0,
@@ -290,9 +293,39 @@ func (s *DesktopService) AgentStatus() domain.AgentStatus { return s.app.AgentSt
 // GetSystemProxy reports the OS-configured proxy (Settings -> Network).
 func (s *DesktopService) GetSystemProxy() SystemProxyInfo { return s.app.GetSystemProxy() }
 
-// TestProxy sends one request through the current proxy setup and
-// reports pass/fail with the reason.
-func (s *DesktopService) TestProxy() ProxyTestResult { return s.app.TestProxy() }
+// MountsLoading reports whether the background startup mount load
+// is still running (v0.18.0): the frontend polls it while the
+// sidebar fills in mount by mount.
+func (s *DesktopService) MountsLoading() bool { return s.app.MountsLoading() }
+
+// ListProxies returns the saved per-mount proxy list (v0.18.0).
+func (s *DesktopService) ListProxies() []ProxyEntry { return s.app.ListProxies() }
+
+// SaveProxy creates or updates one proxy-list entry (v0.18.0): an
+// empty ID mints a new one, an existing ID updates it in place.
+func (s *DesktopService) SaveProxy(in ProxyEntry) (ProxyEntry, error) {
+	return s.app.SaveProxy(in)
+}
+
+// DeleteProxy removes one proxy-list entry (v0.18.0). Mounts that
+// referenced it fall back to the global proxy setting; they are
+// not rejected and not changed.
+func (s *DesktopService) DeleteProxy(id string) error { return s.app.DeleteProxy(id) }
+
+// UpdateMountProxy changes one mount's proxy choice and rebuilds
+// its provider through the new proxy (v0.18.0). proxyRef is "",
+// "direct", or an existing proxy-list id.
+func (s *DesktopService) UpdateMountProxy(id, proxyRef string) (*domain.Mount, error) {
+	return s.app.UpdateMountProxy(id, proxyRef)
+}
+
+// TestProxy sends one request to url through proxyRef's proxy and
+// reports pass/fail with the reason (v0.18.0, custom test URL).
+// An empty url tests the Dropbox token host; proxyRef is "",
+// "direct", or a proxy-list id.
+func (s *DesktopService) TestProxy(url, proxyRef string) ProxyTestResult {
+	return s.app.TestProxy(url, proxyRef)
+}
 
 // GetSettings loads the persisted user settings (defaults for keys
 // never saved). The frontend applies theme/language immediately.

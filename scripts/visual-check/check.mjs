@@ -45,16 +45,16 @@ const MOCK_MOUNTS = [
   // 旧数据 rootRef "test-bucket" 会让浏览列出桶内同名文件夹。
   // endpointHost 决定侧栏品牌 logo：R2 域名 → Cloudflare 标，
   // 其他 → AWS S3 标（display-only，后端从非敏感配置派生）。
-  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', endpointHost: 'abc123.r2.cloudflarestorage.com', group: '工作', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-s3aws', displayName: 'AWS 备份', provider: 's3', accountId: 'a4', rootRef: '', rootLabel: 'backup-bucket', endpointHost: 's3.ap-northeast-1.amazonaws.com', group: '存储 / 备份', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', caps: { ...CAPS, idBased: true }, status: 'auth_expired', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', caps: { ...CAPS, idBased: true }, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', workspaceLabel: '工作区 8762', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-local', displayName: '本地照片', provider: 'local', accountId: 'a7', rootRef: '/Users/zy/照片', rootLabel: '/Users/zy/照片', group: '存储 / 备份', caps: CAPS, status: 'ok', verified: false, createdAt: '', updatedAt: '' },
+  { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', endpointHost: 'abc123.r2.cloudflarestorage.com', group: '工作', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-s3aws', displayName: 'AWS 备份', provider: 's3', accountId: 'a4', rootRef: '', rootLabel: 'backup-bucket', endpointHost: 's3.ap-northeast-1.amazonaws.com', group: '存储 / 备份', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', proxyRef: '', caps: { ...CAPS, idBased: true }, status: 'auth_expired', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: { ...CAPS, idBased: true }, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', workspaceLabel: '工作区 8762', group: '个人', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-local', displayName: '本地照片', provider: 'local', accountId: 'a7', rootRef: '/Users/zy/照片', rootLabel: '/Users/zy/照片', group: '存储 / 备份', proxyRef: '', caps: CAPS, status: 'ok', verified: false, createdAt: '', updatedAt: '' },
   // 超长网盘名（30 个汉字）：悬停删除按钮时名字必须仍是单行
   // 省略、不换行；它的容量查询失败，侧栏应显示“容量暂不可用”。
-  { id: 'm-long', displayName: '这是一个特别特别长的网盘名字用来测试省略号是否正常工作啊啊啊', provider: 'dropbox', accountId: 'a8', rootRef: '', rootLabel: '', group: '个人', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-long', displayName: '这是一个特别特别长的网盘名字用来测试省略号是否正常工作啊啊啊', provider: 'dropbox', accountId: 'a8', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
 ]
 const GB = 1024 ** 3
 const TB = 1024 ** 4
@@ -113,6 +113,13 @@ const STUB = `(() => {
   // 可变的桩 Agent：SaveAgent 往里加，ListAgents 返回 live 列表
   // （V0.9.0：导出配置包测试需要先有一个 Agent 行）。
   let __mockAgents = []
+  // v0.18.0: 可变的桩代理列表（仅检查脚本里有，不进前端代
+  // 码）：SaveProxy 新增/改名、DeleteProxy 删除，ListProxies
+  // 返回 live 列表；UpdateMountProxy 改 live 网盘的 proxyRef。
+  let __mockProxies = [
+    { id: 'px-1', name: '家里代理', type: 'http', addr: 'http://127.0.0.1:7890' },
+    { id: 'px-2', name: '备用 SOCKS', type: 'socks5', addr: 'socks5://127.0.0.1:1080' },
+  ]
   // 可变的桩网盘：ListMounts 返回这份 live 列表，AddMount 往里加、
   // TestMount 把 verified 翻成 true，后面的步骤（设置页重新测试）
   // 才能看到状态变化——静态列表做不到。
@@ -156,7 +163,7 @@ const STUB = `(() => {
       }
       if (method === 'DesktopService.AddMount') {
         const input = args[0]
-        const m = { id: 'm-new', displayName: input.displayName || '新网盘', provider: input.provider, accountId: 'a-new', rootRef: '', rootLabel: input.bucket || '', group: input.group || '', caps: ${JSON.stringify(CAPS)}, status: 'ok', verified: !input.skipProbe, createdAt: '', updatedAt: '' }
+        const m = { id: 'm-new', displayName: input.displayName || '新网盘', provider: input.provider, accountId: 'a-new', rootRef: '', rootLabel: input.bucket || '', group: input.group || '', proxyRef: input.proxyRef || '', caps: ${JSON.stringify(CAPS)}, status: 'ok', verified: !input.skipProbe, createdAt: '', updatedAt: '' }
         __mockMounts.push(m)
         return m
       }
@@ -304,6 +311,28 @@ const STUB = `(() => {
       // Detail 的文案照抄后端（internal/app/proxy.go）的格式。
       if (method === 'DesktopService.GetSystemProxy') return { detected: true, http: 'http://127.0.0.1:7890', https: 'http://127.0.0.1:7890', via: '系统代理：http://127.0.0.1:7890' }
       if (method === 'DesktopService.TestProxy') return { ok: true, detail: '经代理 http://127.0.0.1:7890 连通（200 OK，跟随系统代理）' }
+      // v0.18.0: 异步启动加载（桩里加载瞬间完成，返回 false）、
+      // 代理列表的新增/改名/删除、每盘代理改值（改 live 网盘）。
+      if (method === 'DesktopService.MountsLoading') return false
+      if (method === 'DesktopService.ListProxies') return __mockProxies
+      if (method === 'DesktopService.SaveProxy') {
+        const p = { ...(args[0] || {}) }
+        if (!p.id) p.id = 'px-' + (__mockProxies.length + 1)
+        const i = __mockProxies.findIndex((x) => x.id === p.id)
+        if (i >= 0) __mockProxies[i] = p
+        else __mockProxies.push(p)
+        return p
+      }
+      if (method === 'DesktopService.DeleteProxy') {
+        __mockProxies = __mockProxies.filter((x) => x.id !== args[0])
+        return null
+      }
+      if (method === 'DesktopService.UpdateMountProxy') {
+        const m = __mockMounts.find((x) => x.id === args[0])
+        if (!m) throw new Error('stub: unknown mount')
+        m.proxyRef = args[1]
+        return { ...m }
+      }
       if (method === 'DesktopService.CheckDownloadDir') return null
       if (method === 'DesktopService.GetVersions') return { backend: '0.3.0', protocol: '1', engine: '0.1.0' }
       // v0.15.0 命令面板桩：按名字子串过滤桩列表（服务端搜索的
@@ -821,7 +850,12 @@ try {
     if (!pcloudStep2?.includes('账号所在区')) failures.push('pCloud 第 2 步没有账号所在区选择器')
     if (!pcloudStep2?.includes('http://localhost:57104')) failures.push('pCloud 第 2 步没有固定重定向端口 57104 的说明')
     const pcloudRegion = await page.evaluate(() => {
-      const sel = document.querySelector('.dialog select')
+      // v0.18.0: the dialog now has two selects (the per-mount
+      // proxy picker comes first) — find the region one by its
+      // 'auto' option instead of taking the first select.
+      const sel = [...document.querySelectorAll('.dialog select')].find((s) =>
+        [...s.options].some((o) => o.value === 'auto'),
+      )
       if (!sel) return { found: false }
       return { found: true, value: sel.value, options: [...sel.options].map((o) => o.textContent?.trim()) }
     })

@@ -89,7 +89,7 @@ func (a *App) ExportAgentBundle(ctx context.Context, agentID, passphrase string)
 	}
 	bundle := &agentapi.Bundle{AgentName: ag.Name}
 	for id := range mountIDs {
-		h, ok := a.mounts[id]
+		h, ok := a.Mount(id)
 		if !ok {
 			return nil, fmt.Errorf("app: 任务用到的网盘 %q 在本机上找不到，先检查它还在不在", id)
 		}
@@ -147,7 +147,7 @@ func (a *App) jobAgentBlocker(j *domain.SyncJob) string {
 		if id == domain.LocalMountID {
 			return "用到了本地文件夹，服务器上没有这台电脑的磁盘"
 		}
-		if h, ok := a.mounts[id]; ok && h.Mount.Provider == domain.ProviderLocal {
+		if h, ok := a.Mount(id); ok && h.Mount.Provider == domain.ProviderLocal {
 			return fmt.Sprintf("用到了本地文件夹网盘 %q，服务器上没有这台电脑的磁盘", h.Mount.DisplayName)
 		}
 	}
@@ -245,6 +245,11 @@ func (a *App) ImportBundle(data []byte, passphrase string) (*agentapi.Bundle, er
 			cfg.Extra["mega_master_key"] = bm.Credentials.MegaMasterKey
 		}
 		a.mountRuntime(&cfg, bm.Mount.ID)
+		// The imported mount keeps its own proxy (v0.18.0):
+		// the bundle carries proxy_ref in its config map, and
+		// the driver must use it from the first build — not the
+		// global setting this machine happens to have.
+		cfg.Proxy = a.resolveMountProxyConfig(bm.Config["proxy_ref"])
 		p, err := a.Registry.New(bm.Mount.Provider, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("app: 配置包里的网盘 %q 建不起来：%w", bm.Mount.DisplayName, err)
@@ -275,7 +280,7 @@ func (a *App) ImportBundle(data []byte, passphrase string) (*agentapi.Bundle, er
 				return nil, fmt.Errorf("app: 导入网盘 %q：%w", m.DisplayName, err)
 			}
 		}
-		a.mounts[m.ID] = MountHandle{Mount: &m, Provider: pm.prov}
+		a.setHandle(m.ID, MountHandle{Mount: &m, Provider: pm.prov})
 	}
 	for i := range bundle.Jobs {
 		j := bundle.Jobs[i]

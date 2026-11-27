@@ -31,6 +31,7 @@ export default function Sidebar({
   page,
   lang,
   loading,
+  mountsLoading,
   onNavigate,
   mounts,
   quotas,
@@ -47,6 +48,9 @@ export default function Sidebar({
   page: Page
   lang: Lang
   loading?: boolean
+  // v0.18.0: the backend is still building mounts — the empty
+  // state then shows "正在加载网盘…" instead of looking done.
+  mountsLoading?: boolean
   onNavigate: (p: Page) => void
   mounts: Mount[]
   quotas?: Record<string, MountQuota>
@@ -681,9 +685,15 @@ export default function Sidebar({
         </div>
       ) : mounts.length === 0 ? (
         <div style={{ padding: '4px 4px 8px' }}>
-          <p className="muted" style={{ fontSize: 13, margin: '0 0 8px' }}>
-            还没有网盘，点上面网盘旁边的 + 添加一个才能浏览和同步。
-          </p>
+          {mountsLoading ? (
+            <p className="muted" style={{ fontSize: 13, margin: '0 0 8px' }}>
+              正在加载网盘…
+            </p>
+          ) : (
+            <p className="muted" style={{ fontSize: 13, margin: '0 0 8px' }}>
+              还没有网盘，点上面网盘旁边的 + 添加一个才能浏览和同步。
+            </p>
+          )}
         </div>
       ) : null}
       {/* 首屏加载时序（2026-11-25 修复）：骨架与网盘行绝不同时
@@ -828,6 +838,14 @@ export default function Sidebar({
                           </span>
                         )}
                       </div>
+                      {m.loadError && (
+                        <div
+                          style={{ fontSize: 12, marginTop: 2, color: 'var(--danger)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={m.loadError}
+                        >
+                          加载失败：{m.loadError}
+                        </div>
+                      )}
                       <QuotaBar quota={quotas?.[m.id]} compact />
                     </div>
                     {/* v0.13.0：悬停才出现的操作列——刷新容量 +

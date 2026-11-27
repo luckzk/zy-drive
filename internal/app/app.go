@@ -8,6 +8,7 @@ package app
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -29,7 +30,23 @@ type App struct {
 	Agent    *agentapi.Client // nil when no Agent is configured
 
 	mounts map[string]MountHandle
-	agents map[string]*domain.Agent
+	// mountsMu guards mounts (and mountsLoading): since v0.18.0
+	// the startup load runs in the background while the mygo
+	// thread serves ListMounts concurrently, so every map access
+	// — read or write — goes through it. Mount structs themselves
+	// are copy-on-write on the rebuild paths (TestMount,
+	// UpdateMountRoot, ...): a rebuild mutates a copy and swaps
+	// the handle under the lock, never the shared pointer in
+	// place. The two exceptions are UpdateMountGroup / MoveMount /
+	// RemoveMount's renumbering, which mutate SortOrder in place
+	// while holding the write lock (ListMounts takes the read lock,
+	// so no reader can observe a half-renumbered group).
+	mountsMu sync.RWMutex
+	// mountsLoading reports whether a background LoadMountsAsync
+	// is still running (v0.18.0): the frontend polls it while the
+	// sidebar fills in mount by mount. Guarded by mountsMu.
+	mountsLoading bool
+	agents        map[string]*domain.Agent
 	// secrets encrypts mount credentials at rest (AES-256-GCM, key
 	// from the config dir's master.key). Nil until SetSecrets is
 	// called at startup; cloud mounts cannot be added without it.
@@ -101,6 +118,37 @@ func New(db *cache.DB, registry *storage.Registry, queue *transfer.Queue) *App {
 
 // Mount returns the live handle for a mount ID.
 func (a *App) Mount(id string) (MountHandle, bool) {
+	a.mountsMu.RLock()
+	defer a.mountsMu.RUnlock()
 	h, ok := a.mounts[id]
 	return h, ok
+}
+
+// setHandle swaps one live handle in. Callers do the slow work
+// (build, probe) before this call and never hold the lock across
+// it: the swap itself is the only critical section.
+func (a *App) setHandle(id string, h MountHandle) {
+	a.mountsMu.Lock()
+	defer a.mountsMu.Unlock()
+	a.mounts[id] = h
+}
+
+// listMountsLocked returns the mounts in creation order. The caller
+// must hold mountsMu (read or write): ListMounts takes the read
+// lock, MoveMount holds the write lock while it renumbers.
+func (a *App) listMountsLocked() []*domain.Mount {
+	out := make([]*domain.Mount, 0, len(a.mounts))
+	for _, h := range a.mounts {
+		out = append(out, h.Mount)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].SortOrder != out[j].SortOrder {
+			return out[i].SortOrder < out[j].SortOrder
+		}
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out
 }

@@ -196,9 +196,11 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 		}
 		// Public (desktop) clients send no secret; confidential
 		// (web) registrations send theirs. FormRefresher only
-		// includes client_secret when it is non-empty.
-		refresher = oauth.FormRefresher(tokenURL,
-			cfg.Extra["client_id"], cfg.Extra["client_secret"])
+		// includes client_secret when it is non-empty. The
+		// refresh travels through the mount's own proxy
+		// (cfg.Proxy, v0.18.0).
+		refresher = oauth.FormRefresherWithProxy(tokenURL,
+			cfg.Extra["client_id"], cfg.Extra["client_secret"], cfg.Proxy)
 	}
 	ts := oauth.NewTokenSource(&oauth.Token{
 		AccessToken:  cfg.Token,
@@ -208,9 +210,9 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 		apiBase: strings.TrimSuffix(apiBase, "/"),
 		tokens:  ts,
 		idMap:   map[string]string{},
-		plain:   &http.Client{Timeout: 180 * time.Second},
+		plain:   &http.Client{Timeout: 180 * time.Second, Transport: netproxy.TransportOrShared(cfg.Proxy)},
 	}
-	p.client = shttp.New(graphPolicy)
+	p.client = shttp.NewWithProxy(graphPolicy, cfg.Proxy)
 	// The Authorization header is attached by the transport on
 	// EVERY attempt, not when the request is built: after a 401
 	// the shared client refreshes the token once and replays the
@@ -220,7 +222,7 @@ func newWithBase(cfg storage.Config, apiBase string) (*Provider, error) {
 	// still has that flaw.)
 	p.client.HTTP = &http.Client{
 		Timeout:   120 * time.Second,
-		Transport: authTransport{base: netproxy.Transport(), tokens: ts},
+		Transport: authTransport{base: netproxy.TransportOrShared(cfg.Proxy), tokens: ts},
 	}
 	if refresher != nil {
 		p.client.OnAuthExpired = func(ctx context.Context) error {

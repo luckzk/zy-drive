@@ -42,12 +42,23 @@ const PersonalWorkspaceName = "个人空间"
 // path is needed here). apiBase "" means the production API;
 // tests pass their mock server's base.
 //
+// The workspace list runs before any mount exists, so there is no
+// per-mount proxy to use yet: ListWorkspaces follows the current
+// global proxy. ListWorkspacesWithProxy is the per-config variant
+// for callers that already resolved one (v0.18.0).
+//
 // The response shape is {"workspaces": [{"id": N, "name": "...",
 // "currentUser": {"role_name": "..."}}]} (verified 2026-11-19:
 // workspace 8762 is "sese", holder is Workspace Owner there).
 // The personal workspace is not in the server's list, so it is
 // prepended here; a server that does list id 0 is not duplicated.
 func ListWorkspaces(ctx context.Context, apiBase, token string) ([]Workspace, error) {
+	return ListWorkspacesWithProxy(ctx, apiBase, token, netproxy.Current())
+}
+
+// ListWorkspacesWithProxy is ListWorkspaces on a transport bound
+// to one proxy config (see ListWorkspaces).
+func ListWorkspacesWithProxy(ctx context.Context, apiBase, token string, proxy netproxy.Config) ([]Workspace, error) {
 	if strings.TrimSpace(token) == "" {
 		return nil, fmt.Errorf("drime: 需要先粘贴个人访问令牌，才能拉工作区列表")
 	}
@@ -55,10 +66,10 @@ func ListWorkspaces(ctx context.Context, apiBase, token string) ([]Workspace, er
 		apiBase = defaultAPIBase
 	}
 	apiBase = strings.TrimSuffix(strings.TrimSpace(apiBase), "/")
-	client := shttp.New(drimePolicy)
+	client := shttp.NewWithProxy(drimePolicy, proxy)
 	client.HTTP = &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: staticBearerTransport{base: netproxy.Transport(), token: strings.TrimSpace(token)},
+		Transport: staticBearerTransport{base: netproxy.TransportOrShared(proxy), token: strings.TrimSpace(token)},
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiBase+"/me/workspaces", nil)
 	if err != nil {

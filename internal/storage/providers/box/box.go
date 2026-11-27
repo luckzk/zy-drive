@@ -108,8 +108,8 @@ func newWithBases(cfg storage.Config, apiBase, uploadBase string) (*Provider, er
 		if tokenURL == "" {
 			tokenURL = "https://api.box.com/oauth2/token"
 		}
-		refresher = oauth.FormRefresher(tokenURL,
-			cfg.Extra["client_id"], cfg.Extra["client_secret"])
+		refresher = oauth.FormRefresherWithProxy(tokenURL,
+			cfg.Extra["client_id"], cfg.Extra["client_secret"], cfg.Proxy)
 	}
 	ts := oauth.NewTokenSource(&oauth.Token{
 		AccessToken:  cfg.Token,
@@ -122,7 +122,7 @@ func newWithBases(cfg storage.Config, apiBase, uploadBase string) (*Provider, er
 		idMap:      map[string]string{},
 		dirMap:     map[string]bool{},
 	}
-	p.client = shttp.New(nil)
+	p.client = shttp.NewWithProxy(nil, cfg.Proxy)
 	// The Authorization header is attached by the transport on
 	// EVERY attempt, not when the request is built: after a 401
 	// the shared client refreshes the token once and replays the
@@ -130,7 +130,7 @@ func newWithBases(cfg storage.Config, apiBase, uploadBase string) (*Provider, er
 	// Drime driver, which does it the same way).
 	p.client.HTTP = &http.Client{
 		Timeout:   120 * time.Second,
-		Transport: authTransport{base: netproxy.Transport(), tokens: ts},
+		Transport: authTransport{base: netproxy.TransportOrShared(cfg.Proxy), tokens: ts},
 	}
 	if refresher != nil {
 		p.client.OnAuthExpired = func(ctx context.Context) error {

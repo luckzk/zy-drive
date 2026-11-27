@@ -34,6 +34,12 @@ type OAuthConfig struct {
 	// provider does not use PKCE. Desktop/public clients (Drime)
 	// require it; confidential clients (Dropbox/Google) do not.
 	CodeVerifier string `json:"-"`
+	// Proxy, when non-nil, is the proxy the exchange must travel
+	// through (v0.18.0, per-mount proxy): the app layer resolves
+	// the wizard's ProxyRef and passes it here, so the code
+	// exchange uses the same proxy the mount will use. Nil keeps
+	// the old behaviour (the current global proxy setting).
+	Proxy *netproxy.Config `json:"-"`
 }
 
 // AuthURL builds the browser URL the user opens to authorise.
@@ -130,15 +136,27 @@ func ExchangeCode(ctx context.Context, cfg *OAuthConfig, code string) (accessTok
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// Proxy-aware client (Settings -> Network): the exchange must
 	// follow the user's proxy, not just the process env vars.
+	// With cfg.Proxy set (v0.18.0) the mount's own proxy is used
+	// instead of the global one; nil keeps the global behaviour.
 	// On failure the error carries a [proxy-kind=...] marker so
 	// the UI can tell "the proxy itself is down" apart from
 	// "the proxy cannot reach the provider" and "direct is
 	// blocked" — and the log line records provider, target host,
 	// proxy and error kind, never the code or a token.
-	resp, err := netproxy.NewClient(60).Do(req)
+	client := netproxy.NewClient(60)
+	if cfg.Proxy != nil {
+		client = netproxy.NewClientFor(*cfg.Proxy, 60)
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		kind, proxyAddr := netproxy.ClassifyError(cfg.TokenURL, err)
-		log.Printf("oauth exchange: %s", netproxy.DescribeError(cfg.TokenURL, err))
+		// Classify against the proxy this request actually used
+		// (the mount's own, when set — see ClassifyErrorWith).
+		effProxy := netproxy.Current()
+		if cfg.Proxy != nil {
+			effProxy = *cfg.Proxy
+		}
+		kind, proxyAddr := netproxy.ClassifyErrorWith(effProxy, cfg.TokenURL, err)
+		log.Printf("oauth exchange: %s", netproxy.DescribeErrorWith(effProxy, cfg.TokenURL, err))
 		return "", "", fmt.Errorf("auth: token exchange request [proxy-kind=%s proxy=%s]: %w", kind, proxyAddr, err)
 	}
 	defer resp.Body.Close()

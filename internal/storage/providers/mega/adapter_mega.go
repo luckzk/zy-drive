@@ -47,8 +47,13 @@ func newWithClient(cfg storage.Config, client *http.Client) (storage.Provider, e
 	m := gomeg.New()
 	m.SetLogger(nil) // silence the library's log.Printf default
 	if client == nil {
+		// The mount's own proxy (cfg.Proxy, v0.18.0) when set,
+		// else the global setting. 120s timeout kept: MEGA's
+		// LoginWithKeys is what hung startup on 2026-11-27, and
+		// the timeout is the last line of defence before the
+		// app-level 30s per-mount load timeout gives up on it.
 		client = &http.Client{
-			Transport: netproxy.Transport(),
+			Transport: netproxy.TransportOrShared(cfg.Proxy),
 			Timeout:   120 * time.Second,
 		}
 	}

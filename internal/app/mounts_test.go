@@ -851,7 +851,7 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		})
 	}))
 	defer tokenSrv.Close()
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderOneDrive, "cid-od", "", "code-od", start.State, tokenSrv.URL)
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderOneDrive, "cid-od", "", "code-od", start.State, tokenSrv.URL, "")
 	if err != nil {
 		t.Fatalf("ExchangeOAuthCode(onedrive): %v", err)
 	}
@@ -859,7 +859,7 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		t.Fatalf("onedrive tokens: %+v", tokens)
 	}
 	// State is single-use: replaying it must fail.
-	if _, err := a.ExchangeOAuthCode(domain.ProviderOneDrive, "cid-od", "", "code-od", start.State, tokenSrv.URL); err == nil {
+	if _, err := a.ExchangeOAuthCode(domain.ProviderOneDrive, "cid-od", "", "code-od", start.State, tokenSrv.URL, ""); err == nil {
 		t.Fatalf("replayed onedrive state must be rejected")
 	}
 	start, err = a.BeginOAuth(domain.ProviderDropbox, "cid-1", "")
@@ -894,7 +894,7 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		})
 	}))
 	defer tokenSrv.Close()
-	tokens, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", start.State, tokenSrv.URL)
+	tokens, err = a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", start.State, tokenSrv.URL, "")
 	if err != nil {
 		t.Fatalf("ExchangeOAuthCode: %v", err)
 	}
@@ -902,11 +902,11 @@ func TestBeginExchangeOAuth(t *testing.T) {
 		t.Fatalf("tokens: %+v", tokens)
 	}
 	// State is single-use: replaying it must fail.
-	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", start.State, tokenSrv.URL); err == nil {
+	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", start.State, tokenSrv.URL, ""); err == nil {
 		t.Fatalf("replayed state must be rejected")
 	}
 	// Unknown state must fail.
-	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", "nope", tokenSrv.URL); err == nil {
+	if _, err := a.ExchangeOAuthCode(domain.ProviderDropbox, "cid-1", "csec-1", "code-1", "nope", tokenSrv.URL, ""); err == nil {
 		t.Fatalf("unknown state must be rejected")
 	}
 }
@@ -1181,7 +1181,7 @@ func TestBeginExchangeOAuthBoxPcloud(t *testing.T) {
 		})
 	}))
 	defer tokenSrv.Close()
-	tokens, err := a.ExchangeOAuthCode(domain.ProviderBox, "cid-box", "csec-box", "code-box", start.State, tokenSrv.URL)
+	tokens, err := a.ExchangeOAuthCode(domain.ProviderBox, "cid-box", "csec-box", "code-box", start.State, tokenSrv.URL, "")
 	if err != nil {
 		t.Fatalf("ExchangeOAuthCode(box): %v", err)
 	}

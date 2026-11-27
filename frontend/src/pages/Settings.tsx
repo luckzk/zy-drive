@@ -20,7 +20,7 @@
 // （tokens.css），否则每次回切都会重播。加载态是 skeleton 块
 // （no "加载中…" text, no spinner）。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Agent, Mount, MountQuota, Settings, SystemProxyInfo, VersionInfo } from '../mygo'
+import type { Agent, Mount, MountQuota, ProxyEntry, Settings, SystemProxyInfo, VersionInfo } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { formatSize, formatTime, mountStatusLabel, newId } from '../lib/format'
 import { t, type Lang } from '../lib/i18n'
@@ -245,12 +245,65 @@ export default function SettingsPage({
 
   // ---- 网络 / 代理 ----
   const [systemProxy, setSystemProxy] = useState<SystemProxyInfo | null>(null)
-  const [proxyTestResult, setProxyTestResult] = useState<string | null>(null)
+  // v0.18.0: the test result keeps ok + detail — ok decides the
+  // colour (green/red), detail is the backend's own reason.
+  const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; detail: string } | null>(null)
   const [proxyTestBusy, setProxyTestBusy] = useState(false)
+  // v0.18.0: custom test URL (default is the old hardcoded
+  // Dropbox token endpoint). Empty = no request, inline hint.
+  const [proxyTestUrl, setProxyTestUrl] = useState('https://api.dropboxapi.com/oauth2/token')
+  const [proxyTestUrlError, setProxyTestUrlError] = useState<string | null>(null)
   // The proxy fields as last saved: the manual address inputs
   // edit the draft, and "测试代理" only means something once the
   // draft is saved (the backend applies on save, immediately).
   const [lastSavedProxy, setLastSavedProxy] = useState<{ mode: string; http: string; socks5: string } | null>(null)
+
+  // ---- 代理列表（v0.18.0，每盘代理） ----
+  // The saved proxy list: each entry can be picked per mount
+  // (below, in 网盘） or in the add-mount wizard. Empty list is
+  // real — the dropdowns then offer only 跟随全局 / 直连.
+  const [proxies, setProxies] = useState<ProxyEntry[]>([])
+  const [proxiesLoading, setProxiesLoading] = useState(true)
+  const [proxiesError, setProxiesError] = useState<string | null>(null)
+  // Inline add/edit form (no dialog): open = shown, id '' = new.
+  const [proxyFormOpen, setProxyFormOpen] = useState(false)
+  const [proxyFormId, setProxyFormId] = useState('')
+  const [proxyFormName, setProxyFormName] = useState('')
+  const [proxyFormType, setProxyFormType] = useState('http')
+  const [proxyFormAddr, setProxyFormAddr] = useState('')
+  const [proxyFormError, setProxyFormError] = useState<string | null>(null)
+  const [proxyFormBusy, setProxyFormBusy] = useState(false)
+  // Per-row test results (same colour rule as the global test).
+  const [proxyRowResults, setProxyRowResults] = useState<Record<string, { ok: boolean; detail: string }>>({})
+  const [proxyRowBusy, setProxyRowBusy] = useState<Record<string, boolean>>({})
+  // Declarative delete confirm (no static Modal — it does not
+  // render under antd 5.29 + React 19; this codebase has no antd
+  // at all, so the confirm uses the same .dialog pattern as the
+  // other Settings dialogs).
+  const [deletingProxy, setDeletingProxy] = useState<ProxyEntry | null>(null)
+  const [deleteProxyBusy, setDeleteProxyBusy] = useState(false)
+  const [deleteProxyError, setDeleteProxyError] = useState<string | null>(null)
+  const [deleteProxyDialogClosing, requestDeleteProxyDialogClose, resetDeleteProxyDialog] = useClosing(() => setDeletingProxy(null))
+
+  // ---- 每盘代理（v0.18.0，网盘行上的下拉框） ----
+  // draft holds the just-picked value while the save is in
+  // flight; on failure it is dropped, so the select snaps back
+  // to the mount's saved proxyRef (the error shows inline).
+  const [mountProxyDraft, setMountProxyDraft] = useState<Record<string, string>>({})
+  const [mountProxyMsg, setMountProxyMsg] = useState<Record<string, string>>({})
+  const [mountProxyBusy, setMountProxyBusy] = useState<Record<string, boolean>>({})
+
+  const loadProxies = useCallback(async () => {
+    setProxiesLoading(true)
+    try {
+      setProxies(await api.listProxies())
+      setProxiesError(null)
+    } catch (e) {
+      setProxiesError(friendlyError(e))
+    } finally {
+      setProxiesLoading(false)
+    }
+  }, [])
 
   // ---- 缓存（v0.9.1 预览缓存） ----
   // cacheInfo is the live size/count/limit from the backend; it is
@@ -325,6 +378,7 @@ export default function SettingsPage({
     void loadMounts()
     void loadSystemProxy()
     void loadCacheInfo()
+    void loadProxies()
     void api
       .getVersions()
       .then(setVersions)
@@ -341,7 +395,7 @@ export default function SettingsPage({
         setOpenAtLogin(null)
         setLoginNote(friendlyError(e))
       })
-  }, [loadSettings, loadMounts, loadSystemProxy, loadCacheInfo])
+  }, [loadSettings, loadMounts, loadSystemProxy, loadCacheInfo, loadProxies])
 
   const saveDraft = async (next: Settings) => {
     setBusy(true)
@@ -378,15 +432,148 @@ export default function SettingsPage({
 
   const runProxyTest = async () => {
     if (!draft || proxyDirty) return
+    const url = proxyTestUrl.trim()
+    if (!url) {
+      setProxyTestUrlError('请填写测试网址')
+      return
+    }
+    setProxyTestUrlError(null)
     setProxyTestBusy(true)
     setProxyTestResult(null)
     try {
-      const res = await api.testProxy()
-      setProxyTestResult(res?.detail ?? '无返回')
+      const res = await api.testProxy(url, '')
+      setProxyTestResult({ ok: res.ok, detail: res?.detail ?? '无返回' })
     } catch (e) {
-      setProxyTestResult(friendlyError(e))
+      setProxyTestResult({ ok: false, detail: friendlyError(e) })
     } finally {
       setProxyTestBusy(false)
+    }
+  }
+
+  // Test one list entry against the same URL box (result shows
+  // on its own row, coloured the same way). A list entry does
+  // not depend on the saved global settings, so it is not gated
+  // by proxyDirty — only the global test is.
+  const testOneProxy = async (p: ProxyEntry) => {
+    const url = proxyTestUrl.trim()
+    if (!url) {
+      setProxyTestUrlError('请填写测试网址')
+      return
+    }
+    setProxyTestUrlError(null)
+    setProxyRowBusy((prev) => ({ ...prev, [p.id]: true }))
+    try {
+      const res = await api.testProxy(url, p.id)
+      setProxyRowResults((prev) => ({ ...prev, [p.id]: { ok: res.ok, detail: res?.detail ?? '无返回' } }))
+    } catch (e) {
+      setProxyRowResults((prev) => ({ ...prev, [p.id]: { ok: false, detail: friendlyError(e) } }))
+    } finally {
+      setProxyRowBusy((prev) => ({ ...prev, [p.id]: false }))
+    }
+  }
+
+  const startAddProxy = () => {
+    setProxyFormId('')
+    setProxyFormName('')
+    setProxyFormType('http')
+    setProxyFormAddr('')
+    setProxyFormError(null)
+    setProxyFormOpen(true)
+  }
+
+  const startEditProxy = (p: ProxyEntry) => {
+    setProxyFormId(p.id)
+    setProxyFormName(p.name)
+    setProxyFormType(p.type)
+    setProxyFormAddr(p.addr)
+    setProxyFormError(null)
+    setProxyFormOpen(true)
+  }
+
+  const saveProxyForm = async () => {
+    const name = proxyFormName.trim()
+    const addr = proxyFormAddr.trim()
+    if (!name) {
+      setProxyFormError('请给代理起个名字。')
+      return
+    }
+    if (!addr) {
+      setProxyFormError('请填代理地址，例如 http://127.0.0.1:7890。')
+      return
+    }
+    setProxyFormBusy(true)
+    setProxyFormError(null)
+    try {
+      // Empty id = new entry (the backend mints the id);
+      // an existing id updates in place.
+      await api.saveProxy({ id: proxyFormId, name, type: proxyFormType, addr })
+      setProxyFormOpen(false)
+      await loadProxies()
+    } catch (e) {
+      setProxyFormError(friendlyError(e))
+    } finally {
+      setProxyFormBusy(false)
+    }
+  }
+
+  const confirmDeleteProxy = async () => {
+    if (!deletingProxy) return
+    setDeleteProxyBusy(true)
+    setDeleteProxyError(null)
+    try {
+      await api.deleteProxy(deletingProxy.id)
+      requestDeleteProxyDialogClose()
+      // Mounts that used it fall back to the global setting;
+      // reload both lists so no row keeps pointing at it.
+      await loadProxies()
+      await loadMounts()
+      onMountsChanged()
+    } catch (e) {
+      setDeleteProxyError(friendlyError(e))
+    } finally {
+      setDeleteProxyBusy(false)
+    }
+  }
+
+  // The value the per-mount select shows: a ref to a proxy that
+  // no longer exists (deleted) reads as 跟随全局, which is what
+  // the backend actually does with it.
+  const proxySelectValue = (m: Mount): string => {
+    const ref = m.proxyRef ?? ''
+    if (ref === '' || ref === 'direct') return ref
+    return proxies.some((p) => p.id === ref) ? ref : ''
+  }
+
+  const changeMountProxy = async (m: Mount, next: string) => {
+    if (next === (m.proxyRef ?? '')) return
+    setMountProxyDraft((prev) => ({ ...prev, [m.id]: next }))
+    setMountProxyBusy((prev) => ({ ...prev, [m.id]: true }))
+    setMountProxyMsg((prev) => {
+      const nextMsg = { ...prev }
+      delete nextMsg[m.id]
+      return nextMsg
+    })
+    try {
+      const updated = await api.updateMountProxy(m.id, next)
+      if (!updated) throw new Error('保存失败：后端没有返回网盘信息。')
+      setMountProxyDraft((prev) => {
+        const nextDraft = { ...prev }
+        delete nextDraft[m.id]
+        return nextDraft
+      })
+      await loadMounts()
+      onMountsChanged()
+    } catch (e) {
+      // Drop the draft: the select snaps back to the saved
+      // value, and the reason shows inline under the row.
+      setMountProxyDraft((prev) => {
+        const nextDraft = { ...prev }
+        delete nextDraft[m.id]
+        return nextDraft
+      })
+      setMountProxyMsg((prev) => ({ ...prev, [m.id]: friendlyError(e) }))
+    } finally {
+      setMountProxyBusy((prev) => ({ ...prev, [m.id]: false }))
     }
   }
 
@@ -818,13 +1005,137 @@ export default function SettingsPage({
                 {proxyDirty && <p className="muted">地址改了还没保存，先点“保存代理设置”。</p>}
               </>
             )}
+            <Row title="测试网址" desc="代理测试向这个网址发一次请求：通了就说明代理能连上网盘服务；不通会写清是代理本身没起来、还是代理连不上对方。">
+              <input
+                className="input"
+                placeholder="https://api.dropboxapi.com/oauth2/token"
+                autoComplete="off"
+                value={proxyTestUrl}
+                onChange={(e) => {
+                  setProxyTestUrl(e.target.value)
+                  setProxyTestUrlError(null)
+                }}
+              />
+              {proxyTestUrlError && (
+                <div className="error-box" style={{ marginTop: 8, marginBottom: 0 }}>
+                  {proxyTestUrlError}
+                </div>
+              )}
+            </Row>
             <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
               <button className="btn" disabled={proxyTestBusy || proxyDirty} onClick={() => void runProxyTest()}>
                 {proxyTestBusy ? '测试中…' : '测试代理'}
               </button>
             </div>
-            {proxyTestResult && <div className="notice-box">{proxyTestResult}</div>}
-            <p className="muted">测试代理会对 Dropbox 的 token 端点发一次请求：通了就说明这套代理能连上网盘服务；不通会写清是代理本身没起来、还是代理连不上对方。</p>
+            {proxyTestResult && <div className={proxyTestResult.ok ? 'success-box' : 'error-box'}>{proxyTestResult.detail}</div>}
+            <Row title="代理列表" desc="这里的代理可以单独指给某个网盘用（设置 → 网盘里每行都能选；新建网盘时也能选）。删掉一个代理后，用它的网盘会回到跟随全局。">
+              {proxiesLoading ? (
+                <div style={{ display: 'grid', gap: 8 }} aria-label="正在加载代理列表">
+                  <Skeleton height={36} width="80%" />
+                </div>
+              ) : proxiesError ? (
+                <div className="error-box">
+                  {proxiesError}
+                  <div style={{ marginTop: 8 }}>
+                    <button className="btn btn-sm" onClick={() => void loadProxies()}>
+                      {t(lang, 'retry')}
+                    </button>
+                  </div>
+                </div>
+              ) : proxies.length === 0 ? (
+                <p className="muted" style={{ margin: '0 0 12px' }}>还没有保存的代理：点“新增代理”加一个，网盘就能单独走它。</p>
+              ) : (
+                proxies.map((p) => (
+                  <div key={p.id} className="agent-row">
+                    <div className="agent-main">
+                      <div className="agent-name">
+                        {p.name}
+                        <span className="badge" style={{ marginLeft: 8 }}>
+                          {p.type}
+                        </span>
+                      </div>
+                      <div className="agent-meta">{p.addr}</div>
+                      {proxyRowResults[p.id] && (
+                        <div
+                          className={proxyRowResults[p.id].ok ? 'success-box' : 'error-box'}
+                          style={{ marginTop: 8, marginBottom: 0 }}
+                        >
+                          {proxyRowResults[p.id].detail}
+                        </div>
+                      )}
+                    </div>
+                    <button className="btn btn-sm" disabled={proxyRowBusy[p.id]} onClick={() => void testOneProxy(p)}>
+                      {proxyRowBusy[p.id] ? '测试中…' : '测试'}
+                    </button>
+                    <button className="btn btn-sm" onClick={() => startEditProxy(p)}>
+                      {t(lang, 'edit')}
+                    </button>
+                    <button
+                      className="btn-danger btn-sm"
+                      onClick={() => {
+                        resetDeleteProxyDialog()
+                        setDeleteProxyError(null)
+                        setDeletingProxy(p)
+                      }}
+                    >
+                      {t(lang, 'delete')}
+                    </button>
+                  </div>
+                ))
+              )}
+              {proxyFormOpen && (
+                <div style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12 }}>
+                  <div className="field">
+                    <label>名称</label>
+                    <input
+                      className="input"
+                      placeholder="例如：家里的代理"
+                      autoComplete="off"
+                      value={proxyFormName}
+                      onChange={(e) => setProxyFormName(e.target.value)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>类型</label>
+                    <select className="select" value={proxyFormType} onChange={(e) => setProxyFormType(e.target.value)}>
+                      <option value="http">http</option>
+                      <option value="socks5">socks5</option>
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>地址</label>
+                    <input
+                      className="input"
+                      placeholder="例如：http://127.0.0.1:7890"
+                      autoComplete="off"
+                      value={proxyFormAddr}
+                      onChange={(e) => setProxyFormAddr(e.target.value)}
+                    />
+                  </div>
+                  {proxyFormError && <div className="error-box">{proxyFormError}</div>}
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                    <button className="btn-primary btn-sm" disabled={proxyFormBusy} onClick={() => void saveProxyForm()}>
+                      {proxyFormBusy ? '保存中…' : '保存'}
+                    </button>
+                    <button
+                      className="btn btn-sm"
+                      disabled={proxyFormBusy}
+                      onClick={() => {
+                        setProxyFormOpen(false)
+                        setProxyFormError(null)
+                      }}
+                    >
+                      {t(lang, 'cancel')}
+                    </button>
+                  </div>
+                </div>
+              )}
+              {!proxyFormOpen && (
+                <button className="btn" onClick={startAddProxy}>
+                  新增代理
+                </button>
+              )}
+            </Row>
           </>
         )}
         </section>
@@ -910,13 +1221,49 @@ export default function SettingsPage({
                     容量暂不可用：{quotas[m.id].error}
                   </div>
                 )}
+                {m.loadError && (
+                  <div style={{ fontSize: 13, marginTop: 4, color: 'var(--danger)' }}>
+                    启动加载失败：{m.loadError}
+                  </div>
+                )}
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
+                  <label htmlFor={`mount-proxy-${m.id}`} style={{ fontSize: 13 }}>
+                    代理
+                  </label>
+                  <select
+                    id={`mount-proxy-${m.id}`}
+                    className="select"
+                    style={{ minWidth: 140 }}
+                    disabled={mountProxyBusy[m.id]}
+                    value={mountProxyDraft[m.id] ?? proxySelectValue(m)}
+                    onChange={(e) => void changeMountProxy(m, e.target.value)}
+                  >
+                    <option value="">跟随全局</option>
+                    <option value="direct">直连</option>
+                    {proxies.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  {mountProxyBusy[m.id] && (
+                    <span className="muted" style={{ fontSize: 13 }}>
+                      保存中…
+                    </span>
+                  )}
+                </div>
+                {mountProxyMsg[m.id] && (
+                  <div style={{ fontSize: 13, marginTop: 4, color: 'var(--danger)' }}>
+                    {mountProxyMsg[m.id]}
+                  </div>
+                )}
                 {reauthTarget?.id === m.id && (
                   <div style={{ fontSize: 13, marginTop: 4 }}>
                     正在重新授权：走完后还是这个网盘，同步任务、分组和缓存都在，不会新建一个盘。
                   </div>
                 )}
               </div>
-              {!m.verified && (
+              {(!m.verified || m.loadError) && (
                 <button className="btn btn-sm" disabled={testingMountId === m.id} onClick={() => void retestMount(m)}>
                   {testingMountId === m.id ? '测试中…' : '重新测试'}
                 </button>
@@ -1333,6 +1680,26 @@ export default function SettingsPage({
               </button>
               <button className="btn-primary" disabled={rootBusy} onClick={() => void saveRoot()}>
                 {rootBusy ? '测试中…' : '测试并保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deletingProxy && (
+        <div className={`dialog-backdrop${deleteProxyDialogClosing ? ' closing' : ''}`} onClick={requestDeleteProxyDialogClose}>
+          <div className={`dialog${deleteProxyDialogClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <h1>删除代理“{deletingProxy.name}”？</h1>
+            <p className="muted" style={{ margin: '0 0 12px' }}>
+              删掉后，用这个代理的网盘会回到跟随全局，不会删网盘、也不会动云端文件。
+            </p>
+            {deleteProxyError && <div className="error-box">{deleteProxyError}</div>}
+            <div className="dialog-actions">
+              <button className="btn" disabled={deleteProxyBusy} onClick={requestDeleteProxyDialogClose}>
+                {t(lang, 'cancel')}
+              </button>
+              <button className="btn-danger" disabled={deleteProxyBusy} onClick={() => void confirmDeleteProxy()}>
+                {deleteProxyBusy ? '删除中…' : '确认删除'}
               </button>
             </div>
           </div>

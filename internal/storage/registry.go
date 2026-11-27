@@ -25,6 +25,10 @@ var defaultRegistry = &Registry{factories: map[domain.ProviderKind]Factory{}}
 // Default returns the process-wide registry.
 func Default() *Registry { return defaultRegistry }
 
+// NewRegistry returns an empty registry (tests, and any caller that
+// needs an isolated set of drivers instead of the process-wide one).
+func NewRegistry() *Registry { return &Registry{factories: map[domain.ProviderKind]Factory{}} }
+
 // Register adds a driver factory. Called once per kind, in cmd/* at
 // startup. Registering the same kind twice is a programmer error.
 func (r *Registry) Register(kind domain.ProviderKind, f Factory) {

@@ -514,7 +514,7 @@ func (a *App) CancelOAuth(state string) {
 // inside the 10-minute expiry), so the same code can be retried;
 // only a successful exchange consumes the state, and a second
 // exchange after success still reports it as used.
-func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSecret, code, state, tokenURL string) (*OAuthTokens, error) {
+func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSecret, code, state, tokenURL, proxyRef string) (*OAuthTokens, error) {
 	p, ok := oauthProviders[provider]
 	if !ok {
 		return nil, fmt.Errorf("app: %s 不支持 OAuth 授权流程", provider)
@@ -552,12 +552,20 @@ func (a *App) ExchangeOAuthCode(provider domain.ProviderKind, clientID, clientSe
 	// If an exchange fails, this line is what proves (or rules
 	// out) a verifier/redirect mismatch without leaking secrets.
 	log.Printf("oauth exchange: provider=%s verifier_len=%d redirect_uri=%s", provider, len(pending.verifier), pending.redirectURI)
+	// The exchange travels through the proxy the mount will use
+	// (v0.18.0, per-mount proxy): the wizard passes its chosen
+	// ProxyRef — "" follows the global setting, "direct" goes
+	// direct, an id uses that proxy-list entry. A mount whose
+	// token endpoint is only reachable through its own proxy
+	// could otherwise never be authorized at all.
+	proxyCfg := a.resolveMountProxyConfig(proxyRef)
 	access, refresh, err := auth.ExchangeCode(context.Background(), &auth.OAuthConfig{
 		ClientID:     strings.TrimSpace(clientID),
 		ClientSecret: clientSecret,
 		TokenURL:     tokenURL,
 		RedirectURI:  pending.redirectURI,
 		CodeVerifier: pending.verifier,
+		Proxy:        &proxyCfg,
 	}, strings.TrimSpace(code))
 	if err != nil {
 		log.Printf("oauth exchange: provider=%s failed (%v), state kept for retry", provider, err)

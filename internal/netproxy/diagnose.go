@@ -37,10 +37,19 @@ const (
 // request to target. proxyAddr is the proxy host:port when one was
 // in the path ("" when direct). It never logs or returns secrets.
 func ClassifyError(target string, err error) (kind ErrorKind, proxyAddr string) {
+	return ClassifyErrorWith(Current(), target, err)
+}
+
+// ClassifyErrorWith is ClassifyError under one given config
+// (v0.18.0, per-mount proxy): a refresh or exchange that travelled
+// through a mount's own proxy must be classified against that
+// proxy, not the global one — otherwise a dead per-mount proxy
+// would be reported as a direct failure, or vice versa.
+func ClassifyErrorWith(cfg Config, target string, err error) (kind ErrorKind, proxyAddr string) {
 	if _, uerr := url.Parse(target); uerr != nil {
 		return KindOther, ""
 	}
-	proxyHost, via := ProxyForURL(target)
+	proxyHost, via := ProxyForURLWith(cfg, target)
 	if via == "none" {
 		return KindDirect, ""
 	}
@@ -83,8 +92,14 @@ func ClassifyError(target string, err error) (kind ErrorKind, proxyAddr string) 
 // secrets, no code/token. Example:
 // "GET https://api.dropboxapi.com via proxy 127.0.0.1:7890 (env): proxy unreachable (connection refused)".
 func DescribeError(target string, err error) string {
-	kind, proxyAddr := ClassifyError(target, err)
-	_, via := ProxyForURL(target)
+	return DescribeErrorWith(Current(), target, err)
+}
+
+// DescribeErrorWith is DescribeError under one given config
+// (v0.18.0, per-mount proxy — see ClassifyErrorWith).
+func DescribeErrorWith(cfg Config, target string, err error) string {
+	kind, proxyAddr := ClassifyErrorWith(cfg, target, err)
+	_, via := ProxyForURLWith(cfg, target)
 	if proxyAddr == "" {
 		return fmt.Sprintf("%s direct: %s (kind=%s)", target, shortErr(err), kind)
 	}

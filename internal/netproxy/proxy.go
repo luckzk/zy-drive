@@ -153,7 +153,9 @@ var (
 
 	// sharedTransport is built once; its Proxy func and DialContext
 	// read Current() on every request, so Configure applies at once.
-	sharedTransport = buildTransport()
+	// Per-config transports (TransportFor) are built by the same
+	// buildTransport with a fixed config instead.
+	sharedTransport = buildTransport(Current)
 )
 
 // Configure replaces the proxy config; it takes effect immediately
@@ -186,20 +188,62 @@ func Current() Config {
 // must use.
 func Transport() http.RoundTripper { return sharedTransport }
 
+// TransportFor returns a fresh transport bound to one proxy config
+// (v0.18.0, per-mount proxy): unlike Transport() it does NOT follow
+// later Configure calls — the config is fixed at build time, so a
+// mount built under one proxy keeps using it until it is rebuilt.
+// Built from the same code as the shared transport, never a
+// second implementation: buildTransport is parameterized by where
+// the config comes from.
+func TransportFor(cfg Config) *http.Transport {
+	return buildTransport(func() Config { return cfg })
+}
+
 // NewClient returns an *http.Client on the shared transport.
 func NewClient(timeoutSeconds int) *http.Client {
 	return &http.Client{Transport: Transport(), Timeout: time.Duration(timeoutSeconds) * time.Second}
+}
+
+// NewClientFor returns an *http.Client on a transport bound to one
+// proxy config (see TransportFor). A zero config means "not set":
+// it falls back to the shared live transport, so drivers built
+// without a per-mount proxy keep following Configure immediately,
+// exactly as before v0.18.0.
+func NewClientFor(cfg Config, timeoutSeconds int) *http.Client {
+	if cfg == (Config{}) {
+		return NewClient(timeoutSeconds)
+	}
+	return &http.Client{Transport: TransportFor(cfg), Timeout: time.Duration(timeoutSeconds) * time.Second}
+}
+
+// TransportOrShared returns TransportFor(cfg) when cfg is set, else
+// the shared live transport (same zero-config rule as
+// NewClientFor). Direct-Transport call sites (MEGA, the
+// authTransport wrappers) use this so a mount without its own proxy
+// keeps the old live-global behaviour.
+func TransportOrShared(cfg Config) http.RoundTripper {
+	if cfg == (Config{}) {
+		return Transport()
+	}
+	return TransportFor(cfg)
 }
 
 // ProxyForURL reports which proxy (if any) a request to target would
 // use, and where it came from. Safe to log: a proxy URL with userinfo
 // is stripped to host only by resolve.
 func ProxyForURL(target string) (proxyAddr, via string) {
+	return ProxyForURLWith(Current(), target)
+}
+
+// ProxyForURLWith is ProxyForURL under one given config instead of
+// the current global one (v0.18.0: proxy tests and per-mount
+// diagnostics report the proxy the mount actually uses).
+func ProxyForURLWith(cfg Config, target string) (proxyAddr, via string) {
 	u, err := url.Parse(target)
 	if err != nil {
 		return "", "none"
 	}
-	r := resolve(Current(), u)
+	r := resolve(cfg, u)
 	if r.proxy == nil {
 		return "", "none"
 	}
@@ -258,10 +302,11 @@ func resolve(cfg Config, target *url.URL) resolved {
 	}
 }
 
-// proxyFunc is the http.Transport Proxy hook. It reads the current
-// config on every request, so Configure applies immediately.
-func proxyFunc(req *http.Request) (*url.URL, error) {
-	cfg := Current()
+// proxyFuncFor is the http.Transport Proxy hook under one config.
+// The shared transport passes Current() on every request, so
+// Configure applies immediately; a TransportFor transport passes
+// its fixed config instead.
+func proxyFuncFor(cfg Config, req *http.Request) (*url.URL, error) {
 	if cfg.Mode == ModeManual && cfg.SOCKS5 != "" && cfg.HTTP == "" {
 		// SOCKS5-only: the DialContext routes everything, so the
 		// Proxy func must stay nil (a socks5:// URL here would make
@@ -283,24 +328,27 @@ func proxyFunc(req *http.Request) (*url.URL, error) {
 }
 
 // buildTransport clones the default transport and wires the proxy.
-func buildTransport() *http.Transport {
+// getCfg supplies the config per request: Current for the shared
+// transport, a fixed config for TransportFor.
+func buildTransport(getCfg func() Config) *http.Transport {
 	t := http.DefaultTransport.(*http.Transport).Clone()
-	t.Proxy = proxyFunc
-	t.DialContext = socksDialContext
+	t.Proxy = func(req *http.Request) (*url.URL, error) { return proxyFuncFor(getCfg(), req) }
+	t.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return socksDialContextFor(getCfg(), ctx, network, address)
+	}
 	return t
 }
 
-// socksDialContext routes dials through SOCKS5 when the current
+// socksDialContextFor routes dials through SOCKS5 when the given
 // config asks for it — and only then: when an HTTP(S) proxy is set,
 // the HTTP proxy handles http/https (macOS semantics) and the dial
 // to the proxy host itself must be direct. Loopback targets are
 // always dialled direct (OAuth listener, Agent API).
-func socksDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+func socksDialContextFor(cfg Config, ctx context.Context, network, address string) (net.Conn, error) {
 	var d net.Dialer
 	if host, _, err := net.SplitHostPort(address); err == nil && isLoopback(host) {
 		return d.DialContext(ctx, network, address)
 	}
-	cfg := Current()
 	addr := ""
 	switch cfg.Mode {
 	case ModeManual:

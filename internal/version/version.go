@@ -11,7 +11,7 @@
 package version
 
 // AppVersion is the backend version.
-const AppVersion = "0.17.2"
+const AppVersion = "0.18.0"
 
 // EngineVersion identifies the sync/transfer engine build.
 const EngineVersion = "0.1.0"

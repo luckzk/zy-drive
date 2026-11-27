@@ -124,9 +124,17 @@ func main() {
 	// Restore persisted mounts (and their groups) from SQLite;
 	// mounts whose credentials cannot be decrypted/rebuilt stay
 	// listed with status "error" instead of disappearing.
-	if err := application.LoadMounts(); err != nil {
-		log.Printf("desktop: restore mounts: %v", err)
-	}
+	//
+	// v0.18.0: this runs in the BACKGROUND, after the window is
+	// up — LoadMountsAsync returns immediately and the mounts
+	// appear as they finish (frontend polls MountsLoading +
+	// ListMounts). The old synchronous call froze startup
+	// completely on 2026-11-27: one MEGA mount's LoginWithKeys
+	// dialled direct and hung before any window existed, with no
+	// way into Settings to fix the proxy. Each mount gets 30s
+	// and the whole load 120s; a mount that times out is listed
+	// failed with its reason, never dropped.
+	go application.LoadMountsAsync()
 
 	// Preview cache (v0.9.1): reconcile the manifest with disk
 	// and trim to the configured limit. A stale cache must never

@@ -25,6 +25,10 @@ import (
 // token, cache and cursors.
 func (a *App) ProviderFor(mountID string) (storage.Provider, error) {
 	if mountID == domain.LocalMountID {
+		// Lazy init under the write lock: two concurrent first
+		// calls must not build two providers.
+		a.mountsMu.Lock()
+		defer a.mountsMu.Unlock()
 		if a.localProv == nil {
 			p, err := local.New(storage.Config{Extra: map[string]string{"root": "/"}})
 			if err != nil {
@@ -34,7 +38,7 @@ func (a *App) ProviderFor(mountID string) (storage.Provider, error) {
 		}
 		return a.localProv, nil
 	}
-	h, ok := a.mounts[mountID]
+	h, ok := a.Mount(mountID)
 	if !ok {
 		return nil, fmt.Errorf("app: unknown mount %q", mountID)
 	}
@@ -56,7 +60,7 @@ func (a *App) MountByID(mountID string) (*domain.Mount, error) {
 			Status: domain.MountOK,
 		}, nil
 	}
-	h, ok := a.mounts[mountID]
+	h, ok := a.Mount(mountID)
 	if !ok {
 		return nil, fmt.Errorf("app: unknown mount %q", mountID)
 	}

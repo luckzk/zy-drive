@@ -113,13 +113,13 @@ func New(cfg storage.Config) (storage.Provider, error) {
 		dirMap:     map[string]bool{},
 		probeHosts: strings.TrimSpace(cfg.Extra["probe_hosts"]),
 	}
-	p.client = shttp.New(nil)
+	p.client = shttp.NewWithProxy(nil, cfg.Proxy)
 	// The Authorization header is attached by the transport on
 	// EVERY attempt (see the Drime driver): the token never
 	// changes here, but the pattern keeps every driver alike.
 	p.client.HTTP = &http.Client{
 		Timeout:   120 * time.Second,
-		Transport: authTransport{base: netproxy.Transport(), tokens: ts},
+		Transport: authTransport{base: netproxy.TransportOrShared(cfg.Proxy), tokens: ts},
 	}
 	return p, nil
 }
