@@ -41,6 +41,21 @@ const CAPS = {
 }
 const GB = 1024 ** 3
 const TB = 1024 ** 4
+const MB = 1024 ** 2
+// Stub sync jobs / transfers / settings / cache (check-only): the
+// same shapes the desktop pages consume, so the mobile views render
+// with realistic data on this VM.
+const MOCK_JOBS = [
+  { id: 'j1', name: 'Drive → Dropbox 每日备份', srcMount: 'm-dr', srcRef: '/', dstMount: 'm-db', dstRef: '/backup', direction: 'copy', compare: 'size+time', schedule: '0 2 * * *', runOn: 'local', enabled: true, lastRunAt: '2026-11-26T02:00:00+08:00', lastRunOk: true, nextRunAt: '2026-11-27T02:00:00+08:00', createdAt: '', updatedAt: '' },
+  { id: 'j2', name: '照片手动同步', srcMount: 'm-local', srcRef: '/Users/zy/照片', dstMount: 'm-dr', dstRef: '/照片', direction: 'copy', compare: 'size+time', schedule: '', runOn: 'local', enabled: false, lastRunAt: '', lastRunOk: false, nextRunAt: '', createdAt: '', updatedAt: '' },
+]
+const MOCK_TRANSFERS = [
+  { id: 't1', kind: 'upload', srcMount: 'm-dr', srcRef: '/a.zip', dstMount: 'm-db', dstRef: '/a.zip', size: 100 * MB, done: 42 * MB, status: 'running', speedBps: 2 * MB, retries: 0 },
+  { id: 't2', kind: 'download', srcMount: 'm-db', srcRef: '/b.pdf', dstMount: 'm-local', dstRef: '/Users/zy/下载/b.pdf', size: 5 * MB, done: 5 * MB, status: 'completed', speedBps: 0, retries: 0 },
+  { id: 't3', kind: 'copy', srcMount: 'm-dr', srcRef: '/c.mov', dstMount: 'm-od', dstRef: '/c.mov', size: 50 * MB, done: 10 * MB, status: 'failed', speedBps: 0, retries: 1, error: '网络中断' },
+]
+const MOCK_SETTINGS = { theme: 'light', language: 'zh', downloadDir: '', syncCompare: 'size+time', syncConcurrency: 2, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '', previewCacheLimitMB: 2048, previewCacheClearOnExit: false }
+const MOCK_CACHE = { sizeBytes: Math.round(1.2 * MB), fileCount: 3, limitMB: 2048 }
 // Stub mounts (check-only): one per interesting quota state —
 // normal (Drive 10/15 GB, Dropbox 17/30 GB), unlimited (R2),
 // workspace-scoped (Drime 个人空间）, local disk, used-only
@@ -78,6 +93,13 @@ const STUB = `(() => {
     call: async (method, ...args) => {
       if (method === 'DesktopService.ListMounts') return ${JSON.stringify(MOCK_MOUNTS)}
       if (method === 'DesktopService.MountQuotas') return ${JSON.stringify(STUB_QUOTAS)}
+      if (method === 'DesktopService.ListSyncJobs') return ${JSON.stringify(MOCK_JOBS)}
+      if (method === 'DesktopService.Transfers') return ${JSON.stringify(MOCK_TRANSFERS)}
+      if (method === 'DesktopService.GetSettings') return ${JSON.stringify(MOCK_SETTINGS)}
+      if (method === 'DesktopService.SaveSettings') return true
+      if (method === 'DesktopService.PreviewCacheInfo') return ${JSON.stringify(MOCK_CACHE)}
+      if (method === 'DesktopService.ClearPreviewCache') return { freedBytes: Math.round(1.2 * MB), fileCount: 3 }
+      if (method === 'DesktopService.RetryTransfer') return true
       throw new Error('stub: unimplemented ' + method)
     },
     callWith: async (method, args) => window.mygo.call(method, ...(args ?? [])),
@@ -140,9 +162,19 @@ try {
     const driveRingEl = driveCard?.querySelector('.mhome-ring')
     const carousel = document.querySelector('.mhome-carousel')
     const cs = carousel ? getComputedStyle(carousel) : null
+    const header = document.querySelector('.mhome-header')
+    const headerTitle = document.querySelector('.mhome-title')
+    const nav = document.querySelector('.mhome-nav')
     return {
       title: document.querySelector('.mhome-title')?.textContent ?? null,
       subtitle: document.querySelector('.mhome-subtitle')?.textContent ?? null,
+      headerTitleAlign: headerTitle ? getComputedStyle(headerTitle).textAlign : null,
+      headerTitleWeight: headerTitle ? getComputedStyle(headerTitle).fontWeight : null,
+      headerBg: header ? getComputedStyle(header).backgroundColor : null,
+      hasBell: [...document.querySelectorAll('button')].some((b) => (b.getAttribute('aria-label') ?? '').includes('通知')) || document.body.innerText.includes('通知'),
+      hasHeaderRefreshBtn: !!document.querySelector('.mhome-refresh-btn'),
+      navLabels: [...(nav?.querySelectorAll('.mhome-nav-item') ?? [])].map((b) => b.textContent?.trim()),
+      navHasDigits: /\d/.test(nav?.innerText ?? ''),
       cardCount: cards.length,
       cardIds: cards.map((c) => c.dataset.mountId),
       driveText: card('m-dr')?.innerText ?? null,
@@ -177,9 +209,18 @@ try {
     check(home.emptyTitle === '还没有网盘', `空态标题应为“还没有网盘”，实测 ${home.emptyTitle}`)
     check(home.cardCount === 0, `空态不应有卡片，实测 ${home.cardCount} 张`)
     check(!home.hasAddMount, '空态也不应出现“添加网盘”入口（手机端不能加网盘）')
+    check(!home.hasBell, '空态也不应有铃铛/通知入口')
+    check(JSON.stringify(home.navLabels) === JSON.stringify(['网盘', '同步', '传输', '设置']), `空态底部导航也应为 网盘/同步/传输/设置，实测 ${JSON.stringify(home.navLabels)}`)
   } else {
     check(home.title === '我的网盘', `标题应为“我的网盘”，实测 ${home.title}`)
     check(!!home.subtitle, '副标题应存在')
+    check(home.headerTitleAlign === 'center', `标题应居中，实测 ${home.headerTitleAlign}`)
+    check(home.headerTitleWeight === '700', `标题应加粗（700），实测 ${home.headerTitleWeight}`)
+    check(home.headerBg === 'rgba(86, 225, 108, 0.22)', `顶栏底应为品牌绿 22%（更深的薄荷绿），实测 ${home.headerBg}`)
+    check(!home.hasBell, '不应有铃铛/通知入口（无通知数据源）')
+    check(!home.hasHeaderRefreshBtn, '顶栏不应再有刷新按钮（刷新已移到 ··· 菜单）')
+    check(JSON.stringify(home.navLabels) === JSON.stringify(['网盘', '同步', '传输', '设置']), `底部导航应为 网盘/同步/传输/设置，实测 ${JSON.stringify(home.navLabels)}`)
+    check(!home.navHasDigits, '底部导航不应带任何数字角标（没有跨网盘索引可计数）')
     check(home.cardCount === 8, `应有 8 张存储卡片，实测 ${home.cardCount} 张 (${home.cardIds.join(',')})`)
     check(!!home.driveText?.includes('10/15 GB'), `Drive 卡应显示紧凑“10/15 GB”，实测 ${JSON.stringify(home.driveText)}`)
     check(home.drivePct === '67%', `Drive 环应为 67%，实测 ${home.drivePct}`)
@@ -212,6 +253,85 @@ try {
     await page.getByRole('button', { name: '取消', exact: true }).click()
     await page.waitForTimeout(200)
     check((await page.locator('.mhome-sheet').count()) === 0, '点取消后动作条应关闭')
+
+    // 2b. 筛选药丸：云盘 7 张 / 本地 1 张 / 全部 8 张。
+    const cardCount = () => page.locator('.mhome-card[data-mount-id]').count()
+    await page.getByRole('button', { name: '云盘', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await cardCount()) === 7, `筛“云盘”应剩 7 张（除本地外全是云盘），实测 ${await cardCount()} 张`)
+    await page.getByRole('button', { name: '本地', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await cardCount()) === 1, `筛“本地”应剩 1 张，实测 ${await cardCount()} 张`)
+    await page.getByRole('button', { name: '全部', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await cardCount()) === 8, `筛“全部”应回 8 张，实测 ${await cardCount()} 张`)
+
+    // 2c. 搜索：按网盘名即时过滤；无匹配给人话提示，不编结果。
+    await page.getByRole('button', { name: '搜索网盘', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await page.locator('.mhome-search-row input').count()) === 1, '点搜索图标应展开搜索框')
+    await page.locator('.mhome-search-row input').fill('Drive')
+    await page.waitForTimeout(200)
+    check((await cardCount()) === 2, `搜“Drive”应剩 2 张（我的 Drive + OneDrive，子串匹配），实测 ${await cardCount()} 张`)
+    await page.locator('.mhome-search-row input').fill('R2')
+    await page.waitForTimeout(200)
+    check((await cardCount()) === 1, `搜“R2”应剩 1 张（我的 R2），实测 ${await cardCount()} 张`)
+    await page.locator('.mhome-search-row input').fill('zzz')
+    await page.waitForTimeout(200)
+    check((await page.locator('.mhome-no-match').count()) === 1, '搜不到时应显示“没有匹配的网盘”')
+    check(((await page.locator('.mhome-no-match').innerText()).includes('没有匹配的网盘')), '无匹配文案应为“没有匹配的网盘”')
+    await page.locator('.mhome-search-row input').fill('')
+    await page.waitForTimeout(200)
+    check((await cardCount()) === 8, `清空搜索应回 8 张，实测 ${await cardCount()} 张`)
+
+    // 2d. 查看全部：轮播 ↔ 竖直列表切换；列表模式下提示字隐藏。
+    await page.getByRole('button', { name: '查看全部', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await page.locator('.mhome-list').count()) === 1, '点“查看全部”应切到竖直列表')
+    check((await page.locator('.mhome-carousel').count()) === 0, '列表模式下不应再有横向轮播')
+    check((await page.locator('.mhome-hint').count()) === 0, '列表模式下“左右滑动”提示应隐藏')
+    check((await page.getByRole('button', { name: '收起', exact: true }).count()) === 1, '列表模式下按钮应读“收起”')
+    await page.getByRole('button', { name: '收起', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await page.locator('.mhome-carousel').count()) === 1, '点“收起”应回轮播')
+    check((await page.locator('.mhome-hint').count()) === 1, '回轮播后提示字应恢复')
+
+    // 2e. 顶栏 ···（grid）菜单：刷新全部容量 + 查看全部（切列表）。
+    await page.getByRole('button', { name: '更多', exact: true }).click()
+    await page.waitForTimeout(300)
+    const gridSheet = await page.evaluate(() => document.querySelector('.mhome-sheet')?.innerText ?? '')
+    check(gridSheet.includes('刷新全部容量') && gridSheet.includes('查看全部'), `grid 菜单应含“刷新全部容量”与“查看全部”，实测 ${JSON.stringify(gridSheet)}`)
+    await page.locator('.mhome-sheet').getByRole('button', { name: '查看全部', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await page.locator('.mhome-list').count()) === 1, '菜单里的“查看全部”也应切到列表')
+    await page.getByRole('button', { name: '收起', exact: true }).click()
+    await page.waitForTimeout(200)
+
+    // 2f. 底部导航：同步 / 传输 / 设置三个视图都真实可用，再回网盘。
+    await page.locator('.mhome-nav').getByRole('button', { name: '同步', exact: true }).click()
+    await page.waitForTimeout(500)
+    const syncText = await page.evaluate(() => document.querySelector('.mhome')?.innerText ?? '')
+    check(syncText.includes('Drive → Dropbox 每日备份') && syncText.includes('照片手动同步'), '同步视图应列出两个任务名')
+    check(syncText.includes('已启用') && syncText.includes('已停用'), '同步视图应显示启用状态')
+    await page.locator('.mhome-nav').getByRole('button', { name: '传输', exact: true }).click()
+    await page.waitForTimeout(500)
+    const trText = await page.evaluate(() => document.querySelector('.mhome')?.innerText ?? '')
+    check(trText.includes('a.zip') && trText.includes('b.pdf') && trText.includes('c.mov'), '传输视图应列出三条传输')
+    check(trText.includes('进行中') && trText.includes('已完成') && trText.includes('失败'), '传输视图应显示三种状态')
+    check((await page.getByRole('button', { name: '重试', exact: true }).count()) === 1, '失败的传输应有“重试”按钮')
+    await page.getByRole('button', { name: '重试', exact: true }).click()
+    await page.waitForTimeout(300)
+    await page.locator('.mhome-nav').getByRole('button', { name: '设置', exact: true }).click()
+    await page.waitForTimeout(500)
+    const setText = await page.evaluate(() => document.querySelector('.mhome')?.innerText ?? '')
+    check(setText.includes('缓存') && setText.includes('1.2 MB') && setText.includes('3 个文件'), `设置视图应有缓存卡（1.2 MB / 3 个文件），实测 ${JSON.stringify(setText.slice(0, 200))}`)
+    await page.getByRole('button', { name: '深色', exact: true }).click()
+    await page.waitForTimeout(200)
+    check((await page.getByRole('button', { name: '深色', exact: true }).getAttribute('aria-pressed')) === 'true', '点“深色”后外观应切到深色（aria-pressed）')
+    await page.screenshot({ path: path.join(SHOTS, 'm-390-settings.png') })
+    await page.locator('.mhome-nav').getByRole('button', { name: '网盘', exact: true }).click()
+    await page.waitForTimeout(500)
+    check((await page.locator('.mhome-card[data-mount-id]').count()) === 8, '回“网盘”后应重新显示 8 张卡片')
   }
 
   // 3. 430×932 (?mobile=1): large Android width.
@@ -224,11 +344,13 @@ try {
     title: document.querySelector('.mhome-title')?.textContent ?? null,
     cards: document.querySelectorAll('.mhome-card[data-mount-id]').length,
     overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    navItems: document.querySelectorAll('.mhome-nav-item').length,
   }))
   console.log('home 430:', JSON.stringify(wide))
   check(wide.title === '我的网盘', `430 宽标题应为“我的网盘”，实测 ${wide.title}`)
   if (!process.env.VISUAL_MOBILE_EMPTY) check(wide.cards === 8, `430 宽应有 8 张卡片，实测 ${wide.cards} 张`)
   check(!wide.overflowX, '页面不应横向溢出（只有轮播内部可横滑）')
+  check(wide.navItems === 4, `430 宽底部导航应有 4 项，实测 ${wide.navItems} 项`)
   if (!process.env.VISUAL_MOBILE_EMPTY) {
     await page2.screenshot({ path: path.join(SHOTS, 'm-430-home.png') })
   }

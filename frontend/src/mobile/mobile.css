@@ -1,15 +1,19 @@
 /* SPDX-License-Identifier: MIT */
 /* mobile — phone home screen styles, scoped under .mhome so nothing
    leaks into the desktop UI. Tokens come from tokens.css (:root
-   --brand / --ink / --ink-secondary / --paper / --card / --border /
-   --danger / --font-sans); this file only adds phone layout.
-   Motion follows the standing rule: transform/opacity only,
-   cubic-bezier(0.22,1,0.36,1), 200ms. Weights: the card name, used
-   numbers and ring % are 700 per the Dribbble reference — a
+   --brand / --ink / --paper / --card / --border / --danger /
+   --font-sans); this file only adds phone layout. Secondary text
+   uses --mhome-muted (neutral grey #8A8F98, per the reference) —
+   NOT the desktop --ink-secondary (green-tinted), so no desktop
+   colour is touched. Motion follows the standing rule:
+   transform/opacity only, cubic-bezier(0.22,1,0.36,1), 200ms.
+   Weights: 700 for the header title, section label, card
+   name/numbers/% and row titles, per the Dribbble reference — a
    deliberate, user-approved exception to the de-bold rule, scoped
    to .mhome only (2026-11-26); everything else stays 400. */
 
 .mhome {
+  --mhome-muted: #8a8f98;
   max-width: 480px;
   margin: 0 auto;
   min-height: 100dvh;
@@ -17,69 +21,136 @@
   font-family: var(--font-sans);
   color: var(--ink);
   -webkit-tap-highlight-color: transparent;
+  /* Clearance for the fixed bottom nav. */
+  padding-bottom: calc(104px + env(safe-area-inset-bottom, 0px));
 }
 
-/* Header — soft brand-green tint (8%) with a rounded bottom edge,
-   echoing the reference shot's mint header without copying its hex. */
+/* Header — deeper mint (brand green 22%) with a wide curved
+   bottom edge and centred text, per the reference shot. The
+   reference's exact mint hex is not copied. */
 .mhome-header {
-  padding: 28px 20px 26px;
-  padding-top: calc(28px + env(safe-area-inset-top, 0px));
-  background: rgba(86, 225, 108, 0.08);
-  border-radius: 0 0 32px 32px;
+  padding: calc(44px + env(safe-area-inset-top, 0px)) 20px 36px;
+  background: rgba(86, 225, 108, 0.22);
+  border-radius: 0 0 40px 40px;
+  text-align: center;
 }
 
-.mhome-header-top {
+.mhome-header-icons {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
+  align-items: center;
+  margin-bottom: 18px;
 }
 
-.mhome-eyebrow {
-  font-size: 13px;
-  line-height: 18px;
-  letter-spacing: 0.08em;
-  color: var(--ink-secondary);
-}
-
-.mhome-title {
-  font-size: 30px;
-  line-height: 38px;
-  font-weight: 400;
-  margin: 6px 0 0;
-}
-
-.mhome-subtitle {
-  font-size: 14px;
-  line-height: 20px;
-  color: var(--ink-secondary);
-  margin: 6px 0 0;
-}
-
-.mhome-refresh-btn {
-  flex-shrink: 0;
+.mhome-icon-btn {
   width: 40px;
   height: 40px;
   border: none;
+  background: transparent;
+  color: #111111;
   border-radius: 50%;
-  background: #ffffff;
-  color: var(--ink);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
 }
 
-.mhome-refresh-btn:disabled {
-  opacity: 0.5;
+.mhome-icon-btn:active {
+  background: rgba(0, 0, 0, 0.05);
 }
 
-.mhome-refresh-btn:active {
+.mhome-eyebrow {
+  font-size: 13px;
+  line-height: 18px;
+  letter-spacing: 0.08em;
+  color: var(--mhome-muted);
+}
+
+.mhome-title {
+  font-size: 30px;
+  line-height: 38px;
+  font-weight: 700;
+  margin: 6px 0 0;
+}
+
+.mhome-subtitle {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--mhome-muted);
+  margin: 6px 0 0;
+}
+
+/* Search row — toggled by the header search icon; filters the
+   mount cards by displayName as you type. */
+.mhome-search-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 20px 0;
+  padding: 10px 14px;
   background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  color: var(--mhome-muted);
 }
 
-/* Section label row above the carousel. */
+.mhome-search-row input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  outline: none;
+  font-size: 15px;
+  line-height: 22px;
+  font-family: inherit;
+  color: var(--ink);
+  padding: 0;
+}
+
+.mhome-search-row input::placeholder {
+  color: var(--mhome-muted);
+}
+
+.mhome-search-clear {
+  border: none;
+  background: none;
+  color: var(--mhome-muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+
+/* Filter pills — 全部/云盘/本地. Our cards are mounts, not files,
+   so the labels honestly differ from the shot's All/Folder/Images. */
+.mhome-pills {
+  display: flex;
+  gap: 8px;
+  padding: 14px 20px 0;
+}
+
+.mhome-pill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 20px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mhome-pill-active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-ink);
+}
+
+/* Section label row above the cards. */
 .mhome-section {
   display: flex;
   justify-content: space-between;
@@ -90,12 +161,25 @@
 .mhome-section-label {
   font-size: 15px;
   line-height: 22px;
+  font-weight: 700;
 }
 
 .mhome-section-count {
   font-size: 13px;
   line-height: 18px;
-  color: var(--ink-secondary);
+  color: var(--mhome-muted);
+  margin-left: 8px;
+}
+
+.mhome-section-btn {
+  border: none;
+  background: none;
+  color: var(--mhome-muted);
+  font-size: 14px;
+  line-height: 20px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
 }
 
 /* Carousel — horizontal snap-scroll, one full card + the next
@@ -111,6 +195,20 @@
 
 .mhome-carousel::-webkit-scrollbar {
   display: none;
+}
+
+/* Vertical list — same cards, full width, no horizontal scroll. */
+.mhome-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 20px 20px;
+}
+
+.mhome-list .mhome-card {
+  flex: none;
+  max-width: none;
+  min-width: 0;
 }
 
 .mhome-card {
@@ -175,7 +273,7 @@
 .mhome-sub {
   font-size: 13px;
   line-height: 18px;
-  color: var(--ink-secondary);
+  color: var(--mhome-muted);
   margin: 2px 0 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -197,11 +295,13 @@
   font-weight: 700;
 }
 
-/* The unit in "10/15 GB" stays small + regular, like the shot. */
+/* The unit in "10/15 GB" stays small + regular + neutral grey,
+   like the shot. */
 .mhome-used-unit {
   font-size: 13px;
   line-height: 18px;
   font-weight: 400;
+  color: var(--mhome-muted);
 }
 
 .mhome-ring {
@@ -241,9 +341,18 @@
 .mhome-hint {
   font-size: 13px;
   line-height: 18px;
-  color: var(--ink-secondary);
+  color: var(--mhome-muted);
   text-align: center;
-  padding: 0 20px calc(24px + env(safe-area-inset-bottom, 0px));
+  padding: 0 20px 24px;
+  margin: 0;
+}
+
+.mhome-no-match {
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--mhome-muted);
+  text-align: center;
+  padding: 32px 20px;
   margin: 0;
 }
 
@@ -281,7 +390,7 @@
 .mhome-empty-text {
   font-size: 14px;
   line-height: 20px;
-  color: var(--ink-secondary);
+  color: var(--mhome-muted);
   margin: 8px 0 20px;
 }
 
@@ -311,9 +420,7 @@
   margin: 0 0 12px;
 }
 
-/* Bottom sheet for the card's ··· menu (one real action in this
-   step: refresh quotas; more actions arrive with the mobile
-   management surface). */
+/* Bottom sheet (card ··· menu + header grid menu). */
 .mhome-sheet-backdrop {
   position: fixed;
   inset: 0;
@@ -347,7 +454,7 @@
 .mhome-sheet-title {
   font-size: 13px;
   line-height: 18px;
-  color: var(--ink-secondary);
+  color: var(--mhome-muted);
   text-align: center;
   padding: 6px 0 10px;
   overflow: hidden;
@@ -370,12 +477,201 @@
 }
 
 .mhome-sheet-cancel {
-  color: var(--ink-secondary);
+  color: var(--mhome-muted);
+}
+
+/* Sub-views (sync / transfers / settings). */
+.mhome-view-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 28px 20px 12px;
+}
+
+.mhome-view-title {
+  font-size: 22px;
+  line-height: 28px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.mhome-view-refresh {
+  border: none;
+  background: none;
+  color: var(--mhome-muted);
+  font-size: 14px;
+  line-height: 20px;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mhome-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 20px 20px;
+}
+
+.mhome-row-card {
+  background: var(--card);
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+
+.mhome-row-title {
+  font-size: 16px;
+  line-height: 22px;
+  font-weight: 700;
+}
+
+.mhome-row-sub {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--mhome-muted);
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.mhome-row-actions {
+  margin-top: 10px;
+}
+
+.mhome-mini-btn {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 18px;
+  font-family: inherit;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.mhome-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  margin-top: 10px;
+  overflow: hidden;
+}
+
+.mhome-progress > div {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--brand);
+}
+
+.mhome-seg {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mhome-seg-btn {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #ffffff;
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 20px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mhome-seg-active {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: var(--brand-ink);
+}
+
+.mhome-switch-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.mhome-switch {
+  flex-shrink: 0;
+  width: 48px;
+  height: 28px;
+  border: none;
+  border-radius: 999px;
+  background: #d9d9d9;
+  position: relative;
+  cursor: pointer;
+  padding: 0;
+}
+
+.mhome-switch[aria-checked='true'] {
+  background: var(--brand);
+}
+
+.mhome-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.mhome-switch[aria-checked='true'] .mhome-switch-knob {
+  transform: translateX(20px);
+}
+
+/* Bottom nav — black floating pill, per the reference. No counts
+   anywhere: there is no cross-mount index to count with. */
+.mhome-nav {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index: 30;
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  background: #111111;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.mhome-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 64px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 999px;
+  background: none;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 11px;
+  line-height: 14px;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.mhome-nav-active {
+  color: var(--brand);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .mhome-skeleton,
-  .mhome-sheet {
+  .mhome-sheet,
+  .mhome-switch-knob {
     animation: none;
+    transition: none;
   }
 }
