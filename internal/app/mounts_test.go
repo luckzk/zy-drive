@@ -577,6 +577,88 @@ func TestLoadMountsHealsLegacyS3RootRef(t *testing.T) {
 	}
 }
 
+// TestLoadMountsHealsMissingBuiltinClientID: a Dropbox mount saved
+// by the pre-fix one-click builtin flow carries no client_id (the
+// wizard sent the builtin ID for the auth link and the code
+// exchange but never stored it), so the first token refresh after
+// the access token expired failed with invalid_client — the mount
+// worked for ~4 hours and then stopped refreshing. LoadMounts must
+// fill the builtin ID (and write the corrected row back) so the
+// mount heals without re-authorisation; a stored custom Client ID
+// is never overwritten.
+func TestLoadMountsHealsMissingBuiltinClientID(t *testing.T) {
+	var postedClientID string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/oauth2/token":
+			_ = r.ParseForm()
+			postedClientID = r.Form.Get("client_id")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token": "mock-access", "token_type": "bearer", "expires_in": 14400,
+			})
+		case "/2/files/list_folder":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"entries": []any{}, "cursor": "cur-1", "has_more": false,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	dbPath := filepath.Join(t.TempDir(), "app.db")
+	a := newTestAppWithDB(t, dbPath)
+	ctx := context.Background()
+	m, err := a.AddMountWithCredentials(ctx, AddMountInput{
+		DisplayName: "Dropbox", Provider: domain.ProviderDropbox,
+		APIBase: srv.URL, TokenURL: srv.URL + "/oauth2/token",
+		// No access token, only a refresh token — and no ClientID,
+		// the way the pre-fix builtin flow saved the mount.
+		RefreshToken: "rt-1",
+	})
+	if err != nil {
+		t.Fatalf("AddMountWithCredentials(dropbox): %v", err)
+	}
+	// Corrupt the row the way the pre-fix code saved it: drop the
+	// client_id the add-time fill just stored.
+	persisted, err := a.DB.ListMounts()
+	if err != nil || len(persisted) != 1 {
+		t.Fatalf("ListMounts: %v %+v", err, persisted)
+	}
+	cfg := persisted[0].Config
+	delete(cfg, "client_id")
+	if err := a.DB.SaveMount(persisted[0].Mount, cfg); err != nil {
+		t.Fatalf("SaveMount legacy row: %v", err)
+	}
+	postedClientID = "" // only refreshes after the restart count
+	a2 := reopenApp(t, dbPath)
+	wantID := a2.BuiltinOAuthClientID(domain.ProviderDropbox)
+	if wantID == "" {
+		t.Fatal("test setup: no builtin Dropbox client ID")
+	}
+	mounts := a2.ListMounts()
+	if len(mounts) != 1 || mounts[0].ID != m.ID {
+		t.Fatalf("mounts after restart: %+v", mounts)
+	}
+	// The heal wrote back: the DB row itself carries the builtin ID.
+	persisted, err = a2.DB.ListMounts()
+	if err != nil || len(persisted) != 1 || persisted[0].Config["client_id"] != wantID {
+		t.Fatalf("DB row after heal: %v %+v", err, persisted)
+	}
+	// And browsing — which must refresh first, since no access
+	// token is stored — posts the builtin client_id to the token
+	// endpoint instead of an empty one.
+	nodes, err := a2.Browse(ctx, mounts[0].ID, "")
+	if err != nil {
+		t.Fatalf("Browse after heal: %v", err)
+	}
+	_ = nodes
+	if postedClientID != wantID {
+		t.Fatalf("refresh posted client_id %q, want builtin %q", postedClientID, wantID)
+	}
+}
+
 // TestMountEndpointHost: EndpointHost is the display-only host of the
 // S3 endpoint (the sidebar picks the R2 vs AWS S3 brand mark from
 // it). It is set at add time and recomputed from the stored config

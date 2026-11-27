@@ -29,5 +29,5 @@
     "prebuild": "node scripts/decode-fonts.mjs"
   },
   "type": "module",
-  "version": "0.17.1"
+  "version": "0.17.2"
 }

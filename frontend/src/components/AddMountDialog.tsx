@@ -534,7 +534,14 @@ export default function AddMountDialog({
     secretKey: secretKey || undefined,
     accessToken: accessToken || undefined,
     refreshToken: refreshToken || undefined,
-    clientId: clientId.trim() || undefined,
+    // One-click builtin flow: the auth link and the code exchange
+    // used the builtin Client ID (linkClientId), but the saved
+    // mount used to store only the typed clientId state — empty
+    // in the builtin flow — so the first token refresh after the
+    // access token expired failed with invalid_client. Store the
+    // builtin ID here (the backend also heals existing rows on
+    // load); the custom flow still stores the typed ID.
+    clientId: (appSource === 'builtin' && builtinClientId ? builtinClientId : clientId.trim()) || undefined,
     clientSecret: clientSecret || undefined,
     workspaceId: workspaceId.trim() || undefined,
     localPath: localPath.trim() || undefined,

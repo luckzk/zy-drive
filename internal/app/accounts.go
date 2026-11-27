@@ -242,7 +242,7 @@ func (a *App) AddMountWithCredentials(ctx context.Context, in AddMountInput) (*d
 	// A mount without its secret can never be rebuilt, so if the
 	// secret write fails the mount row is removed again.
 	if a.DB != nil {
-		nonSecret := nonSecretConfig(in)
+		nonSecret := a.nonSecretConfig(in)
 		if err := a.DB.SaveMount(m, nonSecret); err != nil {
 			return nil, err
 		}
@@ -363,6 +363,11 @@ func (a *App) mountConfig(in AddMountInput) (storage.Config, mountCredentials, e
 		}
 		cfg.Extra["root"] = abs
 	}
+	// A mount authorized through the one-click builtin flow may
+	// carry no client_id (the wizard never stored it): fill the
+	// builtin ID so the first token refresh after the access
+	// token expires does not fail with invalid_client.
+	a.fillBuiltinClientID(in.Provider, cfg.Extra)
 	return cfg, creds, nil
 }
 
@@ -392,7 +397,7 @@ func exportMegaSession(ctx context.Context, p storage.Provider, creds *mountCred
 // nonSecretConfig is the per-mount driver config that is safe to
 // store in plaintext in the mounts table. It never contains a token,
 // key or client secret.
-func nonSecretConfig(in AddMountInput) map[string]string {
+func (a *App) nonSecretConfig(in AddMountInput) map[string]string {
 	cfg := map[string]string{}
 	switch in.Provider {
 	case domain.ProviderS3:
@@ -445,6 +450,10 @@ func nonSecretConfig(in AddMountInput) map[string]string {
 		abs, _ := filepath.Abs(strings.TrimSpace(in.LocalPath))
 		cfg["root"] = abs
 	}
+	// Same builtin fill as mountConfig: a mount authorized
+	// through the one-click flow stores the builtin Client ID,
+	// so a later refresh does not fail with invalid_client.
+	a.fillBuiltinClientID(in.Provider, cfg)
 	return cfg
 }
 
@@ -664,6 +673,17 @@ func (a *App) LoadMounts() error {
 			m.Status = domain.MountError
 			a.mounts[m.ID] = MountHandle{Mount: m}
 			continue
+		}
+		// Self-heal (2026-11-27, builtin client_id fix): mounts
+		// authorized through the one-click builtin flow were saved
+		// without a client_id, so the first token refresh after
+		// the access token expired failed with invalid_client.
+		// Fill the builtin ID here so existing mounts heal
+		// without re-authorisation; the corrected row is written
+		// back best-effort, like the S3 root heal above. A stored
+		// custom Client ID is never overwritten.
+		if a.fillBuiltinClientID(m.Provider, cfg.Extra) {
+			_ = a.DB.SaveMount(m, pm.Config)
 		}
 		p, err := a.Registry.New(m.Provider, cfg)
 		if err != nil {
@@ -892,7 +912,7 @@ func (a *App) UpdateMountCredentials(ctx context.Context, id string, in AddMount
 	m.Verified = verified
 	m.UpdatedAt = time.Now().UTC()
 	if a.DB != nil {
-		if err := a.DB.SaveMountAndSecret(&m, nonSecretConfig(in), secretIDFor(id), ct); err != nil {
+		if err := a.DB.SaveMountAndSecret(&m, a.nonSecretConfig(in), secretIDFor(id), ct); err != nil {
 			return nil, err
 		}
 	}

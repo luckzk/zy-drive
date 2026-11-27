@@ -177,3 +177,25 @@ func (a *App) BuiltinOAuthClientID(provider domain.ProviderKind) string {
 	defer builtinMu.RUnlock()
 	return builtinClients[provider]
 }
+
+// fillBuiltinClientID sets extra["client_id"] from the builtin
+// registry when the mount carries none. Mounts authorized through
+// the one-click builtin flow were saved without a client_id (the
+// wizard sent the builtin ID for the auth link and the code
+// exchange but never stored it), so the first token refresh after
+// the access token expired failed with invalid_client — the
+// mount worked for ~4 hours and then silently stopped refreshing.
+// A stored custom Client ID is never overwritten, and providers
+// without a builtin app (Box/pCloud) are untouched. Returns true
+// when it filled the value.
+func (a *App) fillBuiltinClientID(provider domain.ProviderKind, extra map[string]string) bool {
+	if extra == nil || strings.TrimSpace(extra["client_id"]) != "" {
+		return false
+	}
+	id := a.BuiltinOAuthClientID(provider)
+	if id == "" {
+		return false
+	}
+	extra["client_id"] = id
+	return true
+}
