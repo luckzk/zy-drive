@@ -140,6 +140,12 @@ function Row({
   )
 }
 
+// v0.18.1: the proxy-test dialog's default URL (the old hardcoded
+// Dropbox token endpoint). A GET there always answers 404, which
+// still proves the path works — and the result wording never shows
+// the status code.
+const DEFAULT_PROXY_TEST_URL = 'https://api.dropboxapi.com/oauth2/token'
+
 export default function SettingsPage({
   lang,
   theme,
@@ -248,11 +254,16 @@ export default function SettingsPage({
   // v0.18.0: the test result keeps ok + detail — ok decides the
   // colour (green/red), detail is the backend's own reason.
   const [proxyTestResult, setProxyTestResult] = useState<{ ok: boolean; detail: string } | null>(null)
-  const [proxyTestBusy, setProxyTestBusy] = useState(false)
-  // v0.18.0: custom test URL (default is the old hardcoded
-  // Dropbox token endpoint). Empty = no request, inline hint.
-  const [proxyTestUrl, setProxyTestUrl] = useState('https://api.dropboxapi.com/oauth2/token')
-  const [proxyTestUrlError, setProxyTestUrlError] = useState<string | null>(null)
+  // v0.18.1: the test URL lives in a dialog, not a permanent input
+  // (the Network card stays clean); the dialog's own busy/result
+  // state lives with it, and a finished result is also synced to
+  // the inline spot below the button so it survives closing.
+  const [proxyTestDialog, setProxyTestDialog] = useState<{ proxyRef: string; title: string } | null>(null)
+  const [proxyTestDialogClosing, requestProxyTestDialogClose, resetProxyTestDialog] = useClosing(() => setProxyTestDialog(null))
+  const [proxyTestDialogUrl, setProxyTestDialogUrl] = useState(DEFAULT_PROXY_TEST_URL)
+  const [proxyTestDialogError, setProxyTestDialogError] = useState<string | null>(null)
+  const [proxyTestDialogResult, setProxyTestDialogResult] = useState<{ ok: boolean; detail: string } | null>(null)
+  const [proxyTestDialogBusy, setProxyTestDialogBusy] = useState(false)
   // The proxy fields as last saved: the manual address inputs
   // edit the draft, and "测试代理" only means something once the
   // draft is saved (the backend applies on save, immediately).
@@ -275,7 +286,11 @@ export default function SettingsPage({
   const [proxyFormBusy, setProxyFormBusy] = useState(false)
   // Per-row test results (same colour rule as the global test).
   const [proxyRowResults, setProxyRowResults] = useState<Record<string, { ok: boolean; detail: string }>>({})
-  const [proxyRowBusy, setProxyRowBusy] = useState<Record<string, boolean>>({})
+  // v0.18.1: one-click "加入列表" for proxies the user already
+  // has (the saved global manual one, the detected system one)
+  // that are not in the list yet. Keyed by the candidate key.
+  const [quickAddBusy, setQuickAddBusy] = useState<Record<string, boolean>>({})
+  const [quickAddError, setQuickAddError] = useState<string | null>(null)
   // Declarative delete confirm (no static Modal — it does not
   // render under antd 5.29 + React 19; this codebase has no antd
   // at all, so the confirm uses the same .dialog pattern as the
@@ -422,53 +437,59 @@ export default function SettingsPage({
     void saveDraft(s)
   }
 
-  // "测试代理": one request through the current (saved) proxy
-  // setup. Only meaningful once the draft is saved — the test
-  // button stays disabled while the manual addresses are dirty.
+  // "测试代理": opens the test dialog (v0.18.1 — the URL box
+  // lives in the dialog, not in the card). The global test is
+  // only meaningful once the draft is saved, so the button stays
+  // disabled while the manual addresses are dirty; a list entry
+  // does not depend on the saved global settings, so its test
+  // button is not gated by proxyDirty.
   const proxyDirty =
     draft !== null &&
     lastSavedProxy !== null &&
     (draft.proxyMode !== lastSavedProxy.mode || draft.proxyHttp !== lastSavedProxy.http || draft.proxySocks5 !== lastSavedProxy.socks5)
 
-  const runProxyTest = async () => {
-    if (!draft || proxyDirty) return
-    const url = proxyTestUrl.trim()
-    if (!url) {
-      setProxyTestUrlError('请填写测试网址')
-      return
-    }
-    setProxyTestUrlError(null)
-    setProxyTestBusy(true)
-    setProxyTestResult(null)
-    try {
-      const res = await api.testProxy(url, '')
-      setProxyTestResult({ ok: res.ok, detail: res?.detail ?? '无返回' })
-    } catch (e) {
-      setProxyTestResult({ ok: false, detail: friendlyError(e) })
-    } finally {
-      setProxyTestBusy(false)
-    }
+  const openProxyTestDialog = (proxyRef: string, title: string) => {
+    resetProxyTestDialog()
+    setProxyTestDialogUrl(DEFAULT_PROXY_TEST_URL)
+    setProxyTestDialogError(null)
+    setProxyTestDialogResult(null)
+    setProxyTestDialog({ proxyRef, title })
   }
 
-  // Test one list entry against the same URL box (result shows
-  // on its own row, coloured the same way). A list entry does
-  // not depend on the saved global settings, so it is not gated
-  // by proxyDirty — only the global test is.
-  const testOneProxy = async (p: ProxyEntry) => {
-    const url = proxyTestUrl.trim()
+  // Runs the test from inside the dialog. The result shows in
+  // the dialog AND is synced to the inline spot (the global one
+  // under the button, or the row's own), so closing the dialog
+  // does not lose it.
+  const runProxyTestInDialog = async () => {
+    if (!proxyTestDialog) return
+    const url = proxyTestDialogUrl.trim()
     if (!url) {
-      setProxyTestUrlError('请填写测试网址')
+      setProxyTestDialogError('请填写测试网址')
       return
     }
-    setProxyTestUrlError(null)
-    setProxyRowBusy((prev) => ({ ...prev, [p.id]: true }))
+    setProxyTestDialogError(null)
+    setProxyTestDialogBusy(true)
     try {
-      const res = await api.testProxy(url, p.id)
-      setProxyRowResults((prev) => ({ ...prev, [p.id]: { ok: res.ok, detail: res?.detail ?? '无返回' } }))
+      const res = await api.testProxy(url, proxyTestDialog.proxyRef)
+      const result = { ok: res.ok, detail: res?.detail ?? '无返回' }
+      setProxyTestDialogResult(result)
+      if (proxyTestDialog.proxyRef === '') {
+        setProxyTestResult(result)
+      } else {
+        const id = proxyTestDialog.proxyRef
+        setProxyRowResults((prev) => ({ ...prev, [id]: result }))
+      }
     } catch (e) {
-      setProxyRowResults((prev) => ({ ...prev, [p.id]: { ok: false, detail: friendlyError(e) } }))
+      const result = { ok: false, detail: friendlyError(e) }
+      setProxyTestDialogResult(result)
+      if (proxyTestDialog.proxyRef === '') {
+        setProxyTestResult(result)
+      } else {
+        const id = proxyTestDialog.proxyRef
+        setProxyRowResults((prev) => ({ ...prev, [id]: result }))
+      }
     } finally {
-      setProxyRowBusy((prev) => ({ ...prev, [p.id]: false }))
+      setProxyTestDialogBusy(false)
     }
   }
 
@@ -513,6 +534,64 @@ export default function SettingsPage({
       setProxyFormError(friendlyError(e))
     } finally {
       setProxyFormBusy(false)
+    }
+  }
+
+  // v0.18.1: one-click "加入列表" candidates — proxies the user
+  // already has (the saved global manual one, the detected system
+  // one) that are not in the list yet. The global 8001 / system
+  // 1081 never appear in the mount dropdowns on their own: the
+  // list is the only source. Dedupe is by type + normalized
+  // address, so an entry already in the list never shows a
+  // duplicate button.
+  type QuickAddCandidate = { key: string; name: string; type: string; addr: string }
+  const normalizeProxyAddrForCompare = (addr: string, type: string) => {
+    let a = addr.trim().toLowerCase().replace(/\/+$/, '')
+    if (a && !a.includes('://')) a = `${type}://` + a
+    return `${type}|${a}`
+  }
+  const quickAddCandidates: QuickAddCandidate[] = []
+  if (lastSavedProxy?.mode === 'manual') {
+    if (lastSavedProxy.http.trim()) {
+      quickAddCandidates.push({ key: 'manual-http', name: '全局 HTTP 代理', type: 'http', addr: lastSavedProxy.http.trim() })
+    }
+    if (lastSavedProxy.socks5.trim()) {
+      quickAddCandidates.push({ key: 'manual-socks5', name: '全局 SOCKS5 代理', type: 'socks5', addr: lastSavedProxy.socks5.trim() })
+    }
+  }
+  if (systemProxy?.detected) {
+    const sysHttp = systemProxy.http || systemProxy.https || ''
+    if (sysHttp.trim()) {
+      quickAddCandidates.push({ key: 'system-http', name: '系统代理', type: 'http', addr: sysHttp.trim() })
+    }
+    const sysSocks5 = systemProxy.socks5 || ''
+    if (sysSocks5.trim()) {
+      quickAddCandidates.push({ key: 'system-socks5', name: '系统代理', type: 'socks5', addr: sysSocks5.trim() })
+    }
+  }
+  // Two sources can resolve to the same proxy (e.g. the manual
+  // address and the detected system one): keep the first, and
+  // never show a button for an entry already in the list.
+  const seenQuickAdd = new Set<string>()
+  const quickAddVisible = quickAddCandidates.filter((c) => {
+    const key = normalizeProxyAddrForCompare(c.addr, c.type)
+    if (seenQuickAdd.has(key)) return false
+    seenQuickAdd.add(key)
+    return !proxies.some((p) => p.type === c.type && normalizeProxyAddrForCompare(p.addr, p.type) === key)
+  })
+
+  const quickAddProxy = async (c: QuickAddCandidate) => {
+    setQuickAddBusy((prev) => ({ ...prev, [c.key]: true }))
+    setQuickAddError(null)
+    try {
+      // Empty id = new entry; SaveProxy validates + normalizes
+      // the address the same way the form does.
+      await api.saveProxy({ id: '', name: c.name, type: c.type, addr: c.addr })
+      await loadProxies()
+    } catch (e) {
+      setQuickAddError(friendlyError(e))
+    } finally {
+      setQuickAddBusy((prev) => ({ ...prev, [c.key]: false }))
     }
   }
 
@@ -1005,26 +1084,9 @@ export default function SettingsPage({
                 {proxyDirty && <p className="muted">地址改了还没保存，先点“保存代理设置”。</p>}
               </>
             )}
-            <Row title="测试网址" desc="代理测试向这个网址发一次请求：通了就说明代理能连上网盘服务；不通会写清是代理本身没起来、还是代理连不上对方。">
-              <input
-                className="input"
-                placeholder="https://api.dropboxapi.com/oauth2/token"
-                autoComplete="off"
-                value={proxyTestUrl}
-                onChange={(e) => {
-                  setProxyTestUrl(e.target.value)
-                  setProxyTestUrlError(null)
-                }}
-              />
-              {proxyTestUrlError && (
-                <div className="error-box" style={{ marginTop: 8, marginBottom: 0 }}>
-                  {proxyTestUrlError}
-                </div>
-              )}
-            </Row>
             <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-              <button className="btn" disabled={proxyTestBusy || proxyDirty} onClick={() => void runProxyTest()}>
-                {proxyTestBusy ? '测试中…' : '测试代理'}
+              <button className="btn" disabled={proxyDirty} onClick={() => openProxyTestDialog('', '测试代理')}>
+                测试代理
               </button>
             </div>
             {proxyTestResult && <div className={proxyTestResult.ok ? 'success-box' : 'error-box'}>{proxyTestResult.detail}</div>}
@@ -1064,8 +1126,8 @@ export default function SettingsPage({
                         </div>
                       )}
                     </div>
-                    <button className="btn btn-sm" disabled={proxyRowBusy[p.id]} onClick={() => void testOneProxy(p)}>
-                      {proxyRowBusy[p.id] ? '测试中…' : '测试'}
+                    <button className="btn btn-sm" onClick={() => openProxyTestDialog(p.id, `测试代理“${p.name}”`)}>
+                      测试
                     </button>
                     <button className="btn btn-sm" onClick={() => startEditProxy(p)}>
                       {t(lang, 'edit')}
@@ -1083,6 +1145,30 @@ export default function SettingsPage({
                   </div>
                 ))
               )}
+              {!proxiesLoading && !proxiesError && quickAddVisible.length > 0 && (
+                <>
+                  <p className="muted" style={{ margin: '0 0 8px' }}>
+                    还没进列表的代理，一键加入：
+                  </p>
+                  {quickAddVisible.map((c) => (
+                    <div key={c.key} className="agent-row">
+                      <div className="agent-main">
+                        <div className="agent-name">
+                          {c.name}
+                          <span className="badge" style={{ marginLeft: 8 }}>
+                            {c.type}
+                          </span>
+                        </div>
+                        <div className="agent-meta">{c.addr}</div>
+                      </div>
+                      <button className="btn btn-sm" disabled={quickAddBusy[c.key]} onClick={() => void quickAddProxy(c)}>
+                        {quickAddBusy[c.key] ? '加入中…' : '加入列表'}
+                      </button>
+                    </div>
+                  ))}
+                  {quickAddError && <div className="error-box">{quickAddError}</div>}
+                </>
+              )}
               {proxyFormOpen && (
                 <div style={{ padding: 12, border: '1px solid var(--border)', borderRadius: 8, marginBottom: 12 }}>
                   <div className="field">
@@ -1097,7 +1183,7 @@ export default function SettingsPage({
                   </div>
                   <div className="field">
                     <label>类型</label>
-                    <select className="select" value={proxyFormType} onChange={(e) => setProxyFormType(e.target.value)}>
+                    <select className="select" style={{ width: 'auto', maxWidth: 220 }} value={proxyFormType} onChange={(e) => setProxyFormType(e.target.value)}>
                       <option value="http">http</option>
                       <option value="socks5">socks5</option>
                     </select>
@@ -1233,7 +1319,7 @@ export default function SettingsPage({
                   <select
                     id={`mount-proxy-${m.id}`}
                     className="select"
-                    style={{ minWidth: 140 }}
+                    style={{ width: 'auto', minWidth: 140, maxWidth: 220 }}
                     disabled={mountProxyBusy[m.id]}
                     value={mountProxyDraft[m.id] ?? proxySelectValue(m)}
                     onChange={(e) => void changeMountProxy(m, e.target.value)}
@@ -1252,6 +1338,11 @@ export default function SettingsPage({
                     </span>
                   )}
                 </div>
+                {!proxiesLoading && proxies.length === 0 && (
+                  <div className="muted" style={{ fontSize: 13, marginTop: 4 }}>
+                    还没有添加代理：去网络 → 代理列表添加，添加后这里就能给每个网盘单独选了。
+                  </div>
+                )}
                 {mountProxyMsg[m.id] && (
                   <div style={{ fontSize: 13, marginTop: 4, color: 'var(--danger)' }}>
                     {mountProxyMsg[m.id]}
@@ -1680,6 +1771,42 @@ export default function SettingsPage({
               </button>
               <button className="btn-primary" disabled={rootBusy} onClick={() => void saveRoot()}>
                 {rootBusy ? '测试中…' : '测试并保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {proxyTestDialog && (
+        <div className={`dialog-backdrop${proxyTestDialogClosing ? ' closing' : ''}`} onClick={requestProxyTestDialogClose}>
+          <div className={`dialog${proxyTestDialogClosing ? ' closing' : ''}`} onClick={(e) => e.stopPropagation()}>
+            <h1>{proxyTestDialog.title}</h1>
+            <p className="muted" style={{ margin: '0 0 12px' }}>
+              向这个网址发一次请求：通了就说明代理能连上网盘服务；不通会写清是代理本身没起来、还是代理连不上对方。
+            </p>
+            <div className="field">
+              <label>测试网址</label>
+              <input
+                className="input"
+                placeholder="https://api.dropboxapi.com/oauth2/token"
+                autoComplete="off"
+                value={proxyTestDialogUrl}
+                onChange={(e) => {
+                  setProxyTestDialogUrl(e.target.value)
+                  setProxyTestDialogError(null)
+                }}
+              />
+            </div>
+            {proxyTestDialogError && <div className="error-box">{proxyTestDialogError}</div>}
+            {proxyTestDialogResult && (
+              <div className={proxyTestDialogResult.ok ? 'success-box' : 'error-box'}>{proxyTestDialogResult.detail}</div>
+            )}
+            <div className="dialog-actions">
+              <button className="btn" disabled={proxyTestDialogBusy} onClick={requestProxyTestDialogClose}>
+                {t(lang, 'cancel')}
+              </button>
+              <button className="btn-primary" disabled={proxyTestDialogBusy} onClick={() => void runProxyTestInDialog()}>
+                {proxyTestDialogBusy ? '测试中…' : '测试'}
               </button>
             </div>
           </div>

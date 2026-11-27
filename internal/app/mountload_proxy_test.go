@@ -267,9 +267,10 @@ func TestTestProxyCustomURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Any HTTP response counts — even a 418.
-	if got := a.TestProxy(srv.URL, ""); !got.OK || !strings.Contains(got.Detail, "直连通") {
-		t.Fatalf("TestProxy(local server): %+v, want OK + 直连通", got)
+	// Any HTTP response counts — even a 418. The success Detail is
+	// plain language ("正常，直连…") and never carries the status.
+	if got := a.TestProxy(srv.URL, ""); !got.OK || !strings.Contains(got.Detail, "正常，直连") {
+		t.Fatalf("TestProxy(local server): %+v, want OK + 正常，直连", got)
 	}
 	if got := a.TestProxy(srv.URL, "direct"); !got.OK {
 		t.Fatalf("TestProxy(local server, direct): %+v, want OK", got)

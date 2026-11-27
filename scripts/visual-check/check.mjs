@@ -310,7 +310,7 @@ const STUB = `(() => {
       // 网络（v0.8.5）：检测到的系统代理 + 代理测试桩。via 与
       // Detail 的文案照抄后端（internal/app/proxy.go）的格式。
       if (method === 'DesktopService.GetSystemProxy') return { detected: true, http: 'http://127.0.0.1:7890', https: 'http://127.0.0.1:7890', via: '系统代理：http://127.0.0.1:7890' }
-      if (method === 'DesktopService.TestProxy') return { ok: true, detail: '经代理 http://127.0.0.1:7890 连通（200 OK，跟随系统代理）' }
+      if (method === 'DesktopService.TestProxy') return { ok: true, detail: '正常，经代理 http://127.0.0.1:7890 连通' }
       // v0.18.0: 异步启动加载（桩里加载瞬间完成，返回 false）、
       // 代理列表的新增/改名/删除、每盘代理改值（改 live 网盘）。
       if (method === 'DesktopService.MountsLoading') return false
@@ -2855,13 +2855,46 @@ try {
     await page.locator('.settings-card', { hasText: '网络' }).locator('input[placeholder*="127.0.0.1:7890"]').first().fill('http://127.0.0.1:7890')
     await page.getByRole('button', { name: '保存代理设置', exact: true }).click()
     await page.waitForTimeout(300)
+    // v0.18.1: "测试代理" 改走弹窗 —— 点按钮弹出对话框
+    // （默认填 Dropbox token 地址），在框里点"测试"，结果
+    // 在弹窗里显示（人话，不带状态码）；关掉弹窗后，原来的
+    // 结果展示位也要同步成最后一次结果。
     await page.getByRole('button', { name: '测试代理', exact: true }).click()
-    await page.waitForTimeout(300)
-    const proxyTest = await page.evaluate(() => {
-      const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '网络')
-      return card?.textContent?.includes('连通') ?? false
+    await page.waitForTimeout(400)
+    const testDialog = await page.evaluate(() => {
+      const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('测试代理'))
+      if (!d) return { found: false }
+      const input = d.querySelector('input')
+      return {
+        found: true,
+        urlValue: input?.value ?? null,
+        hasTestBtn: [...d.querySelectorAll('button')].some((b) => b.textContent?.trim() === '测试'),
+      }
     })
-    if (!proxyTest) failures.push('点“测试代理”后没有显示连通结果（桩应返回经代理连通）')
+    console.log('proxy test dialog:', JSON.stringify(testDialog))
+    if (!testDialog.found) failures.push('点“测试代理”后没有弹出测试对话框')
+    if (testDialog.found && testDialog.urlValue !== 'https://api.dropboxapi.com/oauth2/token') failures.push(`测试对话框应默认填 Dropbox token 地址，实测 ${testDialog.urlValue}`)
+    if (testDialog.found && !testDialog.hasTestBtn) failures.push('测试对话框里没有“测试”按钮')
+    if (testDialog.found) {
+      await page.locator('.dialog').getByRole('button', { name: '测试', exact: true }).click()
+      await page.waitForTimeout(400)
+      const dialogResult = await page.evaluate(() => {
+        const d = [...document.querySelectorAll('.dialog')].find((el) => el.textContent?.includes('测试代理'))
+        if (!d) return { found: false }
+        const text = d.textContent ?? ''
+        return { found: true, hasNormal: text.includes('正常'), hasStatusCode: /404|200 OK/.test(text) }
+      })
+      console.log('proxy test dialog result:', JSON.stringify(dialogResult))
+      if (!dialogResult.hasNormal) failures.push('对话框里测试后没有显示“正常”')
+      if (dialogResult.hasStatusCode) failures.push('测试结果里不应出现 HTTP 状态码（404/200 OK）')
+      await page.locator('.dialog-actions >> text=取消').click()
+      await page.waitForTimeout(400)
+      const proxyTest = await page.evaluate(() => {
+        const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '网络')
+        return card?.textContent?.includes('正常') ?? false
+      })
+      if (!proxyTest) failures.push('关掉测试对话框后，原来的结果展示位没有同步最后一次结果')
+    }
     const networkCard = page.locator('.settings-card').nth(1)
     await networkCard.screenshot({ path: path.join(SHOTS, '04b-settings-network.png') })
   }
@@ -2944,6 +2977,75 @@ try {
         await page.waitForTimeout(400)
       }
     }
+  }
+
+  // 4b2c. 设置页网盘行代理下拉框（v0.18.1，VISUAL_MOUNTS）：
+  // 下拉框里有桩代理列表的两个名字（家里代理 / 备用 SOCKS），
+  // 宽度紧凑（不占满整行）；删掉两个代理后，网盘行出现空列
+  // 表提示；网络区出现快捷"加入列表"，点它能把代理加回来。
+  if (process.env.VISUAL_MOUNTS) {
+    await page.getByRole('tab', { name: '网盘', exact: true }).click()
+    await page.waitForTimeout(350)
+    const mountProxy = await page.evaluate(() => {
+      const section = [...document.querySelectorAll('.settings-card')].find((c) => c.textContent?.includes('已添加的网盘'))
+      if (!section) return { found: false }
+      const sel = section.querySelector('select[id^="mount-proxy-"]')
+      if (!sel) return { found: false }
+      const options = [...sel.options].map((o) => o.textContent?.trim())
+      return { found: true, options, width: sel.getBoundingClientRect().width }
+    })
+    console.log('mount proxy select:', JSON.stringify(mountProxy))
+    if (!mountProxy.found) failures.push('设置页网盘行没有代理下拉框')
+    if (mountProxy.found && !mountProxy.options?.includes('家里代理')) failures.push('网盘代理下拉框里没有桩代理“家里代理”')
+    if (mountProxy.found && !mountProxy.options?.includes('备用 SOCKS')) failures.push('网盘代理下拉框里没有桩代理“备用 SOCKS”')
+    if (mountProxy.found && mountProxy.width > 240) failures.push(`网盘代理下拉框太宽（应紧凑 ≤240px），实测 ${mountProxy.width}px`)
+    // 删掉两个桩代理：网络区 → 每行"删除" → 确认弹窗 → 确认删除。
+    await page.getByRole('tab', { name: '网络', exact: true }).click()
+    await page.waitForTimeout(350)
+    for (const name of ['家里代理', '备用 SOCKS']) {
+      const row = page.locator('.settings-card', { hasText: '网络' }).locator('.agent-row', { hasText: name }).first()
+      await row.getByRole('button', { name: '删除', exact: true }).click()
+      await page.waitForTimeout(400)
+      await page.locator('.dialog-actions >> text=确认删除').click()
+      await page.waitForTimeout(400)
+    }
+    // 空列表后：网络区出现快捷加入（4b3 里刚保存的手动 7890
+    // 与检测到的系统 7890 是同一地址，去重后只留一行）。
+    const quickAdd = await page.evaluate(() => {
+      const network = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '网络')
+      return { hasJoinBtn: network?.textContent?.includes('加入列表') ?? false }
+    })
+    console.log('proxy quick-add:', JSON.stringify(quickAdd))
+    if (!quickAdd.hasJoinBtn) failures.push('删掉全部代理后，网络区没有出现快捷"加入列表"')
+    if (quickAdd.hasJoinBtn) {
+      await page.locator('.settings-card', { hasText: '网络' }).getByRole('button', { name: '加入列表', exact: true }).first().click()
+      await page.waitForTimeout(400)
+      const afterAdd = await page.evaluate(() => {
+        const network = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '网络')
+        return network?.textContent?.includes('全局 HTTP 代理') ?? false
+      })
+      if (!afterAdd) failures.push('点"加入列表"后代理列表里没有出现"全局 HTTP 代理"')
+      // 再删掉它，回到空列表，去网盘行看提示。
+      const addedRow = page.locator('.settings-card', { hasText: '网络' }).locator('.agent-row', { hasText: '全局 HTTP 代理' }).first()
+      await addedRow.getByRole('button', { name: '删除', exact: true }).click()
+      await page.waitForTimeout(400)
+      await page.locator('.dialog-actions >> text=确认删除').click()
+      await page.waitForTimeout(400)
+    }
+    await page.getByRole('tab', { name: '网盘', exact: true }).click()
+    await page.waitForTimeout(350)
+    const emptyDrives = await page.evaluate(() => {
+      const section = [...document.querySelectorAll('.settings-card')].find((c) => c.textContent?.includes('已添加的网盘'))
+      if (!section) return { found: false }
+      const sel = section.querySelector('select[id^="mount-proxy-"]')
+      const options = sel ? [...sel.options].map((o) => o.textContent?.trim()) : []
+      return { found: true, hasHint: (section.textContent ?? '').includes('还没有添加代理'), hasHomeProxy: options.includes('家里代理') }
+    })
+    console.log('mount proxy empty hint:', JSON.stringify(emptyDrives))
+    if (!emptyDrives.found) failures.push('设置页找不到网盘一节（空列表提示断言）')
+    if (emptyDrives.found && !emptyDrives.hasHint) failures.push('代理列表为空时，网盘行没有出现"还没有添加代理"提示')
+    if (emptyDrives.found && emptyDrives.hasHomeProxy) failures.push('删掉全部代理后，网盘下拉框里还留着"家里代理"')
+    await page.screenshot({ path: path.join(SHOTS, '04b2c-settings-mount-proxy.png') })
   }
 
   // 4e. 设置页“重新测试”（C，VISUAL_MOUNTS）：未验证的网盘

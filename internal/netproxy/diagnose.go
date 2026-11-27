@@ -2,8 +2,10 @@
 package netproxy
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"syscall"
@@ -32,6 +34,28 @@ const (
 	// KindOther: anything else (context cancelled, unknown).
 	KindOther ErrorKind = "other"
 )
+
+// IsTimeout reports whether err is a timeout: a context deadline, a
+// net.Error with Timeout(), or a wrapped "Client.Timeout"/"i/o
+// timeout" message. Callers use it to say 超时 in plain language
+// instead of leaking the raw Go error ("context deadline exceeded")
+// to the user.
+func IsTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "Client.Timeout") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "context deadline exceeded")
+}
 
 // ClassifyError decides which of the three shapes err is, for a
 // request to target. proxyAddr is the proxy host:port when one was

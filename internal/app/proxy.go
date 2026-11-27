@@ -90,7 +90,10 @@ type ProxyTestResult struct {
 // tests a direct connection, an id tests exactly that proxy.
 // The request runs with a 15s timeout and never sends credentials,
 // codes or tokens. Any HTTP response — even a 400/404 — proves the
-// path works: the point is reachability, not the status code.
+// path works: the point is reachability, not the status code, so a
+// success Detail never carries the status code (a bare "404" reads
+// like an error). Every Detail is plain language: timeouts say 超时,
+// and no raw Go error ever reaches the user.
 func (a *App) TestProxy(url, proxyRef string) ProxyTestResult {
 	target := strings.TrimSpace(url)
 	if target == "" {
@@ -107,10 +110,19 @@ func (a *App) TestProxy(url, proxyRef string) ProxyTestResult {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return ProxyTestResult{OK: false, Detail: fmt.Sprintf("测试请求建不起来：%v", err)}
+		return ProxyTestResult{OK: false, Detail: "测试请求建不起来，请检查网址后重试"}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
+		// A timeout is its own answer — it must say 超时, not
+		// "context deadline exceeded", and not be misread as a
+		// refused proxy or a blocked direct connection.
+		if netproxy.IsTimeout(err) {
+			if addr, _ := netproxy.ProxyForURLWith(cfg, target); addr != "" {
+				return ProxyTestResult{OK: false, Detail: "超时：15 秒内代理没有回应，请检查代理软件是否在运行、或换个节点再试"}
+			}
+			return ProxyTestResult{OK: false, Detail: "超时：15 秒内直连没有回应，请打开代理再试"}
+		}
 		// Classify against the proxy this request actually used
 		// (see ClassifyErrorWith): a dead per-mount proxy must
 		// read as proxy-down, never as a direct failure.
@@ -126,13 +138,13 @@ func (a *App) TestProxy(url, proxyRef string) ProxyTestResult {
 		case netproxy.KindDirect:
 			return ProxyTestResult{OK: false, Detail: fmt.Sprintf("直连 %s 被挡：请打开代理（跟随系统代理，或手动填代理地址）再试", host)}
 		default:
-			return ProxyTestResult{OK: false, Detail: fmt.Sprintf("代理测试失败：%v", err)}
+			return ProxyTestResult{OK: false, Detail: "代理测试失败：请检查代理设置和网络后重试"}
 		}
 	}
 	defer resp.Body.Close()
-	addr, via := netproxy.ProxyForURLWith(cfg, target)
+	addr, _ := netproxy.ProxyForURLWith(cfg, target)
 	if addr == "" {
-		return ProxyTestResult{OK: true, Detail: fmt.Sprintf("直连通（%s），不需要代理", resp.Status)}
+		return ProxyTestResult{OK: true, Detail: "正常，直连，不需要代理"}
 	}
-	return ProxyTestResult{OK: true, Detail: fmt.Sprintf("经代理 %s 连通（%s，%s）", addr, resp.Status, via)}
+	return ProxyTestResult{OK: true, Detail: fmt.Sprintf("正常，经代理 %s 连通", addr)}
 }
