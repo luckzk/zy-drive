@@ -12,16 +12,20 @@
 // backend, and update check is honestly marked "not wired yet"
 // (no update feed is configured in this repo).
 //
-// Motion (ai-design-skills, B7/B9): sections Reveal once on scroll
-// into view, rows stagger in, loading is skeleton blocks shaped like
-// the real rows (no "加载中…" text, no spinner).
-import { useCallback, useEffect, useState } from 'react'
+// Layout (v0.17.0, Drime 式)：七节排进顶栏 pill 组，一次只显示一节，
+// 切 tab 时内容按方向左右滑入/滑出（transform + opacity，220ms，
+// 基础曲线）。节内行为原样不动；所有 state 都在页面级，切 tab 不
+// 卸载任何内容，未保存的编辑原样保留。滚动 Reveal 已去掉——节不再
+// 以列表滚动呈现，Reveal 会和滑动打架；行 stagger 在面板内禁用
+// （tokens.css），否则每次回切都会重播。加载态是 skeleton 块
+// （no "加载中…" text, no spinner）。
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Agent, Mount, MountQuota, Settings, SystemProxyInfo, VersionInfo } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { formatSize, formatTime, mountStatusLabel, newId } from '../lib/format'
 import { t, type Lang } from '../lib/i18n'
 import { FRONTEND_VERSION } from '../version'
-import { Reveal, Skeleton, staggerStyle, useClosing } from '../components/motion'
+import { Skeleton, staggerStyle, useClosing } from '../components/motion'
 import { SectionIcon } from '../components/icons'
 
 type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network' | 'cache'
@@ -50,6 +54,88 @@ function SectionHead({
         {action}
       </div>
       <p className="settings-card-desc">{desc}</p>
+    </div>
+  )
+}
+
+// Segmented — Drime 式分段选择（2–4 个互斥选项）：容器是 pill 组，
+// 激活段是白色 pill（边框 + 轻阴影），与顶栏 tabs 同一视觉语言。
+function Segmented<T extends string>({
+  options,
+  value,
+  onChange,
+  ariaLabel,
+}: {
+  options: { value: T; label: string; disabled?: boolean }[]
+  value: T
+  onChange: (v: T) => void
+  ariaLabel: string
+}) {
+  return (
+    <div className="segmented" role="group" aria-label={ariaLabel}>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          className={`segmented-btn${value === o.value ? ' segmented-btn-active' : ''}`}
+          aria-pressed={value === o.value}
+          disabled={o.disabled}
+          onClick={() => onChange(o.value)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// Switch — Drime 式开关（灰底关 / 品牌绿底开，白圆钮，44×24）。
+function Switch({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean
+  onChange: (next: boolean) => void
+  label: string
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      className={`switch${checked ? ' switch-on' : ''}`}
+      onClick={() => onChange(!checked)}
+    >
+      <span className="switch-knob" />
+    </button>
+  )
+}
+
+// Row — 一行设置：标题 + 灰色说明在左，控件在右；需要整宽内容
+// （输入框等）时放 children，显示在标题行下面。
+function Row({
+  title,
+  desc,
+  control,
+  children,
+}: {
+  title: string
+  desc?: string
+  control?: React.ReactNode
+  children?: React.ReactNode
+}) {
+  return (
+    <div className="settings-row">
+      <div className="settings-row-head">
+        <div className="settings-row-main">
+          <div className="settings-row-title">{title}</div>
+          {desc && <div className="settings-row-desc">{desc}</div>}
+        </div>
+        {control && <div className="settings-row-control">{control}</div>}
+      </div>
+      {children && <div className="settings-row-body">{children}</div>}
     </div>
   )
 }
@@ -503,6 +589,49 @@ export default function SettingsPage({
     }
   }
 
+  // ---- 顶栏 tabs（Drime 式，v0.17.0） ----
+  // 七节按原顺序排进顶栏 pill 组；同一时间只显示一节。切 tab 时
+  // 新内容按移动方向滑入（向右切：从右侧进；向左切：从左侧进），
+  // 旧内容向反方向滑出；transform + opacity，220ms，基础曲线。
+  // 所有 state 都在页面级（draft/mounts/agents/cacheInfo/…），
+  // 面板只是 display:none 藏起来、并不卸载，所以切 tab 不丢任何
+  // 未保存的编辑（连未受控的 <details> 开合状态都在）。
+  const TABS: { id: SettingsSection; label: string }[] = [
+    { id: 'general', label: t(lang, 'general') },
+    { id: 'network', label: '网络' },
+    { id: 'drives', label: t(lang, 'drives') },
+    { id: 'sync', label: t(lang, 'syncDefaults') },
+    { id: 'cache', label: '缓存' },
+    { id: 'agent', label: t(lang, 'agent') },
+    { id: 'about', label: t(lang, 'about') },
+  ]
+  const TAB_ORDER: SettingsSection[] = TABS.map((tb) => tb.id)
+  const [activeTab, setActiveTab] = useState<SettingsSection>('general')
+  const [leavingTab, setLeavingTab] = useState<SettingsSection | null>(null)
+  const [slideDir, setSlideDir] = useState<'left' | 'right'>('right')
+  const leaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(
+    () => () => {
+      if (leaveTimer.current) clearTimeout(leaveTimer.current)
+    },
+    [],
+  )
+  const switchTab = (to: SettingsSection) => {
+    if (to === activeTab) return
+    const dir = TAB_ORDER.indexOf(to) > TAB_ORDER.indexOf(activeTab) ? 'right' : 'left'
+    if (leaveTimer.current) clearTimeout(leaveTimer.current)
+    setLeavingTab(activeTab)
+    setSlideDir(dir)
+    setActiveTab(to)
+    // 260ms 后（动画 220ms + 余量）把滑出的面板藏起来。
+    leaveTimer.current = setTimeout(() => setLeavingTab(null), 260)
+  }
+  const panelClass = (tab: SettingsSection) => {
+    if (tab === activeTab) return `settings-panel settings-panel-enter-${slideDir}`
+    if (tab === leavingTab) return `settings-panel settings-panel-exit-${slideDir}`
+    return 'settings-panel settings-panel-hidden'
+  }
+
   return (
     <div className="settings-page">
       <h1 style={{ marginTop: 0 }}>{t(lang, 'settings')}</h1>
@@ -513,8 +642,34 @@ export default function SettingsPage({
         </div>
       )}
 
+      {/* 顶栏 tabs（Drime 式 pill 组）：七节按原顺序排；切 tab 只换
+          下面一节的内容，节内行为（保存/测试/清理/Agent 操作）原样不动。 */}
+      <div className="settings-tabs" role="tablist" aria-label="设置分类">
+        {TABS.map((tb) => (
+          <button
+            key={tb.id}
+            type="button"
+            role="tab"
+            id={`settings-tab-${tb.id}`}
+            aria-selected={activeTab === tb.id}
+            aria-controls={`settings-panel-${tb.id}`}
+            className={`settings-tab${activeTab === tb.id ? ' settings-tab-active' : ''}`}
+            onClick={() => switchTab(tb.id)}
+          >
+            {tb.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="settings-viewport">
       {/* ---- 通用 ---- */}
-      <Reveal>
+      <div
+        className={panelClass('general')}
+        role="tabpanel"
+        id="settings-panel-general"
+        aria-labelledby="settings-tab-general"
+        aria-hidden={activeTab !== 'general'}
+      >
         <section className="settings-card">
         <SectionHead section="general" title={t(lang, 'general')} desc="外观、语言、下载文件夹与开机启动。" />
         {settingsLoading || !draft ? (
@@ -525,26 +680,37 @@ export default function SettingsPage({
           </div>
         ) : (
           <>
-            <div className="field">
-              <label>主题</label>
-              <select className="select" value={theme} onChange={(e) => changeTheme(e.target.value)}>
-                <option value="light">浅色</option>
-                <option value="dark">深色</option>
-              </select>
-              <div className="hint">切换后整个界面立即跟随，不用重启。</div>
-            </div>
-            <div className="field">
-              <label>语言 / Language</label>
-              <select className="select" value={lang} onChange={(e) => changeLanguage(e.target.value as Lang)}>
-                <option value="zh">中文</option>
-                <option value="en">English</option>
-              </select>
-              <div className="hint">
-                English 翻译目前只覆盖主界面（导航、顶栏、设置页标题与按钮）；文件浏览、同步任务、添加网盘向导等页面仍显示中文，未翻译的文案不假装已翻译。
-              </div>
-            </div>
-            <div className="field">
-              <label>默认下载文件夹</label>
+            <Row
+              title="主题"
+              desc="切换后整个界面立即跟随，不用重启。"
+              control={
+                <Segmented
+                  ariaLabel="主题"
+                  value={theme}
+                  onChange={(v) => changeTheme(v)}
+                  options={[
+                    { value: 'light', label: '浅色' },
+                    { value: 'dark', label: '深色' },
+                  ]}
+                />
+              }
+            />
+            <Row
+              title="语言 / Language"
+              desc="English 翻译目前只覆盖主界面（导航、顶栏、设置页标题与按钮）；文件浏览、同步任务、添加网盘向导等页面仍显示中文，未翻译的文案不假装已翻译。"
+              control={
+                <Segmented
+                  ariaLabel="语言"
+                  value={lang}
+                  onChange={(v) => changeLanguage(v as Lang)}
+                  options={[
+                    { value: 'zh', label: '中文' },
+                    { value: 'en', label: 'English' },
+                  ]}
+                />
+              }
+            />
+            <Row title="默认下载文件夹" desc="保存时会校验：路径必须存在且是一个文件夹，否则保存失败。">
               <div style={{ display: 'flex', gap: 8 }}>
                 <input
                   className="input"
@@ -559,22 +725,21 @@ export default function SettingsPage({
                   检查
                 </button>
               </div>
-              <div className="hint">保存时会校验：路径必须存在且是一个文件夹，否则保存失败。</div>
               {dirMsg && <div className="hint">{dirMsg}</div>}
-            </div>
+            </Row>
             <details className="settings-advanced">
               <summary>高级：开机启动</summary>
-              <div className="field" style={{ marginTop: 12 }}>
-                <label>开机启动</label>
+              <div style={{ marginTop: 12 }}>
                 {openAtLogin === null ? (
                   <p className="muted" style={{ margin: '4px 0' }}>
                     桌面版暂不支持：{loginNote ?? '当前运行方式下无法管理开机启动，需要打包后的桌面应用（macOS 上是系统设置 → 通用 → 登录项）。'}
                   </p>
                 ) : (
-                  <label className="radio-row">
-                    <input type="checkbox" checked={openAtLogin} onChange={() => void toggleLogin()} />
-                    <span>登录 Mac 时自动启动 ZyDrive{openAtLogin ? '（已开启）' : '（未开启）'}</span>
-                  </label>
+                  <Row
+                    title="开机启动"
+                    desc="登录 Mac 时自动启动 ZyDrive。"
+                    control={<Switch checked={openAtLogin} onChange={() => void toggleLogin()} label="开机启动" />}
+                  />
                 )}
                 {loginNote && openAtLogin !== null && <div className="hint">{loginNote}</div>}
               </div>
@@ -587,10 +752,16 @@ export default function SettingsPage({
           </>
         )}
         </section>
-      </Reveal>
+      </div>
 
       {/* ---- 网络 ---- */}
-      <Reveal>
+      <div
+        className={panelClass('network')}
+        role="tabpanel"
+        id="settings-panel-network"
+        aria-labelledby="settings-tab-network"
+        aria-hidden={activeTab !== 'network'}
+      >
         <section className="settings-card">
         <SectionHead section="network" title="网络" desc="网盘连接走不走代理。保存后立即生效，不用重启。" />
         {settingsLoading || !draft ? (
@@ -600,27 +771,22 @@ export default function SettingsPage({
           </div>
         ) : (
           <>
-            <div className="field">
-              <label>代理</label>
-              <label className="radio-row">
-                <input
-                  type="radio"
-                  name="proxy-mode"
-                  checked={draft.proxyMode === '' || draft.proxyMode === 'system'}
-                  onChange={() => changeProxyMode('system')}
+            <Row
+              title="代理"
+              desc="跟随系统代理：用 macOS 系统设置里的代理（包括 PAC 解析出的第一个代理）；没检测到系统代理时，改读 HTTP_PROXY / HTTPS_PROXY 环境变量。只影响新发起的请求，已在传的文件不受影响。"
+              control={
+                <Segmented
+                  ariaLabel="代理"
+                  value={draft.proxyMode === 'manual' ? 'manual' : draft.proxyMode === 'direct' ? 'direct' : 'system'}
+                  onChange={(v) => changeProxyMode(v)}
+                  options={[
+                    { value: 'system', label: '跟随系统代理' },
+                    { value: 'manual', label: '手动设置' },
+                    { value: 'direct', label: '直连' },
+                  ]}
                 />
-                <span>跟随系统代理（默认）</span>
-              </label>
-              <label className="radio-row">
-                <input type="radio" name="proxy-mode" checked={draft.proxyMode === 'manual'} onChange={() => changeProxyMode('manual')} />
-                <span>手动设置</span>
-              </label>
-              <label className="radio-row">
-                <input type="radio" name="proxy-mode" checked={draft.proxyMode === 'direct'} onChange={() => changeProxyMode('direct')} />
-                <span>直连（不走代理）</span>
-              </label>
-              <div className="hint">跟随系统代理：用 macOS 系统设置里的代理（包括 PAC 解析出的第一个代理）；没检测到系统代理时，改读 HTTP_PROXY / HTTPS_PROXY 环境变量。只影响新发起的请求，已在传的文件不受影响。</div>
-            </div>
+              }
+            />
             {systemProxy && (
               <p className="muted" style={{ margin: '0 0 12px' }}>
                 {systemProxy.via}
@@ -629,8 +795,7 @@ export default function SettingsPage({
             )}
             {draft.proxyMode === 'manual' && (
               <>
-                <div className="field">
-                  <label>HTTP 代理（可选）</label>
+                <Row title="HTTP 代理（可选）" desc="格式：http://主机:端口 或 https://主机:端口。留空表示 HTTP(S) 请求不走 HTTP 代理。">
                   <input
                     className="input"
                     placeholder="例如：http://127.0.0.1:7890"
@@ -638,10 +803,8 @@ export default function SettingsPage({
                     value={draft.proxyHttp}
                     onChange={(e) => setDraft({ ...draft, proxyHttp: e.target.value })}
                   />
-                  <div className="hint">格式：http://主机:端口 或 https://主机:端口。留空表示 HTTP(S) 请求不走 HTTP 代理。</div>
-                </div>
-                <div className="field">
-                  <label>SOCKS5 代理（可选）</label>
+                </Row>
+                <Row title="SOCKS5 代理（可选）" desc="格式：socks5://主机:端口。只有没填 HTTP 代理时才用 SOCKS5（与 macOS 的处理一致）。">
                   <input
                     className="input"
                     placeholder="例如：socks5://127.0.0.1:1080"
@@ -649,8 +812,7 @@ export default function SettingsPage({
                     value={draft.proxySocks5}
                     onChange={(e) => setDraft({ ...draft, proxySocks5: e.target.value })}
                   />
-                  <div className="hint">格式：socks5://主机:端口。只有没填 HTTP 代理时才用 SOCKS5（与 macOS 的处理一致）。</div>
-                </div>
+                </Row>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
                   <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
                     保存代理设置
@@ -669,10 +831,16 @@ export default function SettingsPage({
           </>
         )}
         </section>
-      </Reveal>
+      </div>
 
       {/* ---- 网盘 ---- */}
-      <Reveal>
+      <div
+        className={panelClass('drives')}
+        role="tabpanel"
+        id="settings-panel-drives"
+        aria-labelledby="settings-tab-drives"
+        aria-hidden={activeTab !== 'drives'}
+      >
         <section className="settings-card">
         <SectionHead section="drives" title={t(lang, 'drives')} desc="已添加的网盘：查看状态、重新授权、重新测试未验证的，或移除。" />
         {mountsLoading ? (
@@ -793,7 +961,7 @@ export default function SettingsPage({
                   </button>
                 </>
               ) : (
-                <button className="btn btn-sm" onClick={() => setDeletingMountId(m.id)}>
+                <button className="btn-danger btn-sm" onClick={() => setDeletingMountId(m.id)}>
                   {t(lang, 'delete')}
                 </button>
               )}
@@ -806,10 +974,16 @@ export default function SettingsPage({
           </p>
         )}
         </section>
-      </Reveal>
+      </div>
 
       {/* ---- 同步默认 ---- */}
-      <Reveal>
+      <div
+        className={panelClass('sync')}
+        role="tabpanel"
+        id="settings-panel-sync"
+        aria-labelledby="settings-tab-sync"
+        aria-hidden={activeTab !== 'sync'}
+      >
         <section className="settings-card">
         <SectionHead section="sync" title={t(lang, 'syncDefaults')} desc="新建同步任务时用这些默认值；已经建好的任务不受影响，各自保留原来的设置。" />
         {settingsLoading || !draft ? (
@@ -820,60 +994,70 @@ export default function SettingsPage({
           </div>
         ) : (
           <>
-            <div className="field">
-              <label>默认比较方式</label>
-              <select
-                className="select"
-                value={draft.syncCompare}
-                onChange={(e) => setDraft({ ...draft, syncCompare: e.target.value as Settings['syncCompare'] })}
-              >
-                <option value="size+time">大小 + 修改时间</option>
-                <option value="size">仅大小</option>
-                <option value="checksum">校验值</option>
-              </select>
-            </div>
-            <div className="field">
-              <label>冲突处理默认策略</label>
-              <select
-                className="select"
-                value={draft.syncConflict}
-                onChange={(e) => setDraft({ ...draft, syncConflict: e.target.value })}
-              >
-                <option value="keep-both">保留双方：新版占原名，另一份存为冲突副本</option>
-                <option value="ask" disabled>
-                  每次询问（未实现）
-                </option>
-                <option value="newer-wins" disabled>
-                  新版直接覆盖旧版（未实现）
-                </option>
-              </select>
-              <div className="hint">V0.1 引擎的冲突规则是固定的（新版占原名、另一份保留为冲突副本），其他策略后续版本再提供。</div>
-            </div>
+            <Row
+              title="默认比较方式"
+              control={
+                <Segmented
+                  ariaLabel="默认比较方式"
+                  value={draft.syncCompare}
+                  onChange={(v) => setDraft({ ...draft, syncCompare: v as Settings['syncCompare'] })}
+                  options={[
+                    { value: 'size+time', label: '大小 + 修改时间' },
+                    { value: 'size', label: '仅大小' },
+                    { value: 'checksum', label: '校验值' },
+                  ]}
+                />
+              }
+            />
+            <Row
+              title="冲突处理默认策略"
+              desc="V0.1 引擎的冲突规则是固定的（新版占原名、另一份保留为冲突副本），其他策略后续版本再提供。"
+              control={
+                <Segmented
+                  ariaLabel="冲突处理默认策略"
+                  value={draft.syncConflict}
+                  onChange={(v) => setDraft({ ...draft, syncConflict: v })}
+                  options={[
+                    { value: 'keep-both', label: '保留双方' },
+                    { value: 'ask', label: '每次询问', disabled: true },
+                    { value: 'newer-wins', label: '直接覆盖', disabled: true },
+                  ]}
+                />
+              }
+            />
             <details className="settings-advanced">
               <summary>高级：并发与限速（同步引擎已读取，保存后立即生效）</summary>
-              <div className="field" style={{ marginTop: 12 }}>
-                <label>默认并发数（1–16）</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={16}
-                  value={draft.syncConcurrency}
-                  onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
+              <div style={{ marginTop: 12 }}>
+                <Row
+                  title="默认并发数（1–16）"
+                  desc="同步时同时传几个文件（默认 4）。Drime 遇到 429 可能罚 15 小时，并发别乱调高；已建任务的并发在下次运行时取最新设置。"
+                  control={
+                    <input
+                      className="input"
+                      type="number"
+                      min={1}
+                      max={16}
+                      style={{ width: 120 }}
+                      value={draft.syncConcurrency}
+                      onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
+                    />
+                  }
                 />
-                <div className="hint">同步时同时传几个文件（默认 4）。Drime 遇到 429 可能罚 15 小时，并发别乱调高；已建任务的并发在下次运行时取最新设置。</div>
               </div>
-              <div className="field">
-                <label>限速（KB/s，0 = 不限速）</label>
-                <input
-                  className="input"
-                  type="number"
-                  min={0}
-                  value={draft.syncSpeedLimitKBps}
-                  onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
-                />
-                <div className="hint">全局上限：所有传输加起来不超过这个速度（不是每个文件一路）。0 = 不限速。</div>
-              </div>
+              <Row
+                title="限速（KB/s，0 = 不限速）"
+                desc="全局上限：所有传输加起来不超过这个速度（不是每个文件一路）。0 = 不限速。"
+                control={
+                  <input
+                    className="input"
+                    type="number"
+                    min={0}
+                    style={{ width: 120 }}
+                    value={draft.syncSpeedLimitKBps}
+                    onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
+                  />
+                }
+              />
             </details>
             <div style={{ marginBottom: 0 }}>
               <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
@@ -883,10 +1067,16 @@ export default function SettingsPage({
           </>
         )}
         </section>
-      </Reveal>
+      </div>
 
       {/* ---- 缓存（v0.9.1 预览缓存） ---- */}
-      <Reveal>
+      <div
+        className={panelClass('cache')}
+        role="tabpanel"
+        id="settings-panel-cache"
+        aria-labelledby="settings-tab-cache"
+        aria-hidden={activeTab !== 'cache'}
+      >
         <section className="settings-card">
         <SectionHead section="cache" title="缓存" desc="预览缓存：用系统应用打开文件时下载下来的副本。云端有原件，清理不会丢东西；应用内直接预览不进缓存。" />
         {settingsLoading || !draft ? (
@@ -896,35 +1086,43 @@ export default function SettingsPage({
           </div>
         ) : (
           <>
-            <p style={{ margin: '0 0 12px' }}>
-              {cacheLoading
-                ? '正在读取缓存大小…'
-                : cacheInfo
-                  ? `当前占用 ${formatSize(cacheInfo.sizeBytes)}（${cacheInfo.fileCount} 个文件），上限 ${cacheInfo.limitMB >= 1024 ? `${cacheInfo.limitMB / 1024} GB` : `${cacheInfo.limitMB} MB`}。`
-                  : '缓存信息暂不可用（后端没返回）。'}
-            </p>
-            <div className="field">
-              <label>缓存上限</label>
-              <select
-                className="select"
-                value={draft.previewCacheLimitMB}
-                onChange={(e) => setDraft({ ...draft, previewCacheLimitMB: Number(e.target.value) })}
-              >
-                <option value={512}>500 MB</option>
-                <option value={1024}>1 GB</option>
-                <option value={2048}>2 GB</option>
-                <option value={5120}>5 GB</option>
-              </select>
-              <div className="hint">超上限时按最后访问时间淘汰最久没用的文件；最近 5 分钟内打开过的文件不会被淘汰。改小上限保存后立即裁剪。</div>
-            </div>
-            <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
-              <input
-                type="checkbox"
-                checked={draft.previewCacheClearOnExit}
-                onChange={(e) => setDraft({ ...draft, previewCacheClearOnExit: e.target.checked })}
-              />
-              退出时清理缓存
-            </label>
+            <Row
+              title="当前占用"
+              desc={
+                cacheLoading
+                  ? '正在读取缓存大小…'
+                  : cacheInfo
+                    ? `${formatSize(cacheInfo.sizeBytes)}（${cacheInfo.fileCount} 个文件），上限 ${cacheInfo.limitMB >= 1024 ? `${cacheInfo.limitMB / 1024} GB` : `${cacheInfo.limitMB} MB`}。`
+                    : '缓存信息暂不可用（后端没返回）。'
+              }
+            />
+            <Row
+              title="缓存上限"
+              desc="超上限时按最后访问时间淘汰最久没用的文件；最近 5 分钟内打开过的文件不会被淘汰。改小上限保存后立即裁剪。"
+              control={
+                <Segmented
+                  ariaLabel="缓存上限"
+                  value={String(draft.previewCacheLimitMB)}
+                  onChange={(v) => setDraft({ ...draft, previewCacheLimitMB: Number(v) })}
+                  options={[
+                    { value: '512', label: '500 MB' },
+                    { value: '1024', label: '1 GB' },
+                    { value: '2048', label: '2 GB' },
+                    { value: '5120', label: '5 GB' },
+                  ]}
+                />
+              }
+            />
+            <Row
+              title="退出时清理缓存"
+              control={
+                <Switch
+                  checked={draft.previewCacheClearOnExit}
+                  onChange={(next) => setDraft({ ...draft, previewCacheClearOnExit: next })}
+                  label="退出时清理缓存"
+                />
+              }
+            />
             <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
               <button
                 className="btn-primary"
@@ -946,10 +1144,16 @@ export default function SettingsPage({
           </>
         )}
         </section>
-      </Reveal>
+      </div>
 
       {/* ---- Agent（V0.1 原样保留） ---- */}
-      <Reveal>
+      <div
+        className={panelClass('agent')}
+        role="tabpanel"
+        id="settings-panel-agent"
+        aria-labelledby="settings-tab-agent"
+        aria-hidden={activeTab !== 'agent'}
+      >
         <section className="settings-card">
         <SectionHead
           section="agent"
@@ -1082,7 +1286,7 @@ export default function SettingsPage({
                   </button>
                 </>
               ) : (
-                <button className="btn btn-sm" onClick={() => setDeletingId(a.id)}>
+                <button className="btn-danger btn-sm" onClick={() => setDeletingId(a.id)}>
                   {t(lang, 'delete')}
                 </button>
               )}
@@ -1090,25 +1294,29 @@ export default function SettingsPage({
           ))
         )}
         </section>
-      </Reveal>
+      </div>
 
       {/* ---- 关于 ---- */}
-      <Reveal>
+      <div
+        className={panelClass('about')}
+        role="tabpanel"
+        id="settings-panel-about"
+        aria-labelledby="settings-tab-about"
+        aria-hidden={activeTab !== 'about'}
+      >
         <section className="settings-card">
         <SectionHead section="about" title={t(lang, 'about')} desc="版本信息。" />
-        <p style={{ margin: '4px 0' }}>
-          后端版本：<strong>{versions?.backend ?? '—'}</strong>
-        </p>
-        <p style={{ margin: '4px 0' }}>
-          前端版本：<strong>{FRONTEND_VERSION}</strong>
-        </p>
-        <p style={{ margin: '4px 0' }}>
-          协议版本：<strong>{versions?.protocol ?? '—'}</strong>
-          {versions?.engine ? ` · 同步引擎 ${versions.engine}` : ''}
-        </p>
+        <Row title="后端版本" control={<span>{versions?.backend ?? '—'}</span>} />
+        <Row title="前端版本" control={<span>{FRONTEND_VERSION}</span>} />
+        <Row
+          title="协议版本"
+          desc={versions?.engine ? `同步引擎 ${versions.engine}` : undefined}
+          control={<span>{versions?.protocol ?? '—'}</span>}
+        />
         <div className="notice-box" style={{ marginBottom: 0 }}>暂未接入检查更新：还没有配置更新源（mygo Updater 需要打包时配置更新 feed），所以这里不假装检查过。当前版本见上方。</div>
         </section>
-      </Reveal>
+      </div>
+      </div>
 
       {editingRoot && (
         <div className={`dialog-backdrop${rootDialogClosing ? ' closing' : ''}`} onClick={requestRootDialogClose}>

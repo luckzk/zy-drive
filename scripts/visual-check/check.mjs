@@ -2470,14 +2470,14 @@ try {
   await page.waitForTimeout(600)
   await page.screenshot({ path: path.join(SHOTS, '04-settings.png') })
 
-  // 4b2. 设置页分组卡片 + 选择框断言：每节一张卡（背景 --card、
-  // 圆角 16px、节间距 24px、顶部 3px 品牌绿条），选择框统一样式
-  // （自定义箭头、固定高度 40px、圆角 8px）；节标题 18px +
-  // flat-color-icons 小图标，标题下有分割线；次要控件收进
-  // “高级”折叠（通用：开机启动；同步默认：并发与限速）。
+  // 4b2. 设置页分组卡片 + 分段选择断言：每节一张卡（背景 --card、
+  // 圆角 16px、节间距 24px、顶部 3px 品牌绿条），节标题 18px 加粗
+  // （Drime 式，本页特批）+ flat-color-icons 小图标，标题下有分割线；
+  // 互斥选项是分段选择（主题/语言/代理/比较方式/冲突策略/缓存上限），
+  // 激活段是白色 pill；次要控件收进“高级”折叠（通用：开机启动；
+  // 同步默认：并发与限速）。
   const settingsCards = await page.evaluate(() => {
     const cards = [...document.querySelectorAll('.settings-card')]
-    const selects = [...document.querySelectorAll('.settings-card select')]
     const cardInfo = cards.map((c) => {
       const cs = getComputedStyle(c)
       const r = c.getBoundingClientRect()
@@ -2498,22 +2498,22 @@ try {
         hasDivider: headCs ? headCs.borderBottomWidth !== '0px' : false,
       }
     })
-    const selectInfo = selects.map((s) => {
-      const cs = getComputedStyle(s)
-      const r = s.getBoundingClientRect()
+    const segInfo = [...document.querySelectorAll('.settings-card .segmented')].map((g) => {
+      const btns = [...g.querySelectorAll('.segmented-btn')]
+      const active = btns.find((b) => b.getAttribute('aria-pressed') === 'true')
+      const acs = active ? getComputedStyle(active) : null
       return {
-        h: Math.round(r.height),
-        radius: cs.borderTopLeftRadius,
-        appearance: cs.appearance,
-        hasArrow: cs.backgroundImage.includes('svg'),
-        disabled: s.disabled,
+        label: g.getAttribute('aria-label'),
+        count: btns.length,
+        activeLabel: active?.textContent?.trim() ?? null,
+        activeBg: acs?.backgroundColor ?? null,
+        activeShadow: acs?.boxShadow ?? null,
       }
     })
     return {
       cardCount: cards.length,
       cardInfo,
-      selectCount: selects.length,
-      selectInfo,
+      segInfo,
       advancedCount: document.querySelectorAll('.settings-card .settings-advanced').length,
     }
   })
@@ -2527,22 +2527,160 @@ try {
       failures.push(`设置卡片顶部应有 3px 品牌绿标识，实测 ${c.borderTopWidth} ${c.borderTopColor}`)
     }
     if (c.h2Size !== '18px') failures.push(`设置节标题字号应为 18px，实测 ${c.h2Size}`)
-    if (c.h2Weight !== '400') failures.push(`设置节标题字重应保持 400，实测 ${c.h2Weight}`)
+    if (c.h2Weight !== '700') failures.push(`设置节标题字重应为 700（Drime 式加粗，本页特批），实测 ${c.h2Weight}`)
     if (!c.hasIcon) failures.push('设置节标题旁没有 flat-color-icons 小图标')
     if (!c.hasDivider) failures.push('设置节标题下没有分割线')
   }
   if (settingsCards.advancedCount < 2) failures.push(`设置页“高级”折叠应至少 2 处（通用开机启动、同步默认并发与限速），实测 ${settingsCards.advancedCount} 处`)
-  if (settingsCards.selectCount === 0) failures.push('设置页里找不到选择框（.settings-card select）')
-  for (const s of settingsCards.selectInfo) {
-    if (s.h < 38 || s.h > 42) failures.push(`选择框高度应为 40px 左右，实测 ${s.h}px`)
-    if (s.radius !== '8px') failures.push(`选择框圆角应为 8px，实测 ${s.radius}`)
-    if (s.appearance !== 'none') failures.push(`选择框应去掉浏览器默认外观（appearance: none），实测 ${s.appearance}`)
-    if (!s.hasArrow) failures.push('选择框没有自定义下拉箭头（background-image 应含 SVG）')
+  // 分段选择（v0.17.0）：主题/语言/代理/比较方式/冲突策略/缓存上限共 6 组，
+  // 每组恰一个激活段，激活段是白色 pill（边框 + 轻阴影）。
+  if (settingsCards.segInfo.length < 6) failures.push(`设置页分段选择应至少 6 组，实测 ${settingsCards.segInfo.length} 组`)
+  for (const g of settingsCards.segInfo) {
+    if (!g.activeLabel) failures.push(`分段选择“${g.label}”没有激活段`)
+    if (g.activeBg !== 'rgb(255, 255, 255)') failures.push(`分段选择“${g.label}”激活段应是白色 pill，实测 ${g.activeBg}`)
+    if (!g.activeShadow || g.activeShadow === 'none') failures.push(`分段选择“${g.label}”激活段应有轻阴影`)
   }
+
+  // 4b2t. 设置页顶栏 tabs（Drime 式，v0.17.0）：七节横排 pill 组，
+  // 激活项是白色 pill（边框 + 轻阴影）；一次只显示一节；切 tab
+  // 时新内容按方向滑入（向右切从右侧进）、旧内容向反方向滑出；
+  // 未保存的编辑切走再切回还在；缓存开关是 Drime 式 switch。
+  const tabsInfo = await page.evaluate(() => {
+    const list = document.querySelector('.settings-tabs[role="tablist"]')
+    const tabs = [...document.querySelectorAll('.settings-tabs [role="tab"]')]
+    const active = tabs.find((tb) => tb.getAttribute('aria-selected') === 'true')
+    const acs = active ? getComputedStyle(active) : null
+    const visiblePanels = [...document.querySelectorAll('.settings-panel')].filter((p) => getComputedStyle(p).display !== 'none')
+    return {
+      hasList: !!list,
+      labels: tabs.map((tb) => tb.textContent?.trim()),
+      activeLabel: active?.textContent?.trim() ?? null,
+      activeBg: acs?.backgroundColor ?? null,
+      activeShadow: acs?.boxShadow ?? null,
+      panelCount: document.querySelectorAll('.settings-panel').length,
+      visiblePanelCount: visiblePanels.length,
+      visiblePanelId: visiblePanels[0]?.id ?? null,
+    }
+  })
+  console.log('settings tabs:', JSON.stringify(tabsInfo))
+  if (!tabsInfo.hasList) failures.push('设置页没有顶栏 tab 组（.settings-tabs[role="tablist"]）')
+  const EXPECT_TABS = ['通用', '网络', '网盘', '同步默认', '缓存', 'Agent', '关于']
+  if (JSON.stringify(tabsInfo.labels) !== JSON.stringify(EXPECT_TABS)) failures.push(`设置顶栏应为七节 ${EXPECT_TABS.join('/')}，实测 ${JSON.stringify(tabsInfo.labels)}`)
+  if (tabsInfo.activeLabel !== '通用') failures.push(`默认激活的 tab 应为“通用”，实测 ${tabsInfo.activeLabel}`)
+  if (tabsInfo.activeBg !== 'rgb(255, 255, 255)') failures.push(`激活 tab 应是白色 pill，实测背景 ${tabsInfo.activeBg}`)
+  if (!tabsInfo.activeShadow || tabsInfo.activeShadow === 'none') failures.push('激活 tab 应有轻阴影')
+  if (tabsInfo.panelCount !== 7) failures.push(`设置面板应为 7 个（七节各一），实测 ${tabsInfo.panelCount}`)
+  if (tabsInfo.visiblePanelCount !== 1 || tabsInfo.visiblePanelId !== 'settings-panel-general') failures.push(`一次只应显示一节（通用），实测可见 ${tabsInfo.visiblePanelCount} 个（${tabsInfo.visiblePanelId}）`)
+  // 未保存的编辑：在通用填下载文件夹（不保存），切走再切回还在。
+  await page.locator('#settings-panel-general .input').first().fill('/tmp/zy-drive-draft-keep')
+  // 向右切（通用→缓存）：新内容应从右侧滑入（中途 transform tx > 0），
+  // 旧内容向左滑出（tx < 0）；落定后只有缓存可见。
+  await page.getByRole('tab', { name: '缓存', exact: true }).click()
+  await page.waitForTimeout(80)
+  const slideRight = await page.evaluate(() => {
+    const parseTx = (el) => {
+      if (!el) return null
+      const tr = getComputedStyle(el).transform
+      const m = tr.match(/matrix\([^,]+,[^,]+,[^,]+,[^,]+,\s*([-\d.]+)/)
+      return m ? parseFloat(m[1]) : null
+    }
+    const entering = document.querySelector('#settings-panel-cache')
+    const leaving = document.querySelector('#settings-panel-general')
+    return {
+      enterTx: parseTx(entering),
+      enterOpacity: entering ? parseFloat(getComputedStyle(entering).opacity) : null,
+      leaveTx: parseTx(leaving),
+      enterDur: entering ? getComputedStyle(entering).animationDuration : null,
+      enterCurve: entering ? getComputedStyle(entering).animationTimingFunction : null,
+    }
+  })
+  console.log('slide right mid-animation:', JSON.stringify(slideRight))
+  if (slideRight.enterTx === null || slideRight.enterTx <= 0 || slideRight.enterTx > 24) failures.push(`向右切时新内容应从右侧滑入（tx 在 0~24 之间），实测 ${slideRight.enterTx}`)
+  if (slideRight.leaveTx === null || slideRight.leaveTx >= 0 || slideRight.leaveTx < -24) failures.push(`向右切时旧内容应向左滑出（tx 在 -24~0 之间），实测 ${slideRight.leaveTx}`)
+  if (slideRight.enterOpacity !== null && !(slideRight.enterOpacity > 0 && slideRight.enterOpacity < 1)) failures.push(`滑动中途新内容 opacity 应在 0~1 之间，实测 ${slideRight.enterOpacity}`)
+  if (slideRight.enterDur !== '0.22s') failures.push(`滑动时长应为 220ms，实测 ${slideRight.enterDur}`)
+  if (slideRight.enterCurve !== 'cubic-bezier(0.22, 1, 0.36, 1)') failures.push(`滑动曲线应为基础曲线，实测 ${slideRight.enterCurve}`)
+  await page.waitForTimeout(400)
+  const cacheVisible = await page.evaluate(() => {
+    const panels = [...document.querySelectorAll('.settings-panel')].filter((p) => getComputedStyle(p).display !== 'none')
+    const cache = document.querySelector('#settings-panel-cache')
+    return { visible: panels.map((p) => p.id), cacheText: cache?.textContent ?? '' }
+  })
+  if (JSON.stringify(cacheVisible.visible) !== JSON.stringify(['settings-panel-cache'])) failures.push(`落定后应只显示缓存一节，实测 ${JSON.stringify(cacheVisible.visible)}`)
+  if (!cacheVisible.cacheText.includes('1.2 MB')) failures.push('切到缓存后没有显示缓存占用（桩 1.2 MB）')
+  await page.screenshot({ path: path.join(SHOTS, '04b0-settings-tabs-cache.png') })
+  // 开关（Drime 式）：退出时清理缓存是 role=switch，44×24，关时灰底；
+  // 点一下开（轨道变品牌绿），再点一下恢复关（草稿不保存，不影响后文）。
+  const switchInfo = await page.evaluate(() => {
+    const sw = document.querySelector('#settings-panel-cache [role="switch"]')
+    if (!sw) return { found: false }
+    const cs = getComputedStyle(sw)
+    const r = sw.getBoundingClientRect()
+    const knob = sw.querySelector('.switch-knob')
+    const kcs = knob ? getComputedStyle(knob) : null
+    return {
+      found: true,
+      checked: sw.getAttribute('aria-checked'),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      trackBg: cs.backgroundColor,
+      knobBg: kcs?.backgroundColor ?? null,
+    }
+  })
+  console.log('cache switch:', JSON.stringify(switchInfo))
+  if (!switchInfo.found) failures.push('缓存卡里没有开关（退出时清理缓存应是 Drime 式 switch）')
+  if (switchInfo.found && switchInfo.checked !== 'false') failures.push(`退出时清理缓存默认应关，实测 aria-checked=${switchInfo.checked}`)
+  if (switchInfo.found && (switchInfo.w !== 44 || switchInfo.h !== 24)) failures.push(`开关应为 44×24，实测 ${switchInfo.w}×${switchInfo.h}`)
+  if (switchInfo.found && switchInfo.trackBg !== 'rgb(200, 200, 200)') failures.push(`开关关时轨道应为灰色 rgb(200, 200, 200)，实测 ${switchInfo.trackBg}`)
+  if (switchInfo.found && switchInfo.knobBg !== 'rgb(255, 255, 255)') failures.push(`开关钮应为白色，实测 ${switchInfo.knobBg}`)
+  if (switchInfo.found) {
+    await page.locator('#settings-panel-cache [role="switch"]').click()
+    await page.waitForTimeout(300)
+    const on = await page.evaluate(() => {
+      const sw = document.querySelector('#settings-panel-cache [role="switch"]')
+      return { checked: sw?.getAttribute('aria-checked') ?? null, trackBg: sw ? getComputedStyle(sw).backgroundColor : null }
+    })
+    if (on.checked !== 'true' || on.trackBg !== 'rgb(86, 225, 108)') failures.push(`点开关后应开（aria-checked=true，轨道品牌绿），实测 ${JSON.stringify(on)}`)
+    await page.locator('#settings-panel-cache [role="switch"]').click()
+    await page.waitForTimeout(300)
+    const off = await page.evaluate(() => document.querySelector('#settings-panel-cache [role="switch"]')?.getAttribute('aria-checked'))
+    if (off !== 'false') failures.push(`再点开关后应恢复关，实测 ${off}`)
+  }
+  // 向左切（缓存→通用）：新内容应从左侧滑入（tx < 0），旧内容向右滑出。
+  await page.getByRole('tab', { name: '通用', exact: true }).click()
+  await page.waitForTimeout(80)
+  const slideLeft = await page.evaluate(() => {
+    const parseTx = (el) => {
+      if (!el) return null
+      const tr = getComputedStyle(el).transform
+      const m = tr.match(/matrix\([^,]+,[^,]+,[^,]+,[^,]+,\s*([-\d.]+)/)
+      return m ? parseFloat(m[1]) : null
+    }
+    const entering = document.querySelector('#settings-panel-general')
+    const leaving = document.querySelector('#settings-panel-cache')
+    return { enterTx: parseTx(entering), leaveTx: parseTx(leaving) }
+  })
+  console.log('slide left mid-animation:', JSON.stringify(slideLeft))
+  if (slideLeft.enterTx === null || slideLeft.enterTx >= 0 || slideLeft.enterTx < -24) failures.push(`向左切时新内容应从左侧滑入（tx 在 -24~0 之间），实测 ${slideLeft.enterTx}`)
+  if (slideLeft.leaveTx === null || slideLeft.leaveTx <= 0 || slideLeft.leaveTx > 24) failures.push(`向左切时旧内容应向右滑出（tx 在 0~24 之间），实测 ${slideLeft.leaveTx}`)
+  await page.waitForTimeout(400)
+  const draftKept = await page.evaluate(() => {
+    const input = document.querySelector('#settings-panel-general .input')
+    return { value: input?.value ?? null }
+  })
+  if (draftKept.value !== '/tmp/zy-drive-draft-keep') failures.push(`切走再切回后未保存的下载文件夹编辑应还在，实测 ${JSON.stringify(draftKept.value)}`)
+  await page.screenshot({ path: path.join(SHOTS, '04b0b-settings-tabs-general.png') })
+  // 通用“高级：开机启动”折叠展开看一眼（桩里开不了机启动，显示诚实说明）。
+  await page.locator('#settings-panel-general .settings-advanced summary').click()
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: path.join(SHOTS, '04b0c-settings-general-advanced.png') })
 
   // 4b3. 设置页“网络”区（v0.8.5）：三选一（跟随系统代理默认 /
   // 手动设置 / 直连）+ 检测到的系统代理一行 + 手动地址字段 +
   // “测试代理”按钮。桩的系统代理是 127.0.0.1:7890。
+  // 切 tab 后再操作：平时藏起来的节是 display:none，先切到对应 tab。
+  await page.getByRole('tab', { name: '网络', exact: true }).click()
+  await page.waitForTimeout(350)
   const networkSection = await page.evaluate(() => {
     const card = [...document.querySelectorAll('.settings-card')].find((c) => {
       const h2 = c.querySelector('h2')
@@ -2550,13 +2688,15 @@ try {
     })
     if (!card) return { found: false }
     const text = card.textContent ?? ''
-    const radios = [...card.querySelectorAll('input[type="radio"]')].map((r) => ({ checked: r.checked }))
+    const seg = card.querySelector('.segmented[aria-label="代理"]')
+    const segBtns = seg ? [...seg.querySelectorAll('.segmented-btn')] : []
+    const activeSeg = segBtns.find((b) => b.getAttribute('aria-pressed') === 'true')
     return {
       found: true,
-      hasSystem: text.includes('跟随系统代理'),
-      hasManual: text.includes('手动设置'),
-      hasDirect: text.includes('直连'),
-      systemChecked: radios[0]?.checked ?? null,
+      hasSystem: segBtns.some((b) => b.textContent?.trim() === '跟随系统代理'),
+      hasManual: segBtns.some((b) => b.textContent?.trim() === '手动设置'),
+      hasDirect: segBtns.some((b) => b.textContent?.trim() === '直连'),
+      systemChecked: activeSeg?.textContent?.trim() === '跟随系统代理',
       detectedLine: text.includes('系统代理：http://127.0.0.1:7890'),
       hasTestBtn: [...card.querySelectorAll('button')].some((b) => (b.textContent ?? '').trim() === '测试代理'),
       hasManualFields: text.includes('HTTP 代理'),
@@ -2571,7 +2711,7 @@ try {
     if (!networkSection.hasTestBtn) failures.push('网络区没有“测试代理”按钮')
     if (networkSection.hasManualFields) failures.push('手动地址字段在“跟随系统代理”模式下不应显示')
     // 切到手动设置：地址字段出现，填 HTTP 代理、保存、测试。
-    await page.locator('.settings-card', { hasText: '网络' }).getByRole('radio', { name: '手动设置' }).click()
+    await page.getByRole('button', { name: '手动设置', exact: true }).click()
     await page.waitForTimeout(300)
     const manualShown = await page.evaluate(() => {
       const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '网络')
@@ -2596,23 +2736,27 @@ try {
   // （桩：1.2 MB、3 个文件、上限 2 GB）、上限选择框默认 2 GB、
   // “退出时清理缓存”开关、点“清理缓存”后提示释放了多少。
   {
+    // 切 tab 后再操作：平时藏起来的节是 display:none，先切到对应 tab。
+    await page.getByRole('tab', { name: '缓存', exact: true }).click()
+    await page.waitForTimeout(350)
     const cacheCard = await page.evaluate(() => {
       const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '缓存')
       if (!card) return { found: false }
-      const select = card.querySelector('select')
+      const seg = card.querySelector('.segmented[aria-label="缓存上限"]')
+      const activeSeg = seg?.querySelector('.segmented-btn[aria-pressed="true"]')
       return {
         found: true,
         text: card.textContent ?? '',
-        limitValue: select?.value ?? null,
+        limitValue: activeSeg?.textContent?.trim() ?? null,
         hasClearBtn: [...card.querySelectorAll('button')].some((b) => b.textContent?.trim() === '清理缓存'),
-        hasExitToggle: [...card.querySelectorAll('label')].some((l) => l.textContent?.includes('退出时清理缓存')),
+        hasExitToggle: !!card.querySelector('[role="switch"][aria-label="退出时清理缓存"]'),
       }
     })
     console.log('cache card:', JSON.stringify(cacheCard))
     if (!cacheCard.found) failures.push('设置页里没有“缓存”卡')
     if (cacheCard.found && !cacheCard.text.includes('1.2 MB')) failures.push(`缓存卡没有显示当前占用“1.2 MB”（桩 PreviewCacheInfo.sizeBytes=1234567），实测 ${JSON.stringify(cacheCard.text.slice(0, 200))}`)
     if (cacheCard.found && !cacheCard.text.includes('3 个文件')) failures.push('缓存卡没有显示文件数“3 个文件”')
-    if (cacheCard.found && cacheCard.limitValue !== '2048') failures.push(`缓存上限选择框默认应是 2 GB（2048），实测 ${cacheCard.limitValue}`)
+    if (cacheCard.found && cacheCard.limitValue !== '2 GB') failures.push(`缓存上限默认激活段应是 2 GB，实测 ${cacheCard.limitValue}`)
     if (cacheCard.found && !cacheCard.hasClearBtn) failures.push('缓存卡里没有“清理缓存”按钮')
     if (cacheCard.found && !cacheCard.hasExitToggle) failures.push('缓存卡里没有“退出时清理缓存”开关')
     if (cacheCard.found && cacheCard.hasClearBtn) {
@@ -2631,6 +2775,9 @@ try {
   // 网盘行显示的是 rootLabel（桶名），不是旧的 rootRef；S3 行有
   // “修改桶 / 前缀”入口，点开预填当前桶名。
   if (process.env.VISUAL_MOUNTS) {
+    // 切 tab 后再操作：平时藏起来的节是 display:none，先切到对应 tab。
+    await page.getByRole('tab', { name: '网盘', exact: true }).click()
+    await page.waitForTimeout(350)
     const editRoot = await page.evaluate(() => {
       const section = [...document.querySelectorAll('.settings-card')].find((c) => c.textContent?.includes('已添加的网盘'))
       if (!section) return { found: false }
@@ -2670,6 +2817,9 @@ try {
   // 后测试通过、徽章消失（桩的 TestMount 把 verified 翻 true，
   // ListMounts 返回 live 列表）。
   if (process.env.VISUAL_MOUNTS) {
+    // 切 tab 后再操作：平时藏起来的节是 display:none，先切到对应 tab。
+    await page.getByRole('tab', { name: '网盘', exact: true }).click()
+    await page.waitForTimeout(350)
     const retestBefore = await page.evaluate(() => {
       const section = [...document.querySelectorAll('.settings-card')].find((c) => c.textContent?.includes('已添加的网盘'))
       if (!section) return { found: false }
@@ -2706,6 +2856,9 @@ try {
   // 里有 API Token 字段（留空 = 不改），不再有“V0.2 接入”的
   // 旧提示；保存后 Agent 行上有“导出配置包”，填口令导出后
   // 显示文件路径。
+  // 切 tab 后再操作：平时藏起来的节是 display:none，先切到对应 tab。
+  await page.getByRole('tab', { name: 'Agent', exact: true }).click()
+  await page.waitForTimeout(350)
   await page.getByRole('button', { name: '添加 Agent', exact: true }).click()
   await page.waitForTimeout(400)
   const agentDialog = await page.evaluate(() => {
@@ -2763,6 +2916,9 @@ try {
   // 注意：按名字找“我的 R2”那行点——2i/2j 拖拽改了顺序，
   // 不能再假设列表第一行是 S3 网盘（v0.11.0 修）。
   if (process.env.VISUAL_MOUNTS) {
+    // 切 tab 后再操作：平时藏起来的节是 display:none，先切到对应 tab。
+    await page.getByRole('tab', { name: '网盘', exact: true }).click()
+    await page.waitForTimeout(350)
     const sidebarBefore = await page.locator('.sidebar').textContent()
     const mountCountBefore = (sidebarBefore?.match(/我的 R2/g) ?? []).length
     await page.locator('.settings-card', { hasText: '已添加的网盘' }).locator('.agent-row', { hasText: '我的 R2' }).getByRole('button', { name: '重新授权' }).click()
@@ -2825,10 +2981,23 @@ try {
   await page.evaluate(() => {
     document.documentElement.dataset.theme = 'dark'
   })
-  await page.waitForTimeout(200)
+  // 等 400ms：.settings-tab 的 background-color 有 220ms 过渡，
+  // 200ms 量会在过渡中途抓到中间色（曾实测 rgb(25, 28, 24)）。
+  await page.waitForTimeout(400)
   const darkBg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor)
   console.log('dark body background:', darkBg)
   if (darkBg !== 'rgb(23, 26, 22)') failures.push(`深色主题下页面底色应为 rgb(23, 26, 22)，实测 ${darkBg}`)
+  const darkSettings = await page.evaluate(() => {
+    const tab = document.querySelector('.settings-tab-active')
+    const card = document.querySelector('.settings-card')
+    return {
+      tabBg: tab ? getComputedStyle(tab).backgroundColor : null,
+      cardBg: card ? getComputedStyle(card).backgroundColor : null,
+    }
+  })
+  console.log('dark settings:', JSON.stringify(darkSettings))
+  if (darkSettings.tabBg !== 'rgb(23, 26, 22)') failures.push(`深色下激活 tab 应为纸面色 rgb(23, 26, 22)，实测 ${darkSettings.tabBg}`)
+  if (darkSettings.cardBg !== 'rgb(34, 40, 35)') failures.push(`深色下设置卡片应为 rgb(34, 40, 35)，实测 ${darkSettings.cardBg}`)
   await page.screenshot({ path: path.join(SHOTS, '04c-settings-dark.png') })
   await page.evaluate(() => {
     document.documentElement.dataset.theme = 'light'

@@ -211,7 +211,7 @@ button {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
 }
 .settings-card-head { margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 12px; }
-.settings-card-head h2 { margin: 0; font-size: 18px; line-height: 28px; }
+.settings-card-head h2 { margin: 0; font-size: 18px; line-height: 28px; font-weight: 700; /* 本页特批：用户明确要求按 Drime 加粗；其余页面仍 400 */ }
 .settings-card-title { display: flex; align-items: center; gap: 8px; }
 .settings-card-desc { margin: 4px 0 0; font-size: 13px; color: var(--ink-secondary); }
 .settings-advanced { border-top: 1px dashed var(--border); margin-top: 4px; padding-top: 12px; }
@@ -220,6 +220,82 @@ button {
 .settings-card .field:last-child { margin-bottom: 0; }
 .settings-card .empty { background: var(--paper); }
 .settings-card .agent-row { background: var(--paper); }
+
+/* ---- 设置页顶栏 tabs（Drime 式 pill 组，v0.17.0） ----
+   七节横排进一个 pill 组：激活项是白色 pill（边框 + 轻阴影），
+   其余是 plain text。只用 Drime tokens；深色主题下 --card/--paper
+   跟随 data-theme 变深，pill 仍是纸面色。 */
+.settings-tabs {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px;
+  margin-bottom: 16px;
+  background: var(--card);
+  border-radius: 999px;
+}
+.settings-tab {
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-secondary);
+  cursor: pointer;
+}
+.settings-tab:hover { color: var(--ink); }
+.settings-tab-active {
+  background: var(--paper);
+  color: var(--ink);
+  border-color: var(--border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+/* ---- 设置页 tab 内容区（v0.17.0） ----
+   七节叠在同一个 grid 格里（容器高度取最高一节，切 tab 时不跳动）；
+   overflow hidden 裁掉滑动过程，页面本身不横向溢出。切 tab 只换
+   下面一节：新内容按移动方向滑入（向右切从右侧进），旧内容向反
+   方向滑出；transform + opacity，220ms，基础曲线。非激活节只是
+   display:none 藏起来、并不卸载，未保存的编辑原样保留。
+   行 stagger 在面板内禁用：否则每次回切都会重播一遍。 */
+.settings-viewport { display: grid; overflow: hidden; }
+.settings-panel { grid-area: 1 / 1; min-width: 0; }
+.settings-panel-hidden { display: none; }
+.settings-panel .stagger-item { animation: none; }
+.settings-panel-enter-right { animation: settings-in-right 220ms var(--ease) both; }
+.settings-panel-enter-left { animation: settings-in-left 220ms var(--ease) both; }
+.settings-panel-exit-right { animation: settings-out-left 220ms var(--ease) both; }
+.settings-panel-exit-left { animation: settings-out-right 220ms var(--ease) both; }
+@keyframes settings-in-right { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes settings-in-left { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes settings-out-left { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(-24px); } }
+@keyframes settings-out-right { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
+
+/* ---- 设置页行（Drime 式，v0.17.0） ----
+   一行设置：标题 + 灰色说明在左，控件在右；行与行之间 1px 分隔线；
+   需要整宽内容的（输入框）放下一行。 */
+.settings-row { padding: 12px 0; }
+.settings-row + .settings-row { border-top: 1px solid var(--border); }
+.settings-row-head { display: flex; align-items: flex-start; gap: 12px; }
+.settings-row-main { flex: 1; min-width: 0; }
+.settings-row-title { font-size: 14px; }
+.settings-row-desc { margin-top: 2px; font-size: 13px; color: var(--ink-secondary); }
+.settings-row-control { flex-shrink: 0; }
+.settings-row-body { margin-top: 10px; }
+
+/* 分段选择（Drime 式）：pill 组容器，激活段是白色 pill（边框 +
+   轻阴影），与顶栏 tabs 同一视觉语言；容器描边让它在灰卡上也看得见。 */
+.segmented { display: inline-flex; gap: 2px; padding: 3px; background: var(--card); border: 1px solid var(--border); border-radius: 999px; }
+.segmented-btn { padding: 5px 12px; border: 1px solid transparent; border-radius: 999px; background: transparent; color: var(--ink-secondary); cursor: pointer; font-size: 13px; }
+.segmented-btn:hover { color: var(--ink); }
+.segmented-btn-active { background: var(--paper); color: var(--ink); border-color: var(--border); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08); }
+.segmented-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 开关（Drime 式）：灰底关 / 品牌绿底开，白圆钮，44×24。 */
+.switch { position: relative; flex-shrink: 0; width: 44px; height: 24px; padding: 0; border: none; border-radius: 999px; background: #c8c8c8; cursor: pointer; transition: background-color 200ms var(--ease); }
+.switch-on { background: var(--brand); }
+.switch-knob { position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2); transition: transform 200ms var(--ease); }
+.switch-on .switch-knob { transform: translateX(20px); }
+.switch:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ---- 徽章 / 状态 ---- */
 .badge {
@@ -897,6 +973,10 @@ button:active, .btn:active, .btn-primary:active, .btn-danger:active,
   @keyframes rise-sm-out { from { opacity: 1; } to { opacity: 0; } }
   @keyframes rise-x { from { opacity: 0; } to { opacity: 1; } }
   @keyframes rise-x-out { from { opacity: 1; } to { opacity: 0; } }
+  @keyframes settings-in-right { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes settings-in-left { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes settings-out-left { from { opacity: 1; } to { opacity: 0; } }
+  @keyframes settings-out-right { from { opacity: 1; } to { opacity: 0; } }
   .reveal { transform: none; }
   .skeleton { animation: none; }
   .collapse { transition: opacity 200ms var(--ease); }
