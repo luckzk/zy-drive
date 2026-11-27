@@ -33,6 +33,43 @@ func (a *App) PreviewJob(ctx context.Context, job *domain.SyncJob) (*sync.Plan, 
 	if err != nil {
 		return nil, fmt.Errorf("app: preview scan target: %w", err)
 	}
+	// Root kinds decide the file-root semantics. A Stat error means
+	// "not provably a file": folder behaviour is kept, exactly as
+	// Scan does, so a driver that cannot Stat a root changes
+	// nothing.
+	srcRoot, srcErr := src.Stat(ctx, job.SrcRef)
+	dstRoot, dstErr := dst.Stat(ctx, job.DstRef)
+	srcIsFile := srcErr == nil && !srcRoot.IsDir
+	dstIsFile := dstErr == nil && !dstRoot.IsDir
+	if len(srcSnap.Nodes) == 0 && srcIsFile {
+		// Scan seeds a file root whenever Stat sees it, so an
+		// empty snapshot for a file root means the scan itself
+		// could not read it — never silently plan zero items.
+		return nil, fmt.Errorf("app: preview: source %q is a single file but the scan found nothing under it — it may have been deleted, or the drive could not read it; no plan was built", job.SrcRef)
+	}
+	if dstIsFile && !srcIsFile {
+		// A whole folder cannot sync into one file.
+		return nil, fmt.Errorf("app: preview: target %q is a single file but the source is a folder — pick a folder as the target, or a single file as the source", job.DstRef)
+	}
+	if srcIsFile && dstIsFile {
+		// File-to-file: the target file receives the source file's
+		// content, whatever the two files are named. Re-key the
+		// target snapshot's single entry to the source file's name
+		// so Compare sees one path instead of a spurious
+		// upload-plus-delete pair.
+		var srcKey string
+		for k := range srcSnap.Nodes {
+			srcKey = k
+		}
+		if srcKey != "" {
+			for _, dn := range dstSnap.Nodes {
+				nd := dn
+				nd.Path = srcKey
+				dstSnap.Nodes = map[string]domain.Node{srcKey: nd}
+				break
+			}
+		}
+	}
 	switch job.Direction {
 	case domain.DirectionBidirectional:
 		srcChanges := sync.Compare(srcSnap, dstSnap, job.Compare, job.Exclude)
@@ -91,10 +128,12 @@ func (a *App) runJob(ctx context.Context, job *domain.SyncJob, plan *sync.Plan, 
 	conc, lim := a.transferEngineSettings()
 	// Plan item paths are relative to each side's sync root (see
 	// sync.Scan); re-attach the roots so execution touches the
-	// right folders — a job syncing /photos -> /backup reads
-	// "/photos/a.txt" and writes "/backup/a.txt".
-	src = sync.PrefixedProvider(src, job.SrcRef)
-	dst = sync.PrefixedProvider(dst, job.DstRef)
+	// right nodes — a job syncing /photos -> /backup reads
+	// "/photos/a.txt" and writes "/backup/a.txt", while a job whose
+	// root is a single file reads/writes that file itself
+	// (sync.RootedProvider picks the wrapper by Stat).
+	src = sync.RootedProvider(ctx, src, job.SrcRef)
+	dst = sync.RootedProvider(ctx, dst, job.DstRef)
 	runner := sync.NewRunner(a.Queue, conc, lim)
 	run, err := runner.Execute(ctx, plan, src, dst, job.SrcMount, job.DstMount)
 	if persist {

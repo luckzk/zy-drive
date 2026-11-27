@@ -4,10 +4,12 @@ package s3
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,6 +80,7 @@ type fakeVersion struct {
 type fakeS3 struct {
 	mu            sync.Mutex
 	objects       map[string][]byte
+	mtimes        map[string]time.Time
 	uploads       map[string]map[int][]byte
 	nextUpload    int
 	multipartUsed bool
@@ -90,7 +93,7 @@ type fakeS3 struct {
 }
 
 func newFakeS3() *fakeS3 {
-	return &fakeS3{objects: map[string][]byte{}, uploads: map[string]map[int][]byte{},
+	return &fakeS3{objects: map[string][]byte{}, mtimes: map[string]time.Time{}, uploads: map[string]map[int][]byte{},
 		versioning: "Enabled", versions: map[string][]fakeVersion{}}
 }
 
@@ -102,6 +105,13 @@ func (f *fakeS3) putVersionLocked(key string, data []byte) {
 		id: fmt.Sprintf("v%d", f.nextVersion), data: data, lastModified: time.Now().UTC(),
 	})
 	f.objects[key] = data
+	f.mtimes[key] = time.Now().UTC()
+}
+
+func xmlEsc(s string) string {
+	var b strings.Builder
+	_ = xml.EscapeText(&b, []byte(s))
+	return b.String()
 }
 
 func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +233,57 @@ func (f *fakeS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		sb.WriteString(`</ListVersionsResult>`)
 		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/xml")
+		_, _ = w.Write([]byte(sb.String()))
+	case r.Method == http.MethodGet && q.Get("list-type") == "2":
+		// ListObjectsV2: prefix + delimiter "/". Keys under the
+		// prefix with a "/" in the remainder collapse into
+		// CommonPrefixes; the rest are Contents.
+		prefix := q.Get("prefix")
+		delim := q.Get("delimiter")
+		f.mu.Lock()
+		keys := make([]string, 0, len(f.objects))
+		for k := range f.objects {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		type content struct {
+			key  string
+			size int
+			mod  time.Time
+		}
+		var contents []content
+		prefixes := map[string]bool{}
+		for _, k := range keys {
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			rest := strings.TrimPrefix(k, prefix)
+			if delim != "" {
+				if i := strings.Index(rest, delim); i >= 0 {
+					prefixes[prefix+rest[:i+1]] = true
+					continue
+				}
+			}
+			contents = append(contents, content{key: k, size: len(f.objects[k]), mod: f.mtimes[k]})
+		}
+		f.mu.Unlock()
+		var sb strings.Builder
+		sb.WriteString(`<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>test-bucket</Name>`)
+		fmt.Fprintf(&sb, `<Prefix>%s</Prefix><Delimiter>%s</Delimiter><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated>`, xmlEsc(prefix), xmlEsc(delim))
+		for _, c := range contents {
+			fmt.Fprintf(&sb, `<Contents><Key>%s</Key><LastModified>%s</LastModified><ETag>"fake-etag"</ETag><Size>%d</Size><StorageClass>STANDARD</StorageClass></Contents>`,
+				xmlEsc(c.key), c.mod.Format("2006-01-02T15:04:05.000Z"), c.size)
+		}
+		var pfx []string
+		for p := range prefixes {
+			pfx = append(pfx, p)
+		}
+		sort.Strings(pfx)
+		for _, p := range pfx {
+			fmt.Fprintf(&sb, `<CommonPrefixes><Prefix>%s</Prefix></CommonPrefixes>`, xmlEsc(p))
+		}
+		sb.WriteString(`</ListBucketResult>`)
 		w.Header().Set("Content-Type", "application/xml")
 		_, _ = w.Write([]byte(sb.String()))
 	case r.Method == http.MethodGet:
@@ -397,6 +458,47 @@ func TestS3VersionsDisabled(t *testing.T) {
 	}
 	if len(vs) != 0 {
 		t.Fatalf("Versions with versioning off: got %d, want 0", len(vs))
+	}
+}
+
+// TestS3ListFileRefReturnsEmpty pins the driver semantics the
+// sync engine used to trip over: List appends "/" to a ref that is
+// not already suffixed, so a file ref becomes a folder prefix that
+// matches nothing — empty list, nil error. The engine must not
+// depend on List to discover a file root (sync.Scan Stats the root
+// first); this test pins the behaviour so a future change to List
+// cannot silently change what the engine sees.
+func TestS3ListFileRefReturnsEmpty(t *testing.T) {
+	fake := newFakeS3()
+	srv := httptest.NewServer(fake)
+	defer srv.Close()
+	p := newTestS3Provider(t, srv.URL)
+	ctx := t.Context()
+	if _, err := p.Upload(ctx, "alpine.iso", strings.NewReader("iso-bytes"), 9); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	nodes, err := p.List(ctx, "alpine.iso")
+	if err != nil {
+		t.Fatalf("List of a file ref must not error: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("List of a file ref: got %d nodes %+v, want 0 (a file ref is treated as a folder prefix)", len(nodes), nodes)
+	}
+	// The same file is found by listing its parent.
+	nodes, err = p.List(ctx, "")
+	if err != nil {
+		t.Fatalf("List root: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].Name != "alpine.iso" {
+		t.Fatalf("List root: got %+v, want [alpine.iso]", nodes)
+	}
+	// And Stat still sees the file — this is what Scan uses now.
+	st, err := p.Stat(ctx, "alpine.iso")
+	if err != nil {
+		t.Fatalf("Stat file: %v", err)
+	}
+	if st.IsDir || st.Size != 9 {
+		t.Fatalf("Stat file: %+v, want a 9-byte file", st)
 	}
 }
 

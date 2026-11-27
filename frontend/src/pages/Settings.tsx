@@ -13,8 +13,8 @@
 // (no update feed is configured in this repo).
 //
 // Layout (v0.17.0, Drime 式)：七节排进顶栏 pill 组，一次只显示一节，
-// 切 tab 时内容按方向左右滑入/滑出（transform + opacity，220ms，
-// 基础曲线）。节内行为原样不动；所有 state 都在页面级，切 tab 不
+// 切 tab 时内容按方向左右滑入/滑出（transform + opacity，350ms，40px，
+// 基础曲线；220ms 太快看不到过渡，v0.17.1 放慢加长）。节内行为原样不动；所有 state 都在页面级，切 tab 不
 // 卸载任何内容，未保存的编辑原样保留。滚动 Reveal 已去掉——节不再
 // 以列表滚动呈现，Reveal 会和滑动打架；行 stagger 在面板内禁用
 // （tokens.css），否则每次回切都会重播。加载态是 skeleton 块
@@ -592,10 +592,11 @@ export default function SettingsPage({
   // ---- 顶栏 tabs（Drime 式，v0.17.0） ----
   // 七节按原顺序排进顶栏 pill 组；同一时间只显示一节。切 tab 时
   // 新内容按移动方向滑入（向右切：从右侧进；向左切：从左侧进），
-  // 旧内容向反方向滑出；transform + opacity，220ms，基础曲线。
+  // 旧内容向反方向滑出；transform + opacity，350ms，40px，基础曲线
+  // （220ms 太快看不到过渡，v0.17.1 放慢加长）。
   // 所有 state 都在页面级（draft/mounts/agents/cacheInfo/…），
   // 面板只是 display:none 藏起来、并不卸载，所以切 tab 不丢任何
-  // 未保存的编辑（连未受控的 <details> 开合状态都在）。
+  // 未保存的编辑。
   const TABS: { id: SettingsSection; label: string }[] = [
     { id: 'general', label: t(lang, 'general') },
     { id: 'network', label: '网络' },
@@ -623,8 +624,8 @@ export default function SettingsPage({
     setLeavingTab(activeTab)
     setSlideDir(dir)
     setActiveTab(to)
-    // 260ms 后（动画 220ms + 余量）把滑出的面板藏起来。
-    leaveTimer.current = setTimeout(() => setLeavingTab(null), 260)
+    // 390ms 后（动画 350ms + 余量）把滑出的面板藏起来。
+    leaveTimer.current = setTimeout(() => setLeavingTab(null), 390)
   }
   const panelClass = (tab: SettingsSection) => {
     if (tab === activeTab) return `settings-panel settings-panel-enter-${slideDir}`
@@ -727,23 +728,19 @@ export default function SettingsPage({
               </div>
               {dirMsg && <div className="hint">{dirMsg}</div>}
             </Row>
-            <details className="settings-advanced">
-              <summary>高级：开机启动</summary>
-              <div style={{ marginTop: 12 }}>
-                {openAtLogin === null ? (
-                  <p className="muted" style={{ margin: '4px 0' }}>
-                    桌面版暂不支持：{loginNote ?? '当前运行方式下无法管理开机启动，需要打包后的桌面应用（macOS 上是系统设置 → 通用 → 登录项）。'}
-                  </p>
-                ) : (
-                  <Row
-                    title="开机启动"
-                    desc="登录 Mac 时自动启动 ZyDrive。"
-                    control={<Switch checked={openAtLogin} onChange={() => void toggleLogin()} label="开机启动" />}
-                  />
-                )}
-                {loginNote && openAtLogin !== null && <div className="hint">{loginNote}</div>}
-              </div>
-            </details>
+            {openAtLogin === null ? (
+              <Row
+                title="开机启动"
+                desc={`桌面版暂不支持：${loginNote ?? '当前运行方式下无法管理开机启动，需要打包后的桌面应用（macOS 上是系统设置 → 通用 → 登录项）。'}`}
+              />
+            ) : (
+              <Row
+                title="开机启动"
+                desc="登录 Mac 时自动启动 ZyDrive。"
+                control={<Switch checked={openAtLogin} onChange={() => void toggleLogin()} label="开机启动" />}
+              />
+            )}
+            {loginNote && openAtLogin !== null && <div className="hint">{loginNote}</div>}
             <div style={{ marginBottom: 0, marginTop: 16 }}>
               <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
                 {t(lang, 'save')}
@@ -1025,40 +1022,35 @@ export default function SettingsPage({
                 />
               }
             />
-            <details className="settings-advanced">
-              <summary>高级：并发与限速（同步引擎已读取，保存后立即生效）</summary>
-              <div style={{ marginTop: 12 }}>
-                <Row
-                  title="默认并发数（1–16）"
-                  desc="同步时同时传几个文件（默认 4）。Drime 遇到 429 可能罚 15 小时，并发别乱调高；已建任务的并发在下次运行时取最新设置。"
-                  control={
-                    <input
-                      className="input"
-                      type="number"
-                      min={1}
-                      max={16}
-                      style={{ width: 120 }}
-                      value={draft.syncConcurrency}
-                      onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
-                    />
-                  }
+            <Row
+              title="默认并发数（1–16）"
+              desc="同步时同时传几个文件（默认 4）。Drime 遇到 429 可能罚 15 小时，并发别乱调高；已建任务的并发在下次运行时取最新设置。"
+              control={
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={16}
+                  style={{ width: 120 }}
+                  value={draft.syncConcurrency}
+                  onChange={(e) => setDraft({ ...draft, syncConcurrency: Number(e.target.value) })}
                 />
-              </div>
-              <Row
-                title="限速（KB/s，0 = 不限速）"
-                desc="全局上限：所有传输加起来不超过这个速度（不是每个文件一路）。0 = 不限速。"
-                control={
-                  <input
-                    className="input"
-                    type="number"
-                    min={0}
-                    style={{ width: 120 }}
-                    value={draft.syncSpeedLimitKBps}
-                    onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
-                  />
-                }
-              />
-            </details>
+              }
+            />
+            <Row
+              title="限速（KB/s，0 = 不限速）"
+              desc="全局上限：所有传输加起来不超过这个速度（不是每个文件一路）。0 = 不限速。"
+              control={
+                <input
+                  className="input"
+                  type="number"
+                  min={0}
+                  style={{ width: 120 }}
+                  value={draft.syncSpeedLimitKBps}
+                  onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
+                />
+              }
+            />
             <div style={{ marginBottom: 0 }}>
               <button className="btn-primary" disabled={busy} onClick={() => void saveDraft(draft)}>
                 {t(lang, 'save')}

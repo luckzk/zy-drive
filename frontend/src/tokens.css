@@ -214,8 +214,6 @@ button {
 .settings-card-head h2 { margin: 0; font-size: 18px; line-height: 28px; font-weight: 700; /* 本页特批：用户明确要求按 Drime 加粗；其余页面仍 400 */ }
 .settings-card-title { display: flex; align-items: center; gap: 8px; }
 .settings-card-desc { margin: 4px 0 0; font-size: 13px; color: var(--ink-secondary); }
-.settings-advanced { border-top: 1px dashed var(--border); margin-top: 4px; padding-top: 12px; }
-.settings-advanced > summary { cursor: pointer; font-size: 13px; color: var(--ink-secondary); }
 .settings-card .field { margin-bottom: 16px; }
 .settings-card .field:last-child { margin-bottom: 0; }
 .settings-card .empty { background: var(--paper); }
@@ -254,21 +252,22 @@ button {
    七节叠在同一个 grid 格里（容器高度取最高一节，切 tab 时不跳动）；
    overflow hidden 裁掉滑动过程，页面本身不横向溢出。切 tab 只换
    下面一节：新内容按移动方向滑入（向右切从右侧进），旧内容向反
-   方向滑出；transform + opacity，220ms，基础曲线。非激活节只是
+   方向滑出；transform + opacity，350ms，40px，基础曲线（220ms 太快看不到过渡，
+   v0.17.1 放慢加长）。非激活节只是
    display:none 藏起来、并不卸载，未保存的编辑原样保留。
    行 stagger 在面板内禁用：否则每次回切都会重播一遍。 */
 .settings-viewport { display: grid; overflow: hidden; }
 .settings-panel { grid-area: 1 / 1; min-width: 0; }
 .settings-panel-hidden { display: none; }
 .settings-panel .stagger-item { animation: none; }
-.settings-panel-enter-right { animation: settings-in-right 220ms var(--ease) both; }
-.settings-panel-enter-left { animation: settings-in-left 220ms var(--ease) both; }
-.settings-panel-exit-right { animation: settings-out-left 220ms var(--ease) both; }
-.settings-panel-exit-left { animation: settings-out-right 220ms var(--ease) both; }
-@keyframes settings-in-right { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes settings-in-left { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: translateX(0); } }
-@keyframes settings-out-left { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(-24px); } }
-@keyframes settings-out-right { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
+.settings-panel-enter-right { animation: settings-in-right 350ms var(--ease) both; }
+.settings-panel-enter-left { animation: settings-in-left 350ms var(--ease) both; }
+.settings-panel-exit-right { animation: settings-out-left 350ms var(--ease) both; }
+.settings-panel-exit-left { animation: settings-out-right 350ms var(--ease) both; }
+@keyframes settings-in-right { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes settings-in-left { from { opacity: 0; transform: translateX(-40px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes settings-out-left { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(-40px); } }
+@keyframes settings-out-right { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(40px); } }
 
 /* ---- 设置页行（Drime 式，v0.17.0） ----
    一行设置：标题 + 灰色说明在左，控件在右；行与行之间 1px 分隔线；
@@ -758,7 +757,6 @@ button {
 .pane-row.multiselected:hover { background: #e3edff; }
 .pane-row.multiselected.selected { background: #e6f7ec; }
 .pane-row .row-checkbox { flex-shrink: 0; width: 16px; height: 16px; accent-color: var(--brand); cursor: pointer; }
-.pane-check { display: inline-flex; flex-shrink: 0; }
 .plan-summary { display: flex; gap: 16px; flex-wrap: wrap; font-size: 14px; margin: 8px 0; }
 .plan-summary b { font-size: 16px; }
 .plan-list { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; padding: 8px 12px; }

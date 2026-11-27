@@ -167,7 +167,15 @@ const STUB = `(() => {
       if (method === 'DesktopService.MountQuotas') { await slow(); return ${STUB_QUOTAS_JSON} }
       if (method === 'DesktopService.ValidateJob') return null
       if (method === 'DesktopService.Browse') return ${JSON.stringify(STUB_NODES)}
-      if (method === 'DesktopService.PreviewSync') return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
+      if (method === 'DesktopService.PreviewSync') {
+        // v0.17.1 runNow 忙态测试用：计数 + 可选慢速。慢速只在
+        // 测试把 window.__slowPreview 置 true 后才生效，平时不
+        // 拖慢编辑器的自动重算。空计划是故意的：runNow 的 0 项
+        // 守卫应拦截它、报“没有需要同步的内容”，而不是调 RunSync。
+        window.__previewSyncCalls = (window.__previewSyncCalls || 0) + 1
+        if (window.__slowPreview) await new Promise((r) => setTimeout(r, 900))
+        return { jobId: '', direction: 'copy', items: [], filteredOut: 0, hasDeletes: false }
+      }
       if (method === 'DesktopService.SaveSyncJob') return args[0]
       if (method === 'DesktopService.Mkdir') return null
       if (method === 'DesktopService.UploadFiles') return { transfers: [], skipped: [] }
@@ -2211,6 +2219,25 @@ try {
     await page.waitForTimeout(400)
   }
 
+  // 2b. 导航结构（v0.17.1）：顶部导航只剩文件浏览 / 同步任务；
+  // 设置在左下角、Agent 卡片下方。点它仍能打开设置页由 §4 的
+  // '.nav-item' hasText '设置' 点击覆盖。
+  const navLayout = await page.evaluate(() => {
+    const topNav = [...document.querySelectorAll('.sidebar nav .nav-item')].map((b) => b.textContent?.trim() ?? '')
+    const settingsBtn = [...document.querySelectorAll('.sidebar .nav-item')].find((b) => b.textContent?.trim() === '设置')
+    const agentCard = [...document.querySelectorAll('.sidebar .card')].find((c) => (c.textContent ?? '').includes('Agent'))
+    const sr = settingsBtn?.getBoundingClientRect()
+    const ar = agentCard?.getBoundingClientRect()
+    return {
+      topNav,
+      settingsBelowAgent: !!sr && !!ar && sr.top >= ar.bottom - 1,
+    }
+  })
+  console.log('nav layout:', JSON.stringify(navLayout))
+  if (navLayout.topNav.length !== 2) failures.push(`顶部导航应只剩 2 项（文件浏览/同步任务），实测 ${JSON.stringify(navLayout.topNav)}`)
+  if (navLayout.topNav.some((t) => t === '设置')) failures.push('顶部导航不应再有“设置”')
+  if (!navLayout.settingsBelowAgent) failures.push('“设置”应在 Agent 卡片下方（左下角）')
+
   // 3. 同步任务页：先列已保存任务（零任务空态）
   await page.locator('.nav-item', { hasText: '同步任务' }).click()
   await page.waitForTimeout(600)
@@ -2255,9 +2282,9 @@ try {
   if (!restored.includes('.DS_Store') || !restored.includes('node_modules/')) failures.push('点“恢复默认”后默认规则没有回来')
 
   // 3c. 双栏点选（VISUAL_MOUNTS 才有网盘可点）：单击一行即选中，
-  // 选中行有明显选中态（绿底 + 左绿边 + 勾选标记），两栏各自
-  // 独立；双栏上方回显的源/目标路径就是选中的路径；双击文件
-  // 夹进入后，根目录变为进入的文件夹。
+  // 选中行有明显选中态（绿底 + 左绿边；对勾只留左侧复选框那一个，
+  // 选中行本身不再画右侧对勾），两栏各自独立；双栏上方回显的
+  // 源/目标路径就是选中的路径；双击文件夹进入后，根目录变为进入的文件夹。
   if (process.env.VISUAL_MOUNTS) {
     const srcPane = page.locator('.dual-panes .pane').first()
     await srcPane.locator('.pane-row', { hasText: '行程.pdf' }).click()
@@ -2270,14 +2297,14 @@ try {
       const echo = document.querySelector('.sync-sel-echo')?.textContent ?? ''
       return {
         srcSelectedName: sel?.textContent ?? '',
-        srcHasCheck: !!sel?.querySelector('.pane-check svg'),
+        paneCheckCount: document.querySelectorAll('.dual-panes .pane-check').length,
         dstHasSelection: !!dst?.querySelector('.pane-row.selected'),
         echo,
       }
     })
     console.log('dual-pane selection:', JSON.stringify(selCheck))
     if (!selCheck.srcSelectedName.includes('行程.pdf')) failures.push('双栏单击“行程.pdf”后该行没有选中态（.pane-row.selected）')
-    if (!selCheck.srcHasCheck) failures.push('双栏选中行没有勾选标记（.pane-check svg）')
+    if (selCheck.paneCheckCount !== 0) failures.push(`双栏里不应再有右侧对勾（.pane-check），实测 ${selCheck.paneCheckCount} 个`)
     if (selCheck.dstHasSelection) failures.push('点源栏一行后目标栏也被选中了（两栏选中态必须各自独立）')
     if (!selCheck.echo.includes('行程.pdf')) failures.push(`双栏上方回显的源路径没有选中的“行程.pdf”，实测 ${JSON.stringify(selCheck.echo)}`)
     await page.screenshot({ path: path.join(SHOTS, '03c-sync-select.png') })
@@ -2420,6 +2447,39 @@ try {
       if (!runs.hasEmpty) failures.push(`点“运行记录”后没有显示空记录，实测 ${JSON.stringify(runs)}`)
     }
     await page.screenshot({ path: path.join(SHOTS, '03h-sync-runs.png') })
+
+    // 3f3. runNow 忙态 + 0 项守卫（v0.17.1）：点任务卡片的
+    // “立即同步”，预览变慢的 900ms 里按钮必须禁用并显示
+    // “同步中…”，重复点也不能再发一次预览；预览回来是空
+    // 计划，runNow 应拦截、不调 RunSync、不记空运行记录，报
+    // “没有需要同步的内容”，按钮恢复可用。
+    await page.evaluate(() => { window.__slowPreview = true })
+    await page.waitForTimeout(1200) // 让编辑器残留的自动重算先落袋
+    const callsBefore = await page.evaluate(() => window.__previewSyncCalls || 0)
+    await page.getByRole('button', { name: '立即同步', exact: true }).first().click()
+    await page.waitForTimeout(250)
+    const busyState = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.job-card .btn-primary')].find((b) => b.textContent?.includes('同步中') || b.textContent?.includes('立即同步'))
+      return btn ? { disabled: btn.disabled, text: btn.textContent?.trim() ?? '' } : { disabled: null, text: '' }
+    })
+    console.log('runNow busy:', JSON.stringify(busyState))
+    if (!busyState.disabled || busyState.text !== '同步中…') failures.push(`点“立即同步”后按钮应禁用并显示“同步中…”，实测 disabled=${busyState.disabled} text=${JSON.stringify(busyState.text)}`)
+    // 按钮已禁用，Playwright 点不动它——用桩计数证明重复点
+    // 没有多发预览：跑完后总调用只应涨 1。
+    await page.waitForFunction(
+      () => [...document.querySelectorAll('.notice-box')].some((el) => el.textContent?.includes('没有需要同步的内容')),
+      { timeout: 5000 },
+    )
+    const callsAfter = await page.evaluate(() => window.__previewSyncCalls || 0)
+    const idleState = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('.job-card .btn-primary')].find((b) => b.textContent?.includes('立即同步'))
+      return btn ? { disabled: btn.disabled, text: btn.textContent?.trim() ?? '' } : { disabled: null, text: '' }
+    })
+    console.log('runNow idle:', JSON.stringify({ callsBefore, callsAfter, ...idleState }))
+    if (callsAfter !== callsBefore + 1) failures.push(`“立即同步”一次只应触发 1 次预览，实测调用从 ${callsBefore} 涨到 ${callsAfter}`)
+    if (idleState.disabled || idleState.text !== '立即同步') failures.push(`跑完后按钮应恢复可用并显示“立即同步”，实测 disabled=${idleState.disabled} text=${JSON.stringify(idleState.text)}`)
+    await page.evaluate(() => { window.__slowPreview = false })
+    await page.screenshot({ path: path.join(SHOTS, '03i-sync-runnow.png') })
   }
 
   // 4. 设置页：Agent 列表（零 Agent 空态）
@@ -2515,6 +2575,8 @@ try {
       cardInfo,
       segInfo,
       advancedCount: document.querySelectorAll('.settings-card .settings-advanced').length,
+      detailsCount: document.querySelectorAll('.settings-panel details').length,
+      hasAdvancedLabel: [...document.querySelectorAll('.settings-panel')].some((p) => (p.textContent ?? '').includes('高级：')),
     }
   })
   console.log('settings cards:', JSON.stringify(settingsCards))
@@ -2531,7 +2593,9 @@ try {
     if (!c.hasIcon) failures.push('设置节标题旁没有 flat-color-icons 小图标')
     if (!c.hasDivider) failures.push('设置节标题下没有分割线')
   }
-  if (settingsCards.advancedCount < 2) failures.push(`设置页“高级”折叠应至少 2 处（通用开机启动、同步默认并发与限速），实测 ${settingsCards.advancedCount} 处`)
+  if (settingsCards.advancedCount !== 0) failures.push(`设置页不应再有“高级”折叠（v0.17.1 已改为常显行），实测 ${settingsCards.advancedCount} 处`)
+  if (settingsCards.detailsCount !== 0) failures.push(`设置页不应再有 <details>，实测 ${settingsCards.detailsCount} 个`)
+  if (settingsCards.hasAdvancedLabel) failures.push('设置页不应再出现“高级：”文案')
   // 分段选择（v0.17.0）：主题/语言/代理/比较方式/冲突策略/缓存上限共 6 组，
   // 每组恰一个激活段，激活段是白色 pill（边框 + 轻阴影）。
   if (settingsCards.segInfo.length < 6) failures.push(`设置页分段选择应至少 6 组，实测 ${settingsCards.segInfo.length} 组`)
@@ -2573,8 +2637,10 @@ try {
   if (tabsInfo.visiblePanelCount !== 1 || tabsInfo.visiblePanelId !== 'settings-panel-general') failures.push(`一次只应显示一节（通用），实测可见 ${tabsInfo.visiblePanelCount} 个（${tabsInfo.visiblePanelId}）`)
   // 未保存的编辑：在通用填下载文件夹（不保存），切走再切回还在。
   await page.locator('#settings-panel-general .input').first().fill('/tmp/zy-drive-draft-keep')
-  // 向右切（通用→缓存）：新内容应从右侧滑入（中途 transform tx > 0），
-  // 旧内容向左滑出（tx < 0）；落定后只有缓存可见。
+  // 向右切（通用→缓存）：350ms/40px 滑动，新内容应从右侧滑入、
+  // 旧内容向左滑出；80ms 处新内容 tx 应已明显大于 0（约 11px，旧 220ms/24px
+  // 时只有约 4px、看不到过渡），旧内容 tx 应明显小于 0（约 -29px）；
+  // 落定后只有缓存可见。
   await page.getByRole('tab', { name: '缓存', exact: true }).click()
   await page.waitForTimeout(80)
   const slideRight = await page.evaluate(() => {
@@ -2595,11 +2661,12 @@ try {
     }
   })
   console.log('slide right mid-animation:', JSON.stringify(slideRight))
-  if (slideRight.enterTx === null || slideRight.enterTx <= 0 || slideRight.enterTx > 24) failures.push(`向右切时新内容应从右侧滑入（tx 在 0~24 之间），实测 ${slideRight.enterTx}`)
-  if (slideRight.leaveTx === null || slideRight.leaveTx >= 0 || slideRight.leaveTx < -24) failures.push(`向右切时旧内容应向左滑出（tx 在 -24~0 之间），实测 ${slideRight.leaveTx}`)
+  if (slideRight.enterTx === null || slideRight.enterTx <= 4 || slideRight.enterTx > 40) failures.push(`向右切时新内容应从右侧明显滑入（80ms 处 tx 应在 4~40 之间，约 11px），实测 ${slideRight.enterTx}`)
+  if (slideRight.leaveTx === null || slideRight.leaveTx >= -20 || slideRight.leaveTx < -40) failures.push(`向右切时旧内容应向左明显滑出（80ms 处 tx 应在 -40~-20 之间，约 -29px），实测 ${slideRight.leaveTx}`)
   if (slideRight.enterOpacity !== null && !(slideRight.enterOpacity > 0 && slideRight.enterOpacity < 1)) failures.push(`滑动中途新内容 opacity 应在 0~1 之间，实测 ${slideRight.enterOpacity}`)
-  if (slideRight.enterDur !== '0.22s') failures.push(`滑动时长应为 220ms，实测 ${slideRight.enterDur}`)
+  if (slideRight.enterDur !== '0.35s') failures.push(`滑动时长应为 350ms，实测 ${slideRight.enterDur}`)
   if (slideRight.enterCurve !== 'cubic-bezier(0.22, 1, 0.36, 1)') failures.push(`滑动曲线应为基础曲线，实测 ${slideRight.enterCurve}`)
+  await page.screenshot({ path: path.join(SHOTS, '04b0d-settings-slide-mid.png') })
   await page.waitForTimeout(400)
   const cacheVisible = await page.evaluate(() => {
     const panels = [...document.querySelectorAll('.settings-panel')].filter((p) => getComputedStyle(p).display !== 'none')
@@ -2661,8 +2728,8 @@ try {
     return { enterTx: parseTx(entering), leaveTx: parseTx(leaving) }
   })
   console.log('slide left mid-animation:', JSON.stringify(slideLeft))
-  if (slideLeft.enterTx === null || slideLeft.enterTx >= 0 || slideLeft.enterTx < -24) failures.push(`向左切时新内容应从左侧滑入（tx 在 -24~0 之间），实测 ${slideLeft.enterTx}`)
-  if (slideLeft.leaveTx === null || slideLeft.leaveTx <= 0 || slideLeft.leaveTx > 24) failures.push(`向左切时旧内容应向右滑出（tx 在 0~24 之间），实测 ${slideLeft.leaveTx}`)
+  if (slideLeft.enterTx === null || slideLeft.enterTx >= -4 || slideLeft.enterTx < -40) failures.push(`向左切时新内容应从左侧明显滑入（80ms 处 tx 应在 -40~-4 之间，约 -11px），实测 ${slideLeft.enterTx}`)
+  if (slideLeft.leaveTx === null || slideLeft.leaveTx <= 20 || slideLeft.leaveTx > 40) failures.push(`向左切时旧内容应向右明显滑出（80ms 处 tx 应在 20~40 之间，约 29px），实测 ${slideLeft.leaveTx}`)
   await page.waitForTimeout(400)
   const draftKept = await page.evaluate(() => {
     const input = document.querySelector('#settings-panel-general .input')
@@ -2670,10 +2737,43 @@ try {
   })
   if (draftKept.value !== '/tmp/zy-drive-draft-keep') failures.push(`切走再切回后未保存的下载文件夹编辑应还在，实测 ${JSON.stringify(draftKept.value)}`)
   await page.screenshot({ path: path.join(SHOTS, '04b0b-settings-tabs-general.png') })
-  // 通用“高级：开机启动”折叠展开看一眼（桩里开不了机启动，显示诚实说明）。
-  await page.locator('#settings-panel-general .settings-advanced summary').click()
-  await page.waitForTimeout(300)
-  await page.screenshot({ path: path.join(SHOTS, '04b0c-settings-general-advanced.png') })
+  // 通用“开机启动”已改为常显行（v0.17.1：不再有“高级”折叠）：不点任何东西
+  // 就应看到开机启动行（桩里 GetOpenAtLogin 抛错，显示诚实说明而非假开关）。
+  const loginRow = await page.evaluate(() => {
+    const panel = document.querySelector('#settings-panel-general')
+    const rows = [...(panel?.querySelectorAll('.settings-row') ?? [])]
+    const row = rows.find((r) => (r.textContent ?? '').includes('开机启动'))
+    return { found: !!row, text: row?.textContent ?? '' }
+  })
+  if (!loginRow.found) failures.push('通用里没有常显的“开机启动”行（高级折叠已移除，应直接显示）')
+  if (loginRow.found && !loginRow.text.includes('暂不支持')) failures.push(`开机启动行应显示诚实说明（桩里开不了机启动），实测 ${JSON.stringify(loginRow.text)}`)
+  await page.screenshot({ path: path.join(SHOTS, '04b0c-settings-general-login.png') })
+  // 同步默认的并发与限速已改为常显行（v0.17.1）：切到该 tab 后不点任何东西
+  // 就应看到两行（各带一个 number 输入框，桩值 4 与 0）。
+  await page.getByRole('tab', { name: '同步默认', exact: true }).click()
+  await page.waitForTimeout(500)
+  const syncRows = await page.evaluate(() => {
+    const panel = document.querySelector('#settings-panel-sync')
+    if (!panel) return { found: false }
+    const rows = [...panel.querySelectorAll('.settings-row')]
+    const vis = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0
+    const conc = rows.find((r) => (r.textContent ?? '').includes('默认并发数'))
+    const limit = rows.find((r) => (r.textContent ?? '').includes('限速'))
+    return {
+      found: true,
+      hasConcurrency: vis(conc),
+      hasLimit: vis(limit),
+      concurrencyValue: conc?.querySelector('input')?.value ?? null,
+      limitValue: limit?.querySelector('input')?.value ?? null,
+    }
+  })
+  console.log('sync default rows:', JSON.stringify(syncRows))
+  if (!syncRows.found) failures.push('没有同步默认面板')
+  if (syncRows.found && !syncRows.hasConcurrency) failures.push('同步默认里没有常显的“默认并发数”行（高级折叠已移除，应直接显示）')
+  if (syncRows.found && !syncRows.hasLimit) failures.push('同步默认里没有常显的“限速”行（高级折叠已移除，应直接显示）')
+  if (syncRows.found && syncRows.concurrencyValue !== '4') failures.push(`默认并发数应为桩的 4，实测 ${syncRows.concurrencyValue}`)
+  if (syncRows.found && syncRows.limitValue !== '0') failures.push(`限速应为桩的 0，实测 ${syncRows.limitValue}`)
+  await page.screenshot({ path: path.join(SHOTS, '04b0e-settings-sync-defaults.png') })
 
   // 4b3. 设置页“网络”区（v0.8.5）：三选一（跟随系统代理默认 /
   // 手动设置 / 直连）+ 检测到的系统代理一行 + 手动地址字段 +

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Sidebar — left navigation, kept on every page (the full-screen
-// dual-pane must never hide it). Sections: pages, mounts grouped by
-// Group, Agent summary card. Group name is followed directly by its
+// dual-pane must never hide it). Sections: pages (browse/sync) at
+// the top, mounts grouped by Group, Agent summary card at the
+// bottom, and Settings below the Agent card (v0.17.1: moved out of
+// the top nav). Group name is followed directly by its
 // count badge ("工作 2"); edit/delete only appear on hover, delete
 // needs a second confirmation, and deleting a non-empty group forces
 // a migration destination first — mounts are never deleted with a
@@ -620,7 +622,7 @@ export default function Sidebar({
   return (
     <aside ref={sidebarRef} className={`sidebar${dragMountId ? ' dragging' : ''}`}>
       <nav>
-        {(['browse', 'sync', 'settings'] as const).map((p, i) => (
+        {(['browse', 'sync'] as const).map((p, i) => (
           <button
             key={p}
             className={`nav-item nav-enter${page === p ? ' active' : ''}`}
@@ -944,6 +946,18 @@ export default function Sidebar({
         )}
         <div className="muted" style={{ fontSize: 12 }}>点此去设置 →</div>
       </div>
+
+      {/* 设置（v0.17.1）：从顶部导航移到左下角、Agent 卡片下方。
+          与顶部导航项同一套 .nav-item 样式与激活态，stagger 序号
+          保持原来的 2（入场延迟不变）。 */}
+      <button
+        className={`nav-item nav-enter${page === 'settings' ? ' active' : ''}`}
+        style={staggerStyle(2)}
+        onClick={() => onNavigate('settings')}
+        aria-current={page === 'settings' ? 'page' : undefined}
+      >
+        <NavIcon page="settings" /> {t(lang, 'settings')}
+      </button>
     </aside>
   )
 }

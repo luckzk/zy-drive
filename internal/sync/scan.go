@@ -37,11 +37,38 @@ type Snapshot struct {
 // assumed List returned paths relative to the listed folder, which
 // no driver does. The execution side re-attaches the root via
 // PrefixedProvider in runJob.
+//
+// A single FILE may be the sync root (the dual-pane UI lets the
+// user pick one). Stat the root first: a file seeds the snapshot
+// with itself, keyed by basename — the same relative key a folder
+// scan would give its child of that name — so compare/plan see
+// exactly one file and the rest of the pipeline is unchanged.
+// (Without this, List treats a file ref as a folder prefix — S3
+// appends "/" — matches nothing and returns an empty list with
+// nil error, so a file root silently scanned to an empty plan.)
+// Stat errors fall through to the List walk: some drivers cannot
+// Stat an empty folder or an empty bucket (S3 HeadObject misses,
+// then the List probe finds no children), and those roots must
+// still scan to an empty snapshot, not fail.
 func Scan(ctx context.Context, p storage.Provider, rootRef string) (*Snapshot, error) {
 	snap := &Snapshot{Nodes: map[string]domain.Node{}}
 	root := strings.TrimPrefix(rootRef, "local://")
 	root = strings.TrimPrefix(root, "local:")
 	root = strings.Trim(root, "/")
+	if node, err := p.Stat(ctx, rootRef); err == nil && !node.IsDir && node.Name != "" {
+		// A Stat that returns a zero node with nil error carries
+		// no information (a test mock does this) — it is not
+		// evidence of a file, so it falls through to the List
+		// walk below. Every real driver names the node it Stats.
+		name := path.Base(node.Name)
+		if name == "" || name == "." || name == "/" {
+			name = path.Base(root)
+		}
+		nn := node
+		nn.Path = "/" + name
+		snap.Nodes[nn.Path] = nn
+		return snap, nil
+	}
 	if err := scanInto(ctx, p, rootRef, root, snap); err != nil {
 		return nil, err
 	}

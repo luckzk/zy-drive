@@ -357,7 +357,7 @@ function SyncJobEditor({
       if (onBatchSaved) onBatchSaved(created)
       else for (const c of created) onSaved(c)
       setDoneMsg(
-        `已创建 ${created.length} 个同步任务（每项一个任务，文件夹包含其下全部内容）。只创建、没有运行：请在列表里逐个确认差异后再开始同步。`,
+        `已创建 ${created.length} 个同步任务（每项一个任务，文件夹包含其下全部内容，单个文件只同步该文件）。只创建、没有运行：请在列表里逐个确认差异后再开始同步。`,
       )
     } catch (e) {
       setError(friendlyError(e))
@@ -390,8 +390,8 @@ function SyncJobEditor({
         {isBatch && ` · 多选批量：将创建 ${batchCount} 个任务（源 ${srcMulti.length > 0 ? `${srcMulti.length} 项` : '根目录'} × 目标 ${dstMulti.length > 0 ? `${dstMulti.length} 项` : '根目录'}）`}
       </p>
       <p className="muted" style={{ fontSize: 12, margin: '4px 0 0' }}>
-        单击一行选中它作为同步根目录（文件或文件夹都可以）；双击文件夹进入，点面包屑回到当前文件夹。两边各自独立选。
-        勾选复选框可多选（Shift 连选、全选本页）：每项生成一个任务，文件夹包含其下全部内容。
+        单击一行选中它作为同步根目录（文件或文件夹都可以；目标选单个文件时，源也须是单个文件，即文件对文件同步）；双击文件夹进入，点面包屑回到当前文件夹。两边各自独立选。
+        勾选复选框可多选（Shift 连选、全选本页）：每项生成一个任务，文件夹包含其下全部内容，单个文件只同步该文件。
       </p>
 
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 16 }}>
@@ -644,6 +644,12 @@ export default function SyncJobsPage({
   const [error, setError] = useState<string | null>(null)
   const [info, setInfo] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
+  // Job currently running via "立即同步" (list button): its button
+  // is disabled and labelled 同步中…, and a second click on the
+  // same job is ignored — a run with no feedback used to look like
+  // nothing happened, so users clicked again and got two identical
+  // run records for one intention.
+  const [runningId, setRunningId] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [highlightId, setHighlightId] = useState<string | null>(null)
   const [deletingId, setDeletingId] = useState<string | null>(null)
@@ -698,7 +704,7 @@ export default function SyncJobsPage({
     setJobs((prev) => [...prev, ...created])
     setCreating(false)
     setExpandedId(null)
-    setInfo(`已创建 ${created.length} 个同步任务（每项一个任务，文件夹包含其下全部内容）。只创建、没有运行：请逐个点“立即同步”，差异预览在每个任务里看。`)
+    setInfo(`已创建 ${created.length} 个同步任务（每项一个任务，文件夹包含其下全部内容，单个文件只同步该文件）。只创建、没有运行：请逐个点“立即同步”，差异预览在每个任务里看。`)
     if (created.length > 0) {
       setHighlightId(created[0].id)
       setTimeout(() => {
@@ -708,7 +714,10 @@ export default function SyncJobsPage({
   }
 
   const runNow = async (job: SyncJob) => {
+    if (runningId === job.id) return // re-entry guard: one run per job at a time
     setError(null)
+    setInfo(null)
+    setRunningId(job.id)
     try {
       if (job.runOn !== 'local') {
         // Agent job: push latest config + start it there. The run
@@ -726,15 +735,28 @@ export default function SyncJobsPage({
         setError('这个计划包含删除操作，请在下方编辑器里勾选确认后再开始同步。')
         return
       }
+      if (plan.items.length === 0) {
+        // No silent "完成 0/0/0": the plan is empty because the
+        // source is empty or both sides already match. The plan
+        // alone cannot tell which — say so honestly instead of
+        // running nothing and recording a hollow "completed".
+        setInfo(`“${job.name}”没有需要同步的内容：源目录为空，或两边已经一致。没有运行，也没有记一条空的运行记录。`)
+        return
+      }
       const run = await api.runSync(job, plan)
       if (!run) throw new Error('同步没有返回运行记录')
       const done = { ...job, lastRunAt: new Date().toISOString(), lastRunOk: run.status !== 'failed' }
       await api.saveSyncJob(done)
       setJobs((prev) => prev.map((j) => (j.id === job.id ? done : j)))
       await loadRuns(job.id)
+      setRunsOpenId(job.id) // the record is visible without hunting for it
       onRan()
+      const c = planCounts(plan)
+      setInfo(`已完成同步“${job.name}”：上传 ${c.upload} 个 · 更新 ${c.update} 个 · 删除 ${c.del} 个。运行记录已在下方展开。`)
     } catch (e) {
       setError(friendlyError(e))
+    } finally {
+      setRunningId(null)
     }
   }
 
@@ -865,8 +887,12 @@ export default function SyncJobsPage({
               >
                 预览差异
               </button>
-              <button className="btn-primary btn-sm" onClick={() => void runNow(job)}>
-                立即同步
+              <button
+                className="btn-primary btn-sm"
+                onClick={() => void runNow(job)}
+                disabled={runningId === job.id}
+              >
+                {runningId === job.id ? '同步中…' : '立即同步'}
               </button>
               <button
                 className="btn btn-sm"

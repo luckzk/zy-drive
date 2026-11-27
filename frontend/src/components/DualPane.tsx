@@ -8,7 +8,9 @@
 //
 // Selection has TWO levels, kept visibly apart:
 //   - Single-select root (v0.8.0): single-click a row — pale green
-//     fill + left brand edge + check mark — that row (or the
+//     fill + left brand edge, no check mark (the checkbox tick is
+//     the only check mark in the pane, 2026-11-27: two check marks
+//     on one row were indistinguishable) — that row (or the
 //     browsed folder when nothing is picked) is the sync root.
 //   - Multi-select (v0.8.3): the checkbox on a row — tick + pale
 //     blue-grey fill — adds the entry to this side's batch list.
@@ -24,7 +26,7 @@ import type { Mount, Node } from '../mygo'
 import { api, friendlyError, type SideSel } from '../api/client'
 import { formatSize } from '../lib/format'
 import { Skeleton, staggerStyle } from './motion'
-import { FileTypeIcon, IconCheck, OpenedFolderIcon } from './icons'
+import { FileTypeIcon, OpenedFolderIcon } from './icons'
 
 interface Crumb {
   name: string
@@ -413,7 +415,7 @@ export default function DualPane({
                     the sync root). Its visual state (tick + pale
                     blue-grey row fill) is deliberately different
                     from the single-select root (pale green + left
-                    brand edge + check mark). */}
+                    brand edge, no check mark). */}
                 <input
                   type="checkbox"
                   className="row-checkbox"
@@ -430,11 +432,6 @@ export default function DualPane({
                   <FileTypeIcon name={n.name} isDir={n.isDir} />
                 </span>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{n.name}</span>
-                {selected && (
-                  <span className="pane-check" aria-label="已选中">
-                    <IconCheck />
-                  </span>
-                )}
                 {!n.isDir && <span className="muted" style={{ fontSize: 12 }}>{formatSize(n.size)}</span>}
                 {n.isDir && <span className="muted">›</span>}
               </div>
