@@ -429,7 +429,15 @@ export default function SettingsPage({
     setSettingsError(null)
     try {
       const s = await api.getSettings()
-      setDraft(s)
+      // v0.20.0 fields: a stale/partial source (e.g. the
+      // visual-check stub) may omit them — fall back to the
+      // backend defaults instead of rendering empty inputs.
+      setDraft({
+        ...s,
+        syncDeleteDefault: s.syncDeleteDefault ?? false,
+        syncDeleteGateMaxCount: s.syncDeleteGateMaxCount ?? 20,
+        syncDeleteGateMaxPercent: s.syncDeleteGateMaxPercent ?? 10,
+      })
       setLastSavedProxy({ mode: s.proxyMode, http: s.proxyHttp, socks5: s.proxySocks5 })
     } catch (e) {
       setSettingsError(friendlyError(e))
@@ -480,6 +488,19 @@ export default function SettingsPage({
     setBusy(true)
     setSettingsError(null)
     setSavedMsg(null)
+    // v0.20.0: gate thresholds are validated here, before any
+    // save — out of range refuses the save with a human reason
+    // (the backend rejects them too; this reports it at once).
+    if (!Number.isInteger(next.syncDeleteGateMaxCount) || next.syncDeleteGateMaxCount < 1 || next.syncDeleteGateMaxCount > 100000) {
+      setSettingsError('删除安全闸数量上限请填 1–100000 之间的整数。')
+      setBusy(false)
+      return
+    }
+    if (!Number.isInteger(next.syncDeleteGateMaxPercent) || next.syncDeleteGateMaxPercent < 1 || next.syncDeleteGateMaxPercent > 100) {
+      setSettingsError('删除安全闸比例上限请填 1–100 之间的整数。')
+      setBusy(false)
+      return
+    }
     try {
       await api.saveSettings(next)
       setDraft(next)
@@ -1551,6 +1572,41 @@ export default function SettingsPage({
                   style={{ width: 120 }}
                   value={draft.syncSpeedLimitKBps}
                   onChange={(e) => setDraft({ ...draft, syncSpeedLimitKBps: Number(e.target.value) })}
+                />
+              }
+            />
+            <Row
+              title="同步删除总开关"
+              desc="默认关。关着时同步永远不删文件：目标端多出来的文件会留着；目标端删掉的文件，下次同步会从源端再拷回来——删除不会反向同步。开着时，镜像 / 双向同步才可以按计划删目标端文件，仍受下面安全闸的限制。每个任务也可以单独覆盖（任务编辑器里“删除目标端文件”）。"
+              control={<Switch checked={draft.syncDeleteDefault} onChange={(v) => setDraft({ ...draft, syncDeleteDefault: v })} label="同步删除总开关" />}
+            />
+            <Row
+              title="删除安全闸：数量上限"
+              desc="一次同步里删除超过这么多个文件，就先拦下来问你（默认 20 个）。正好等于上限时不拦。"
+              control={
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={100000}
+                  style={{ width: 120 }}
+                  value={draft.syncDeleteGateMaxCount}
+                  onChange={(e) => setDraft({ ...draft, syncDeleteGateMaxCount: Number(e.target.value) })}
+                />
+              }
+            />
+            <Row
+              title="删除安全闸：比例上限（%）"
+              desc="一次同步里删除超过目标端文件这么大的比例，也拦下来问你（默认 10%）。目标端文件很少时，删 1 个也可能触发——例如目标只有 1 个文件，删 1 个就是 100%。"
+              control={
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={100}
+                  style={{ width: 120 }}
+                  value={draft.syncDeleteGateMaxPercent}
+                  onChange={(e) => setDraft({ ...draft, syncDeleteGateMaxPercent: Number(e.target.value) })}
                 />
               }
             />

@@ -3041,12 +3041,21 @@ try {
     const vis = (el) => !!el && getComputedStyle(el).display !== 'none' && el.getBoundingClientRect().height > 0
     const conc = rows.find((r) => (r.textContent ?? '').includes('默认并发数'))
     const limit = rows.find((r) => (r.textContent ?? '').includes('限速'))
+    const delSwitch = rows.find((r) => (r.textContent ?? '').includes('同步删除总开关'))
+    const gateCount = rows.find((r) => (r.textContent ?? '').includes('数量上限'))
+    const gatePercent = rows.find((r) => (r.textContent ?? '').includes('比例上限'))
     return {
       found: true,
       hasConcurrency: vis(conc),
       hasLimit: vis(limit),
       concurrencyValue: conc?.querySelector('input')?.value ?? null,
       limitValue: limit?.querySelector('input')?.value ?? null,
+      hasDeleteSwitch: vis(delSwitch),
+      deleteSwitchOff: delSwitch?.querySelector('.switch')?.getAttribute('aria-checked') ?? null,
+      hasGateCount: vis(gateCount),
+      gateCountValue: gateCount?.querySelector('input')?.value ?? null,
+      hasGatePercent: vis(gatePercent),
+      gatePercentValue: gatePercent?.querySelector('input')?.value ?? null,
     }
   })
   console.log('sync default rows:', JSON.stringify(syncRows))
@@ -3055,6 +3064,13 @@ try {
   if (syncRows.found && !syncRows.hasLimit) failures.push('同步默认里没有常显的“限速”行（高级折叠已移除，应直接显示）')
   if (syncRows.found && syncRows.concurrencyValue !== '4') failures.push(`默认并发数应为桩的 4，实测 ${syncRows.concurrencyValue}`)
   if (syncRows.found && syncRows.limitValue !== '0') failures.push(`限速应为桩的 0，实测 ${syncRows.limitValue}`)
+  // v0.20.0 删除安全三件套：总开关（默认关）+ 安全闸数量/比例上限（默认 20 / 10）。
+  if (syncRows.found && !syncRows.hasDeleteSwitch) failures.push('同步默认里没有“同步删除总开关”行')
+  if (syncRows.found && syncRows.deleteSwitchOff !== 'false') failures.push(`同步删除总开关默认应为关，实测 aria-checked=${syncRows.deleteSwitchOff}`)
+  if (syncRows.found && !syncRows.hasGateCount) failures.push('同步默认里没有“删除安全闸：数量上限”行')
+  if (syncRows.found && syncRows.gateCountValue !== '20') failures.push(`安全闸数量上限默认应为 20，实测 ${syncRows.gateCountValue}`)
+  if (syncRows.found && !syncRows.hasGatePercent) failures.push('同步默认里没有“删除安全闸：比例上限”行')
+  if (syncRows.found && syncRows.gatePercentValue !== '10') failures.push(`安全闸比例上限默认应为 10，实测 ${syncRows.gatePercentValue}`)
   await page.screenshot({ path: path.join(SHOTS, '04b0e-settings-sync-defaults.png') })
 
   // 4b3. 设置页“网络”区（v0.8.5）：三选一（跟随系统代理默认 /

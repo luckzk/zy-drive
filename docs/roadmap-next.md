@@ -19,6 +19,7 @@
 > **v0.18.0（2026-11-27，已推，提交 37070b7f）：启动异步加载（窗口先出、每盘 30 秒超时、总计 120 秒，失败盘进列表带 LoadError）+ 代理测试状态色（成功绿、失败红）+ 每盘代理（网络页维护代理列表 http/socks5，每盘自选跟随全局/直连/某代理）+ 代理测试网址用户自填（默认 Dropbox 地址，400/404 仍算通）。**
 > **v0.18.1（2026-11-27，已推，提交 636caa6c）：网盘行代理下拉框重排（紧凑宽度、label 左控件右）+ 空列表提示（未加代理时提示去网络 → 代理列表添加）+ 快捷加入（全局手动代理与检测到的系统代理一键进列表）+ 代理测试结果人话化（成功“正常”、超时明确写“超时”，主结果行不再出现 HTTP 状态码）+ 测试网址弹窗化（点测试代理弹声明式对话框填网址再测，常驻输入框拿掉）。**
 > **v0.19.0（2026-11-27，未推）：FUSE 挂载 P0——hanwen/go-fuse/v2 + 桌面进程内守护（internal/mount 新包）、挂载点 ~/ZyDrive、每盘开关（侧栏常显、五态展示，开关存 config map mount_enabled）、缓存独立目录 + mount_cache 表（迁移 v26/v27，默认 5 GB、档位 2/5/10/20）、写回缓存（close 后异步上传、冲突改名、失败重试）、远端变化发现（Drive/Dropbox/OneDrive delta/longpoll，目录列表 30 秒按目录懒刷新）、FUSE-T/macFUSE 检测与引导、设置页挂载卡片、退出 dirty 对话框（OnBeforeQuit + 红叉 OnClose 接线）。P0 只做 Drive/Dropbox/OneDrive 三家，挂载免费。**
+> **v0.20.0（2026-11-28，未推）：删除安全三件套——同步删除默认关（第 20 项）+ 删除安全闸（第 22 项）+ 冲突可视化（第 7 项），见文末“附：v0.20.0”。**
 
 ## 1. 现状盘点（到 v0.8.4/v0.8.5，一句话一个）
 
@@ -58,13 +59,13 @@
 | 4 | **批量上传/下载/复制接线**：多选文件/文件夹后批量传，队列里看进度、失败重传 | 现在只能拖拽单批上传；双栏多选只服务于建同步任务，选完文件却传不走，用户会觉得多选是半成品 | M | 传输队列、Worker 已存在；双栏多选已存在 | 大批量跨云复制要走流式 pipe，不能落盘中转；失败重试与断点要与第 8 项配合 |
 | 5 | **检查更新 feed 接线**：设置页“检查更新”真能查到新版本 | 现在明确写着“暂未接入”；没有它，用户永远不知道有新版，只能靠聊天通知 | S | 需要一个更新源（GitHub Releases 就是现成的；mygo Updater 需要打包时配置 feed） | 免费方案（GitHub Releases）与签名验证要一起定；不要在用户没问时弹更新 |
 | 6 | **Drime 工作区选择器**：加 Drime 盘时从 `GET /me/workspaces` 拉工作区列表点选，不用手填 ID | 现在工作区 ID 要用户自己找出来手填数字（8762 这种），新手根本找不到；且填错就挂到错误的区 | S | Drime API 有该端点（需核实返回结构） | 个人空间 id 0 与团队工作区的展示要分清；向导里要处理“只有一个工作区”的情况（直接默认，不打扰） |
-| 7 | **同步冲突可视化**（免费，2026-11-25 用户定）：双向同步出冲突时，列表里能看到“两边都改了”，逐项选留哪边、留冲突副本还是合并 | 现在冲突策略只有 keep-both 且是静默的；用户不知道冲突发生过，也没得选 | M | 比较/计划引擎已能识别冲突（conflict.go 已存在） | 冲突判断依赖时间戳+哈希，跨云哈希口径不一会误判；UI 上不要让新手看到“冲突”两个字就慌。规则细化（2026-11-27，CloudDrive2 对标）：只有两边都是云盘时才允许“保留较新的”，任一边是本地文件夹时一律保留双方——本地时间戳是 OS mtime（local.go:115），与云端服务器时间不可比。现状注意（2026-11-27 查代码）：conflict.go 的 V0.1 规则是两边都改时按 ModTime 自动判“较新者保留原名”，本地参与时也一样——做可视化时要改掉：本地参与的冲突不自动判新旧，进列表由用户逐项选；无人值守的定时任务默认保留双方并在报告里标明。 |
+| 7 | **同步冲突可视化**（免费，2026-11-25 用户定）：双向同步出冲突时，列表里能看到“两边都改了”，逐项选留哪边、留冲突副本还是合并 | 现在冲突策略只有 keep-both 且是静默的；用户不知道冲突发生过，也没得选 | M | 比较/计划引擎已能识别冲突（conflict.go 已存在） | 冲突判断依赖时间戳+哈希，跨云哈希口径不一会误判；UI 上不要让新手看到“冲突”两个字就慌。规则细化（2026-11-27，CloudDrive2 对标）：只有两边都是云盘时才允许“保留较新的”，任一边是本地文件夹时一律保留双方——本地时间戳是 OS mtime（local.go:115），与云端服务器时间不可比。现状注意（2026-11-27 查代码）：conflict.go 的 V0.1 规则是两边都改时按 ModTime 自动判“较新者保留原名”，本地参与时也一样——做可视化时要改掉：本地参与的冲突不自动判新旧，进列表由用户逐项选；无人值守的定时任务默认保留双方并在报告里标明。**已做（v0.20.0，2026-11-28，未推）：conflict.go 的按 ModTime 自动判新旧已改掉——本地参与的冲突不再自动判，默认保留双方；云盘对云盘仍可“保留较新的”（须用户逐项选）；冲突副本命名 `name (conflict copy from <side> <date>).ext`；计划预览里冲突逐项列出、可选留哪边。诚实缺口：双向执行只写目标端，“保留右”是 no-op，下次同步会再次报冲突，UI 已按此写了诚实说明。** |
 | 8 | **单文件断点续传**（免费，2026-11-25 用户定）：大文件分片上传中断后，重启应用能接着传，不是从头传；Drime 先行（走 S3 分片），再扩到 OneDrive uploadSession / Drive resumable | Drime 大文件走 S3 分片，现在失败就整个 abort；用户传大文件（aigo 的剧集动辄几 GB）时断一次就重传一次 | M | transfer/resume.go 已有 Resume 骨架；Drime 分片会话 API 已存在 | uploadId 与已传分片号要持久化到 SQLite；Drime 的分片会话有效期未知，需先验证；失败重试不能触发 429 罚时。**已做（v0.9.1，Drime 先行），见文末落地记录；其他云待扩。** |
 
 | 18 | **文件预览**（免费，2026-11-25 用户定）：图片、视频、PDF、Office 文档在应用内直接看，不用先下载 | 现在文件只能下载下来看；Alist 预览最全，是新手每天都会碰到的能力 | M | 各家驱动已有下载流；图片/视频可先走直链播放 | 大文件视频要边下边播（流式），不能先下完；Office 预览需转码或嵌系统查看器；预览走直链时注意 Token 别泄露到 URL。**已做（v0.9.1，两档：应用内直接预览 + 系统应用打开），见文末落地记录；`zydrive-preview://` 需 Mac 实测。v0.14.0 加了第三档全屏 overlay（深色遮罩 + PDF.js + 代码高亮 + Markdown），见文末“附：v0.14.0”。** |
-| 20 | **同步删除默认关**（2026-11-27 用户定，CloudDrive2 对标）：全局默认关（设置 → 同步默认）+ 每个任务可单独开；关了就不删，删除需手动确认（开开关，或手动删另一边）。单向复制本来就不删文件，不受影响 | 现在双向/镜像默认就会删文件；误删、源端扫描异常导致的大批量删除没有“默认不开”这道防线 | S | 无（Compare 已产删除项、计划已有 hasDeletes 标志；只差全局默认 + 任务级开关 + 引擎按开关过滤删除项） | 开关关了之后，用户在目标端删了文件、同步后文件又回来，会困惑——开关文案要写清“目标端删除不回同步”；与删除安全闸配合：开了开关的任务仍受安全闸保护 |
+| 20 | **同步删除默认关**（2026-11-27 用户定，CloudDrive2 对标）：全局默认关（设置 → 同步默认）+ 每个任务可单独开；关了就不删，删除需手动确认（开开关，或手动删另一边）。单向复制本来就不删文件，不受影响 | 现在双向/镜像默认就会删文件；误删、源端扫描异常导致的大批量删除没有“默认不开”这道防线 | S | 无（Compare 已产删除项、计划已有 hasDeletes 标志；只差全局默认 + 任务级开关 + 引擎按开关过滤删除项） | 开关关了之后，用户在目标端删了文件、同步后文件又回来，会困惑——开关文案要写清“目标端删除不回同步”；与删除安全闸配合：开了开关的任务仍受安全闸保护。**已做（v0.20.0，2026-11-28，未推）：设置键 `sync.delete_default`（默认关）+ 每任务三态开关（跟随全局 / 单独开 / 单独关，`SyncJob.deleteEnabled`，迁移 v28）；引擎在计划与执行两层按开关过滤删除项（开关关时删除项从计划剥离、计入 deferredDeletes，永不执行；RunJob 对手写/过期计划重新核对、不认计划自带的删除标志）；设置 → 同步默认三行（总开关 + 安全闸数量/比例上限，带 1–100000 / 1–100 校验）；`DeletePolicyForJob` 新绑定供前端显示生效策略。** |
 | 21 | **跨云搜索**（2026-11-27 用户定，CloudDrive2 对标）：本地索引 + 各家实时搜索合并；不改架构（S3 无搜索接口、MEGA 全树遍历慢，纯云端搜不了） | 现在只能搜当前网盘；多盘找文件要一个一个盘点开 | M | 本地索引（SQLite 文件名索引）+ 各家 Search 接口已存在 7 家 | **必须带设置开关与频率限制**（2026-11-27 用户要求）：设置 → 通用里“跨盘实时搜索”总开关（默认开；关了只搜本地索引）；总开关下面再列一张“支持实时搜索的云盘”清单，每个云盘单独一个开关（默认开；关了该盘只走本地索引）；S3/本地没有服务端搜索，清单里写明“仅本地索引”，不给开关。开关状态按 Mount 存，不是全局。输入防抖 400ms、每盘同时最多 1 个在途查询、多盘错峰（最多 2–3 并发）、复用现有每盘限速器；某盘返回 429 就停掉该盘的实时搜索并在结果里明示“触发限流”，绝不循环重试（Drime 429 罚 15 小时）。否则用户不知道为什么搜不到。 |
-| 22 | **删除安全闸**（2026-11-27 用户定，CloudDrive2 对标）：删除项超过 20 个或占目标文件数 10% 即触发，弹单独警告（不是普通复选框），三选一：确认删除并执行 / 只同步非删除部分 / 取消本次同步 | 现在只有三层保护（runNow 拒删、编辑器勾选确认、Agent 定时拒删），都不看数量；源端扫描异常返回空时，一个勾选就能删光目标端 | S | 计划带“安全闸触发”标志；引擎层强制（RunJob 拒未确认的触发计划）；定时任务改跑非删除部分并记“删除已暂挂，等确认” | 触发阈值（20 / 10%）放设置 → 同步默认可改；与第 20 项分层：第 20 项是总开关（删不删），安全闸是后备——开关开了、删除流动时，删太多再拦一次；run.go:20 注释称 HasDeletes 有引擎复查、代码里实际没有，补上这层才是真防护 |
+| 22 | **删除安全闸**（2026-11-27 用户定，CloudDrive2 对标）：删除项超过 20 个或占目标文件数 10% 即触发，弹单独警告（不是普通复选框），三选一：确认删除并执行 / 只同步非删除部分 / 取消本次同步 | 现在只有三层保护（runNow 拒删、编辑器勾选确认、Agent 定时拒删），都不看数量；源端扫描异常返回空时，一个勾选就能删光目标端 | S | 计划带“安全闸触发”标志；引擎层强制（RunJob 拒未确认的触发计划）；定时任务改跑非删除部分并记“删除已暂挂，等确认” | 触发阈值（20 / 10%）放设置 → 同步默认可改；与第 20 项分层：第 20 项是总开关（删不删），安全闸是后备——开关开了、删除流动时，删太多再拦一次；run.go:20 注释称 HasDeletes 有引擎复查、代码里实际没有，补上这层才是真防护。**已做（v0.20.0，2026-11-28，未推）：阈值设置键 `sync.delete_gate_max_count=20` / `sync.delete_gate_max_percent=10`（迁移 v29，越界值回落默认值）；比较严格——恰好 20 个或恰好 10% 不触发，21 个或超过 10% 才触发；Plan 新增 `gateTriggered/gateReason/deletesDeferred/deferredDeleteCount/confirmDeletes`；引擎层强制——RunJob 拒未确认的触发计划；桌面端弹声明式三选一对话框（确认删除并执行 / 只同步非删除部分 / 取消本次同步，gateReason 原样展示）；Agent 定时任务触发时改跑非删除部分并记“删除已暂挂，等确认”（Agent 侧不提供“确认删除并执行”，须回桌面确认）。** |
 
 ### P2
 
@@ -553,3 +554,36 @@ v0.9.1 之后仍未做的诚实缺口：真实账号端到端仍只测过 S3/R2�
 - visual-check 三种模式全过（默认 / VISUAL_MOUNTS=1 / VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1），新增 2u（新建文件夹对话框：空名确定禁用 → 输名 → 对话框关闭 + “已新建文件夹”消息；上传文件 → 目标框“1 个文件将上传”）、2v（默认名称升序首行照片；大小升序首文件笔记.txt、降序首文件旅行.mp4；表头全选 13 行带 `.checked` + “已选 13 个”）、2w（Inspector 有 打开/下载/复制到…；点下载出现入队提示；点复制到…弹出目标框）、2x（批量栏在表格上方、淡绿底 `rgb(240,253,244)`、有“移动到…”并弹出目标框）、2y（输“行程”不等回车就出 1 条结果、`<mark>` 高亮、121 KB · 2026-11-20；输“.p”出 3 条、按两次 ↓ 高亮封面.png、回车关闭；无匹配显示“没有找到”；底部是快捷键提示、无“关闭”按钮）。截图 02u/02v/02w/02x/02y 已目视：批量栏淡绿条在表格上方、勾选行淡蓝与选中行淡绿能分清、大小列右对齐带 ↑/↓、命令面板居中且结果行带大小日期、上传目标框正常。
 - 构建/验证时修的真问题与 harness 调整：① 2e 原来点 `.file-table input[type="checkbox"]` 的第一个——表头复选框加上后第一个变成它，改成 `tbody` 限定（应用代码没错，是检查脚本要跟上）；② 2q 的 overlay“下一个文件”期望从“旅行.mp4”改成“合同.docx”（本版起 overlay 跟可见排序走，见 C）；③ 2e 的刷新按钮 title 期望改成“刷新全部容量”（本版改名）；④ harness 的 Search/PickFiles 桩是新加的（之前 Search 未实现会抛错）；⑤ 2v 的名称排序期望：中文名按拼音排在拉丁字母前（`localeCompare('zh')` 在桩 Chromium 里的行为：main.go 排在所有中文名之后）——不是 bug，是 locale 行为，断言按实测写。
 - 诚实缺口：上传文件整条路（NSOpenPanel 真选框 → 上传）只能在用户 Mac 上验，harness 只验了接线；今天/昨天相对时间只在真机上出现（桩数据全是 6 天前）；名称排序里中文在前、拉丁字母在后是 Chromium 的 zh collation 行为，真机 Chrome 同款 ICU，应一致，待用户肉眼确认；Agent 角标在同步页增删任务后要回到浏览页才重数（不轮询）；v0.13.0/v0.14.0 的缺口（网格缩略图、Toast 悬停计时、PDF.js 真机、clipboard、视频全屏）原样保留。
+
+## 附：v0.20.0（2026-11-28，删除安全三件套：第 20 项同步删除默认关 + 第 22 项删除安全闸 + 第 7 项冲突可视化；未推）
+
+用户 2026-11-27 22:53 定下一步做删除安全三件套，本版一次做完三项。分层关系：第 20 项是总开关（删不删），第 22 项是后备（开关开了、删除流动时，删太多再拦一次），第 7 项是冲突可视化（本地参与不再自动判新旧）。
+
+### A. 同步删除默认关（第 20 项）
+
+- 设置键 `sync.delete_default`（默认关），每任务三态开关 `SyncJob.deleteEnabled`（nil = 跟随全局 / true = 单独开 / false = 单独关，迁移 v28）。
+- 引擎两层过滤：计划层 `Plan.ApplyDeletePolicy` 把删除项剥离、计入 `deferredDeletes`/`deferredDeleteCount`，永不执行；执行层 `RunJob` 对手写/过期计划重新核对删除标志，不认计划自带的 `HasDeletes`（旧注释称有引擎复查、代码里实际没有的问题就此补上）。
+- 前端：设置 → 同步默认三行（总开关 + 安全闸数量/比例上限，阈值带校验：数量 1–100000、比例 1–100，越界回默认值）；任务编辑器三态下拉（跟随全局 / 单独开 / 单独关，显示当前全局状态）；`DeletePolicyForJob` 新绑定供闸对话框显示生效策略（全局开/关、本任务单独开/关、上限）。
+
+### B. 删除安全闸（第 22 项）
+
+- 阈值设置键 `sync.delete_gate_max_count=20` / `sync.delete_gate_max_percent=10`（迁移 v29，`Normalize` 把越界值修回默认）；比较是严格的——恰好 20 个或恰好 10% 不触发，21 个或超过 10% 才触发；目标文件数未知时只看数量规则。
+- Plan 新增 `gateTriggered/gateReason/deletesDeferred/deferredDeleteCount/confirmDeletes`；引擎层强制——`RunJob` 拒未确认的触发计划。
+- 桌面端：触发时弹声明式三选一对话框（`DeleteGateDialog`，`role="alertdialog"`）：确认删除并执行 / 只同步非删除部分 / 取消本次同步；`gateReason` 原样展示（例如“删除 21 个，超过上限 20 个”），对话框同时显示当前生效策略。
+- Agent 定时任务：触发时改跑非删除部分并记“删除已暂挂，等确认”（日志原文如 `删除 21 个，超过上限 20 个 — 删除已暂挂，等确认，本次只同步非删除部分`）；Agent 侧不提供“确认删除并执行”，须回桌面确认，对话框里已写明这句。
+
+### C. 冲突可视化（第 7 项）
+
+- `conflict.go` 的 V0.1 规则已改掉：两边都改时不再按 ModTime 自动判“较新者保留原名”；本地参与的冲突不自动判新旧，默认保留双方；只有两边都是云盘时才允许“保留较新的”，且须用户在计划预览的冲突列表里逐项选。
+- 冲突副本命名 `name (conflict copy from <side> <date>).ext`（例如 `notes (conflict copy from left 2026-11-28).md`）。
+- 诚实缺口：双向执行只写目标端，“保留右”是 no-op，下次同步会再次报冲突，UI 已按此写了诚实说明（不是悄悄假装修好了）。
+
+### 验证（2026-11-28）
+
+- 版本六处一致 0.20.0：`VERSION`、`internal/version/version.go`、`frontend/src/version.ts`、`frontend/package.json`、`frontend/package-lock.json`（第 3、9 行）、`mygo.json`；`react-refresh` 仍是 0.17.0，`pdfjs-dist` engines 行未动。
+- `go test ./...`：23 个有测试的包全过（5 个包无测试文件）。首轮 `internal/agentrun` 的 `TestRunnerRetryOnce` 抖了一次（`retries scheduled = 0, want exactly 1`），单跑通过、整包重跑通过，是已知时序 flaky，不是本版改动。
+- `make lint` exit 0（gofmt + go vet + golangci-lint 0 issues + tsc -b）；`npx tsc -b` 干净；`npm run build` 通过，主 JS 525.06 kB（v0.19.0 是 514.45 kB）；`make build` 三二进制均报 0.20.0（desktop/agent `-version`/`version`、`cli --version`；注意 desktop 的 `version` 不是子命令，直接跑会启动 GUI，须用 `-version`）。
+- `mygo generate` 重跑：`frontend/src/mygo.ts is up to date`，校验和不变，零 diff。
+- visual-check 三种模式全过（默认 / `VISUAL_MOUNTS=1` / `VISUAL_MOUNTS=1 + VISUAL_SLOW_LOAD=1`），同步默认新断言在其中：总开关行存在且 `aria-checked=false`（默认关），数量上限 20、比例上限 10。
+- 回归测试（全部 PASS）：`TestGateBoundaries`（20/21 个、恰好 10%/11%、目标未知时只看数量）、`TestApplyDeletePolicySwitchOff`（开关关时删除剥离、上传保留）、`TestApplyDeletePolicySwitchOnGate`、`TestApplyDeletePolicyCopyUnaffected`、`TestWithoutDeletes`、`TestJobDeletesAllowed`、`TestExecuteRefusesDeletesWhenSwitchOff`、`TestExecuteRechecksDeletesNotFlag`、`TestExecuteGateRefusesUnconfirmed`、`TestExecuteGateBelowThresholdRuns`、`TestRunnerDeleteSuspendedByDefault`、`TestRunnerDeleteGateSuspended`、`TestRunnerDeleteAllowedSmall`、`TestPreviewAndRunMirrorDeleteDefaultOff`、`TestPreviewAndRunMirrorDeleteJobOn`、`TestPreviewMirrorDeleteGateTrips`、`TestSyncJobsDeleteEnabledRoundTrip`（v28 字段往返）、`TestConflictCopyNameFormat`、`TestBidirectionalConflictLocalNoNewer`、`TestBidirectionalConflictCloudOffersNewer`、`TestExecuteConflictKeepBothDefault`、`TestExecuteConflictChoices`、`TestExecuteConflictKeepNewerLocalRejected`、`TestExecuteConflictKeepNewerCloud`。
+- 诚实缺口（只能在用户 Mac 上验）：闸对话框三条路真走一遍（确认删除 / 只同步非删除部分 / 取消）；真实双向冲突（两台云盘 + 本地文件夹各一例）；Agent 闸触发后回桌面确认的整条路；v0.13.0–v0.19.0 的缺口（拖拽真机手感、OneDrive 409 真账号、版本恢复真账号、PDF.js 真机、FUSE 真挂载）原样保留。

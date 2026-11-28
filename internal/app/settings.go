@@ -10,6 +10,7 @@ import (
 
 	"github.com/luckzk/zy-drive/internal/domain"
 	"github.com/luckzk/zy-drive/internal/netproxy"
+	"github.com/luckzk/zy-drive/internal/sync"
 	"github.com/luckzk/zy-drive/internal/transfer"
 	"github.com/luckzk/zy-drive/internal/version"
 )
@@ -37,6 +38,14 @@ type Settings struct {
 	SyncConcurrency    int                `json:"syncConcurrency"`    // 1..16, wired into the sync engine + transfer worker (V0.9.0)
 	SyncSpeedLimitKBps int                `json:"syncSpeedLimitKBps"` // 0 = unlimited; global cap across all transfers (V0.9.0)
 	SyncConflict       string             `json:"syncConflict"`       // keep-both (only implemented value)
+	// Sync delete safety (roadmap §20/§22, v0.20.0): the delete
+	// switch defaults OFF — a sync never deletes unless the
+	// user turns it on (globally here, or per job). The gate
+	// thresholds are the §22 trip lines (count / % of target
+	// files); both are editable in Settings → 同步默认.
+	SyncDeleteDefault        bool `json:"syncDeleteDefault"`        // global delete switch, default false
+	SyncDeleteGateMaxCount   int  `json:"syncDeleteGateMaxCount"`   // > this many deletes trips the gate, default 20
+	SyncDeleteGateMaxPercent int  `json:"syncDeleteGateMaxPercent"` // > this % of target files trips the gate, default 10
 	// Proxy (Settings -> Network, 2026-11-25): where outbound
 	// traffic goes. system (default) = macOS system proxy when
 	// detected, else HTTP(S)_PROXY env vars; manual = the two
@@ -66,19 +75,22 @@ type Settings struct {
 // DefaultSettings is what a fresh install (or a missing key) gets.
 func DefaultSettings() Settings {
 	return Settings{
-		Theme:                   "light",
-		Language:                "zh",
-		DownloadDir:             "",
-		SyncCompare:             domain.CompareSizeTime,
-		SyncConcurrency:         4,
-		SyncSpeedLimitKBps:      0,
-		SyncConflict:            "keep-both",
-		ProxyMode:               string(netproxy.ModeSystem),
-		ProxyHTTP:               "",
-		ProxySOCKS5:             "",
-		PreviewCacheLimitMB:     previewCacheLimitDefaultMB,
-		PreviewCacheClearOnExit: false,
-		MountCacheLimitGB:       5,
+		Theme:                    "light",
+		Language:                 "zh",
+		DownloadDir:              "",
+		SyncCompare:              domain.CompareSizeTime,
+		SyncConcurrency:          4,
+		SyncSpeedLimitKBps:       0,
+		SyncConflict:             "keep-both",
+		SyncDeleteDefault:        false,
+		SyncDeleteGateMaxCount:   sync.DefaultDeleteGateMaxCount,
+		SyncDeleteGateMaxPercent: sync.DefaultDeleteGateMaxPercent,
+		ProxyMode:                string(netproxy.ModeSystem),
+		ProxyHTTP:                "",
+		ProxySOCKS5:              "",
+		PreviewCacheLimitMB:      previewCacheLimitDefaultMB,
+		PreviewCacheClearOnExit:  false,
+		MountCacheLimitGB:        5,
 	}
 }
 
@@ -128,6 +140,19 @@ func (a *App) GetSettings() (Settings, error) {
 	}
 	if v, ok := a.getSetting("sync.conflict"); ok && v == "keep-both" {
 		s.SyncConflict = v
+	}
+	if v, ok := a.getSetting("sync.delete_default"); ok {
+		s.SyncDeleteDefault = v == "1"
+	}
+	if v, ok := a.getSetting("sync.delete_gate_max_count"); ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 100000 {
+			s.SyncDeleteGateMaxCount = n
+		}
+	}
+	if v, ok := a.getSetting("sync.delete_gate_max_percent"); ok {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 100 {
+			s.SyncDeleteGateMaxPercent = n
+		}
 	}
 	if v, ok := a.getSetting("proxy.mode"); ok {
 		switch v {
@@ -187,6 +212,20 @@ func (a *App) SaveSettings(s Settings) error {
 	if s.SyncConflict != "keep-both" {
 		return fmt.Errorf("app: 冲突处理只有“保留双方”已实现，其他策略在后续版本提供")
 	}
+	// A zero gate value (old clients, hand-built structs) is the
+	// default, not an error — same rule as the cache limits above.
+	if s.SyncDeleteGateMaxCount == 0 {
+		s.SyncDeleteGateMaxCount = sync.DefaultDeleteGateMaxCount
+	}
+	if s.SyncDeleteGateMaxCount < 1 || s.SyncDeleteGateMaxCount > 100000 {
+		return fmt.Errorf("app: 删除安全闸数量上限要在 1–100000 之间")
+	}
+	if s.SyncDeleteGateMaxPercent == 0 {
+		s.SyncDeleteGateMaxPercent = sync.DefaultDeleteGateMaxPercent
+	}
+	if s.SyncDeleteGateMaxPercent < 1 || s.SyncDeleteGateMaxPercent > 100 {
+		return fmt.Errorf("app: 删除安全闸比例上限要在 1–100%% 之间")
+	}
 	switch s.PreviewCacheLimitMB {
 	case 0:
 		// An empty value (old clients, hand-built structs) is the
@@ -238,18 +277,26 @@ func (a *App) SaveSettings(s Settings) error {
 		return fmt.Errorf("app: 数据库还没初始化，设置保存不了")
 	}
 	kv := map[string]string{
-		"theme":                  s.Theme,
-		"language":               s.Language,
-		"download_dir":           s.DownloadDir,
-		"sync.compare":           string(s.SyncCompare),
-		"sync.concurrency":       strconv.Itoa(s.SyncConcurrency),
-		"sync.speed_limit_kbps":  strconv.Itoa(s.SyncSpeedLimitKBps),
-		"sync.conflict":          s.SyncConflict,
-		"proxy.mode":             s.ProxyMode,
-		"proxy.http":             s.ProxyHTTP,
-		"proxy.socks5":           s.ProxySOCKS5,
-		"preview.cache_limit_mb": strconv.Itoa(s.PreviewCacheLimitMB),
-		"mount.cache_gb":         strconv.Itoa(s.MountCacheLimitGB),
+		"theme":                 s.Theme,
+		"language":              s.Language,
+		"download_dir":          s.DownloadDir,
+		"sync.compare":          string(s.SyncCompare),
+		"sync.concurrency":      strconv.Itoa(s.SyncConcurrency),
+		"sync.speed_limit_kbps": strconv.Itoa(s.SyncSpeedLimitKBps),
+		"sync.conflict":         s.SyncConflict,
+		"sync.delete_default": func() string {
+			if s.SyncDeleteDefault {
+				return "1"
+			}
+			return "0"
+		}(),
+		"sync.delete_gate_max_count":   strconv.Itoa(s.SyncDeleteGateMaxCount),
+		"sync.delete_gate_max_percent": strconv.Itoa(s.SyncDeleteGateMaxPercent),
+		"proxy.mode":                   s.ProxyMode,
+		"proxy.http":                   s.ProxyHTTP,
+		"proxy.socks5":                 s.ProxySOCKS5,
+		"preview.cache_limit_mb":       strconv.Itoa(s.PreviewCacheLimitMB),
+		"mount.cache_gb":               strconv.Itoa(s.MountCacheLimitGB),
 		"preview.cache_clear_on_exit": func() string {
 			if s.PreviewCacheClearOnExit {
 				return "1"
@@ -285,6 +332,31 @@ func (a *App) SaveSettings(s Settings) error {
 	// files are never evicted by the trim.
 	a.trimMountCacheBestEffort()
 	return nil
+}
+
+// DeletePolicy resolves the engine-side delete policy from the
+// stored settings (§20/§22): the global switch plus the gate
+// thresholds. Defaults apply when nothing was ever saved.
+func (a *App) DeletePolicy() sync.DeletePolicy {
+	s, err := a.GetSettings()
+	if err != nil {
+		return sync.DefaultDeletePolicy()
+	}
+	return sync.DeletePolicy{
+		Enabled:        s.SyncDeleteDefault,
+		GateMaxCount:   s.SyncDeleteGateMaxCount,
+		GateMaxPercent: s.SyncDeleteGateMaxPercent,
+	}.Normalize()
+}
+
+// DeletePolicyFor resolves the policy for one job: the per-job
+// DeleteEnabled override wins when set, otherwise the global
+// switch. The returned policy's Enabled is the effective value;
+// the thresholds always come from the global settings.
+func (a *App) DeletePolicyFor(job *domain.SyncJob) sync.DeletePolicy {
+	p := a.DeletePolicy()
+	p.Enabled = job.DeletesAllowed(p.Enabled)
+	return p
 }
 
 // ApplyTransferSettings pushes the stored sync concurrency and

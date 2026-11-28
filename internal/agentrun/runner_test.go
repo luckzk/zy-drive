@@ -5,7 +5,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -171,11 +170,14 @@ func TestRunnerImmediateRun(t *testing.T) {
 	r.mu.Unlock()
 }
 
-// TestRunnerDeleteGuard: a mirror job whose plan wants to delete
-// files NEVER deletes on a scheduled/immediate Agent run — the run
-// fails with a clear message, the file stays, and no retry is
-// scheduled (retrying would fail the same way).
-func TestRunnerDeleteGuard(t *testing.T) {
+// TestRunnerDeleteSuspendedByDefault: a mirror job whose plan
+// wants to delete files, with the delete switch off (the §20
+// default), NEVER deletes on an Agent run — the run completes
+// with the non-delete part, the file stays, and the delete is
+// recorded as deferred ("删除已暂挂，等确认"), with no retry.
+// (v0.20.0 changed this from the old behaviour, which failed the
+// whole run — roadmap §22:定时任务改跑非删除部分并记“删除已暂挂，等确认”.)
+func TestRunnerDeleteSuspendedByDefault(t *testing.T) {
 	a, db, srcDir, dstDir := newRunnerApp(t)
 	writeFile(t, filepath.Join(srcDir, "a.txt"), "aaa")
 	writeFile(t, filepath.Join(dstDir, "old.txt"), "keep-me")
@@ -186,23 +188,101 @@ func TestRunnerDeleteGuard(t *testing.T) {
 		t.Fatalf("RunNow: %v", err)
 	}
 	run := waitRun(t, db, job.ID, 10*time.Second)
-	if run.Status != domain.RunFailed {
-		t.Fatalf("run status = %v, want failed (delete guard)", run.Status)
+	if run.Status != domain.RunCompleted {
+		t.Fatalf("run status = %v, want completed (non-delete part runs)", run.Status)
 	}
-	if !strings.Contains(run.Error, "删除") {
-		t.Fatalf("run error = %q, want it to explain the delete guard", run.Error)
+	if run.DeferredDeletes != 1 {
+		t.Fatalf("run DeferredDeletes = %d, want 1", run.DeferredDeletes)
 	}
 	if _, err := os.Stat(filepath.Join(dstDir, "old.txt")); err != nil {
-		t.Fatalf("the guarded file was deleted: %v", err)
+		t.Fatalf("the suspended file was deleted: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dstDir, "a.txt")); err == nil {
-		t.Fatal("a.txt was copied even though the run failed at the guard")
+	if _, err := os.Stat(filepath.Join(dstDir, "a.txt")); err != nil {
+		t.Fatalf("the non-delete part must still run (a.txt missing): %v", err)
 	}
 	r.mu.Lock()
 	n := len(r.retries)
 	r.mu.Unlock()
 	if n != 0 {
-		t.Fatalf("retries scheduled = %d, want 0 (delete guard is not retryable)", n)
+		t.Fatalf("retries scheduled = %d, want 0 (suspension is not a failure)", n)
+	}
+}
+
+// TestRunnerDeleteGateSuspended: with the job-level delete switch
+// ON and 21 deletes (over the §22 gate), the Agent run completes
+// the non-delete part, keeps all 21 files, and records 21
+// deferred deletes — it never deletes unattended past the gate.
+func TestRunnerDeleteGateSuspended(t *testing.T) {
+	a, db, srcDir, dstDir := newRunnerApp(t)
+	writeFile(t, filepath.Join(srcDir, "a.txt"), "aaa")
+	for i := 0; i < 21; i++ {
+		writeFile(t, filepath.Join(dstDir, "old"+string(rune('a'+i))+".txt"), "keep-me")
+	}
+	srcID, dstID := mountIDs(t, a)
+	job := saveAgentJob(t, a, srcID, dstID, domain.DirectionMirror, "")
+	job.DeleteEnabled = domain.BoolPtr(true)
+	if _, err := a.SaveSyncJob(job); err != nil {
+		t.Fatalf("SaveSyncJob(delete on): %v", err)
+	}
+	r := New(a, db, scheduler.New())
+	if _, err := r.RunNow(context.Background(), job.ID); err != nil {
+		t.Fatalf("RunNow: %v", err)
+	}
+	run := waitRun(t, db, job.ID, 10*time.Second)
+	if run.Status != domain.RunCompleted {
+		t.Fatalf("run status = %v, want completed (gate suspends, not fails)", run.Status)
+	}
+	if run.DeferredDeletes != 21 {
+		t.Fatalf("run DeferredDeletes = %d, want 21", run.DeferredDeletes)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "a.txt")); err != nil {
+		t.Fatalf("non-delete part must run: %v", err)
+	}
+	for i := 0; i < 21; i++ {
+		if _, err := os.Stat(filepath.Join(dstDir, "old"+string(rune('a'+i))+".txt")); err != nil {
+			t.Fatalf("gated file %d was deleted: %v", i, err)
+		}
+	}
+}
+
+// TestRunnerDeleteAllowedSmall: with the job-level delete switch
+// ON and a single delete (under the gate), the Agent run deletes
+// it — small, explicitly allowed deletes still flow unattended.
+func TestRunnerDeleteAllowedSmall(t *testing.T) {
+	a, db, srcDir, dstDir := newRunnerApp(t)
+	writeFile(t, filepath.Join(srcDir, "a.txt"), "aaa")
+	writeFile(t, filepath.Join(dstDir, "old.txt"), "delete-me")
+	// 20 files on both sides, so the target holds 21 files and
+	// the single delete is ~5% — under both gate thresholds.
+	// (With only old.txt on the target, 1 delete would be 100%
+	// of the target and the gate would rightly trip.)
+	for i := 0; i < 20; i++ {
+		name := "common" + string(rune('a'+i)) + ".txt"
+		writeFile(t, filepath.Join(srcDir, name), "c")
+		writeFile(t, filepath.Join(dstDir, name), "c")
+	}
+	srcID, dstID := mountIDs(t, a)
+	job := saveAgentJob(t, a, srcID, dstID, domain.DirectionMirror, "")
+	job.DeleteEnabled = domain.BoolPtr(true)
+	if _, err := a.SaveSyncJob(job); err != nil {
+		t.Fatalf("SaveSyncJob(delete on): %v", err)
+	}
+	r := New(a, db, scheduler.New())
+	if _, err := r.RunNow(context.Background(), job.ID); err != nil {
+		t.Fatalf("RunNow: %v", err)
+	}
+	run := waitRun(t, db, job.ID, 10*time.Second)
+	if run.Status != domain.RunCompleted {
+		t.Fatalf("run status = %v, want completed", run.Status)
+	}
+	if run.DeferredDeletes != 0 {
+		t.Fatalf("run DeferredDeletes = %d, want 0", run.DeferredDeletes)
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "old.txt")); err == nil {
+		t.Fatalf("allowed small delete must execute")
+	}
+	if _, err := os.Stat(filepath.Join(dstDir, "a.txt")); err != nil {
+		t.Fatalf("a.txt must land: %v", err)
 	}
 }
 

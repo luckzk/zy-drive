@@ -43,6 +43,11 @@ func TestSettingsRoundTripAcrossRestart(t *testing.T) {
 		// Mount cache (v0.19.0): same rule — a non-default
 		// tier, so the round-trip covers the new key too.
 		MountCacheLimitGB: 10,
+		// Delete safety (v0.20.0): non-default values, so the
+		// round-trip covers the new keys too.
+		SyncDeleteDefault:        true,
+		SyncDeleteGateMaxCount:   50,
+		SyncDeleteGateMaxPercent: 25,
 	}
 	if err := a.SaveSettings(want); err != nil {
 		t.Fatalf("SaveSettings: %v", err)
@@ -101,6 +106,33 @@ func TestSettingsValidation(t *testing.T) {
 	s.SyncSpeedLimitKBps = -1
 	if err := a.SaveSettings(s); err == nil {
 		t.Fatalf("negative speed limit must fail")
+	}
+	// Delete-gate thresholds out of range (0 normalizes to the
+	// default instead of failing — covered by the round-trip).
+	s = base
+	s.SyncDeleteGateMaxCount = -1
+	if err := a.SaveSettings(s); err == nil {
+		t.Fatalf("gate count -1 must fail")
+	}
+	s = base
+	s.SyncDeleteGateMaxCount = 100001
+	if err := a.SaveSettings(s); err == nil {
+		t.Fatalf("gate count 100001 must fail")
+	}
+	s = base
+	s.SyncDeleteGateMaxPercent = 101
+	if err := a.SaveSettings(s); err == nil {
+		t.Fatalf("gate percent 101 must fail")
+	}
+	s = base
+	s.SyncDeleteGateMaxCount = 0
+	s.SyncDeleteGateMaxPercent = 0
+	if err := a.SaveSettings(s); err != nil {
+		t.Fatalf("gate 0/0 must normalize to defaults, got %v", err)
+	}
+	got2, _ := a.GetSettings()
+	if got2.SyncDeleteGateMaxCount != 20 || got2.SyncDeleteGateMaxPercent != 10 {
+		t.Fatalf("gate 0/0 must normalize to 20/10, got %+v", got2)
 	}
 	// Download folder must exist and be a directory.
 	s = base

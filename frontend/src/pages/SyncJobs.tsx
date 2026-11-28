@@ -14,10 +14,10 @@
 // Jobs are persisted in SQLite via listSyncJobs/saveSyncJob. There is
 // no demo data: an empty list is an honest empty state.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Agent, Mount, Plan, RunResponse, SyncJob } from '../mygo'
+import type { ConflictChoice, ConflictDetail, DeletePolicyInfo, Agent, Mount, Plan, RunResponse, SyncJob } from '../mygo'
 import { api, friendlyError, type SideSel } from '../api/client'
 import { directionLabel, formatSize, formatTime, newId, runOnLabel } from '../lib/format'
-import { Accordion, Skeleton, staggerStyle } from '../components/motion'
+import { Accordion, Skeleton, staggerStyle, useClosing } from '../components/motion'
 import DualPane from '../components/DualPane'
 
 const LOCAL_ROOT: SideSel = { mountId: 'local', ref: 'local:///', label: '本地 /' }
@@ -86,6 +86,7 @@ function jobFromEditor(o: {
   dst: SideSel
   direction: SyncJob['direction']
   compare: SyncJob['compare']
+  deleteEnabled: boolean | null
   exclude: string[]
   schedule: string
   runOn: SyncJob['runOn']
@@ -103,6 +104,9 @@ function jobFromEditor(o: {
     dstRef: o.dst.ref,
     direction: o.direction,
     compare: o.compare,
+    // null = follow the global default (omitted on the wire so the
+    // backend sees a nil override, never a false override).
+    deleteEnabled: o.deleteEnabled ?? undefined,
     exclude: o.exclude,
     schedule: o.schedule,
     runOn: o.runOn,
@@ -136,12 +140,216 @@ function planCounts(plan: Plan) {
   return { upload, update, del, conflict }
 }
 
+// stripDeletes mirrors the backend's Plan.WithoutDeletes (§22):
+// every delete item is removed and counted as deferred, the
+// gate flag/reason are kept so the run record still says why the
+// deletes were held back. The original plan is untouched.
+function stripDeletes(plan: Plan): Plan {
+  let deferred = plan.deferredDeleteCount ?? 0
+  const items = plan.items.filter((it) => {
+    if (it.action === 'delete') {
+      deferred++
+      return false
+    }
+    return true
+  })
+  return {
+    ...plan,
+    items,
+    hasDeletes: false,
+    deleteCount: 0,
+    confirmDeletes: false,
+    deletesDeferred: deferred > 0,
+    deferredDeleteCount: deferred,
+  }
+}
+
+function deleteCountOf(plan: Plan): number {
+  if (plan.deleteCount > 0) return plan.deleteCount
+  return plan.items.filter((it) => it.action === 'delete').length
+}
+
+// ---- §7 conflict choices: labels + honest per-choice notes.
+// The sync engine only ever writes the target side, so "keep
+// right" is a no-op (the source still holds its version and the
+// conflict will likely come back next sync) — the UI must never
+// claim the conflict is "resolved" or both sides are now equal.
+const CONFLICT_CHOICE_LABELS: Record<ConflictChoice, string> = {
+  'keep-both': '保留双方',
+  'keep-left': '保留源（左）',
+  'keep-right': '保留目标（右）',
+  'keep-newer': '保留较新的',
+}
+
+function conflictChoiceNote(choice: ConflictChoice): string {
+  switch (choice) {
+    case 'keep-left':
+      return '源端版本覆盖目标端原名。'
+    case 'keep-right':
+      return '目标端不动；源端仍保留左版本，下次同步可能再次提示这个冲突。'
+    case 'keep-newer':
+      return '按修改时间，新的那份占原名。'
+    case 'keep-both':
+    default:
+      return '两边都留着：目标端 keep 原名，源端版本另存为冲突副本。'
+  }
+}
+
+function ConflictList({
+  conflicts,
+  onChoice,
+  onApplyNewerAll,
+}: {
+  conflicts: ConflictDetail[]
+  onChoice: (path: string, choice: ConflictChoice) => void
+  onApplyNewerAll: () => void
+}) {
+  const anyNewer = conflicts.some((c) => c.allowNewer && c.options.includes('keep-newer'))
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <h4 style={{ margin: 0 }}>冲突（{conflicts.length} 个）</h4>
+        {anyNewer && (
+          <button className="btn btn-sm" onClick={onApplyNewerAll}>
+            全部保留较新的
+          </button>
+        )}
+      </div>
+      <p className="muted" style={{ fontSize: 12, margin: '4px 0 8px' }}>
+        两边都改过的文件，默认保留双方。同步只写目标端：选“保留目标”后源端仍保留左版本，下次同步可能再次提示；处理完不代表两边已一致。
+      </p>
+      {conflicts.map((c) => {
+        const effective = c.choice || c.defaultChoice
+        return (
+          <div key={c.path} className="plan-row" style={{ display: 'block', marginBottom: 8 }}>
+            <div className="path" style={{ wordBreak: 'break-all' }}>
+              {c.path}
+              {c.localInvolved && <span className="muted">（含本地文件夹）</span>}
+            </div>
+            <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+              源（左）：{formatSize(c.leftSize)}
+              {c.leftModTime ? ` · ${formatTime(c.leftModTime)}` : ' · 修改时间未知'}
+              {'　｜　'}目标（右）：{formatSize(c.rightSize)}
+              {c.rightModTime ? ` · ${formatTime(c.rightModTime)}` : ' · 修改时间未知'}
+            </div>
+            <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 6 }}>
+              {c.options.map((opt) => (
+                <label key={opt} className="radio-row" style={{ margin: 0 }}>
+                  <input
+                    type="radio"
+                    name={`conflict-${c.path}`}
+                    checked={effective === opt}
+                    onChange={() => onChoice(c.path, opt)}
+                  />
+                  <span>{CONFLICT_CHOICE_LABELS[opt]}</span>
+                </label>
+              ))}
+            </div>
+            <div className="hint" style={{ marginTop: 4 }}>
+              {conflictChoiceNote(effective)}
+            </div>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// ---- §22 safety-gate dialog (declarative, three-way choice).
+// Triggered ONLY by plan.gateTriggered — never by hasDeletes.
+// The reason line is the backend's gateReason verbatim: when the
+// target holds few files, a small delete count can trip the gate
+// on percentage, so the dialog must not rephrase it as a count
+// threshold. Agent jobs cannot confirm deletes from here (the
+// Agent re-previews on its side and holds gated deletes) —
+// canConfirmDeletes=false hides that option and says so.
+function DeleteGateDialog({
+  job,
+  plan,
+  canConfirmDeletes,
+  busy,
+  onConfirmDeletes,
+  onSyncNonDeletes,
+  onCancel,
+}: {
+  job: SyncJob
+  plan: Plan
+  canConfirmDeletes: boolean
+  busy: boolean
+  onConfirmDeletes: () => void
+  onSyncNonDeletes: () => void
+  onCancel: () => void
+}) {
+  const [policy, setPolicy] = useState<DeletePolicyInfo | null>(null)
+  const [closing, requestClose] = useClosing(onCancel)
+  useEffect(() => {
+    let live = true
+    api
+      .deletePolicyForJob(job)
+      .then((p) => {
+        if (live) setPolicy(p)
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+    // The policy only depends on the job's id + delete override
+    // (the rest is read live from Settings by the backend); the
+    // caller passes a fresh job object per render, which must
+    // not refetch on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job.id, job.deleteEnabled])
+  return (
+    <div className={`dialog-backdrop${closing ? ' closing' : ''}`} onClick={requestClose}>
+      <div className={`dialog${closing ? ' closing' : ''}`} role="alertdialog" aria-label="删除安全闸" onClick={(e) => e.stopPropagation()}>
+        <h1>删除安全闸已触发</h1>
+        <p style={{ margin: '0 0 8px' }}>
+          本次同步要删除 {deleteCountOf(plan)} 个文件。{plan.gateReason || '删除数量超过了安全闸上限。'}
+        </p>
+        <p className="muted" style={{ margin: '0 0 8px' }}>
+          目标端文件很少时，删 1 个也可能因比例触发安全闸；上面就是触发的实际原因。
+        </p>
+        {policy && (
+          <p className="muted" style={{ margin: '0 0 12px' }}>
+            当前策略：删除{policy.allowed ? '已开' : '未开'}（
+            {policy.jobOverride == null
+              ? `跟随全局，全局${policy.globalDefault ? '开' : '关'}`
+              : policy.jobOverride
+                ? '本任务单独开'
+                : '本任务单独关'}
+            ）· 安全闸上限 {policy.gateMaxCount} 个 / {policy.gateMaxPercent}%
+          </p>
+        )}
+        {!canConfirmDeletes && (
+          <p className="muted" style={{ margin: '0 0 12px' }}>
+            这项任务在 Agent 上跑：删除确认目前只能在本机跑的任务上做。Agent 会先只同步非删除部分，删除暂挂、等确认。
+          </p>
+        )}
+        <div className="dialog-actions">
+          {canConfirmDeletes && (
+            <button className="btn-danger" disabled={busy} onClick={onConfirmDeletes}>
+              确认删除并执行
+            </button>
+          )}
+          <button className="btn" disabled={busy} onClick={onSyncNonDeletes}>
+            只同步非删除部分
+          </button>
+          <button className="btn" disabled={busy} onClick={requestClose}>
+            取消本次同步
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ---- Editor: dual-pane + options + plan preview + save/run ----
 function SyncJobEditor({
   initial,
   mounts,
   agents,
   defaultCompare,
+  globalDeleteDefault,
   onSaved,
   onBatchSaved,
   onCancel,
@@ -153,6 +361,8 @@ function SyncJobEditor({
   // New jobs start from the Settings → 同步默认 comparison; existing
   // jobs keep their own value (initial wins, never overwritten).
   defaultCompare: SyncJob['compare']
+  // Settings → 同步默认 delete switch, for the "跟随全局" label.
+  globalDeleteDefault: boolean
   onSaved: (job: SyncJob) => void
   // Batch creation (multi-select): all created jobs at once, so the
   // page can add them and close the editor in one step.
@@ -172,6 +382,9 @@ function SyncJobEditor({
   })
   const [direction, setDirection] = useState<SyncJob['direction']>(initial?.direction ?? 'copy')
   const [compare, setCompare] = useState<SyncJob['compare']>(initial?.compare ?? defaultCompare)
+  // Per-job delete switch (v0.20.0, §20): null = follow the global
+  // default, true/false override it for this job alone.
+  const [deleteEnabled, setDeleteEnabled] = useState<boolean | null>(initial?.deleteEnabled ?? null)
   const [excludeText, setExcludeText] = useState(
     initial ? (initial?.exclude ?? []).join('\n') : DEFAULT_EXCLUDE_RULES.join('\n'),
   )
@@ -200,6 +413,7 @@ function SyncJobEditor({
       dst,
       direction,
       compare,
+      deleteEnabled,
       exclude,
       schedule,
       runOn: effectiveRunOn,
@@ -209,7 +423,42 @@ function SyncJobEditor({
       updatedAt: new Date().toISOString(),
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, name, src, dst, direction, compare, excludeText, schedule, effectiveRunOn, agentId])
+  }, [jobId, name, src, dst, direction, compare, deleteEnabled, excludeText, schedule, effectiveRunOn, agentId])
+
+  // Per-item conflict choices (§7): kept in a ref so a fresh
+  // preview (debounced re-compare) re-applies the user's picks
+  // instead of dropping them back to the default.
+  const conflictChoicesRef = useRef<Record<string, ConflictChoice>>({})
+  const applyConflictChoices = (p: Plan): Plan => {
+    const ch = conflictChoicesRef.current
+    if (!p.conflicts?.length || Object.keys(ch).length === 0) return p
+    return { ...p, conflicts: p.conflicts.map((c) => (ch[c.path] ? { ...c, choice: ch[c.path] } : c)) }
+  }
+  const setConflictChoice = (path: string, choice: ConflictChoice) => {
+    conflictChoicesRef.current = { ...conflictChoicesRef.current, [path]: choice }
+    setPlan((prev) =>
+      prev && prev.conflicts
+        ? { ...prev, conflicts: prev.conflicts.map((c) => (c.path === path ? { ...c, choice } : c)) }
+        : prev,
+    )
+  }
+  const applyNewerToAll = () => {
+    if (!plan?.conflicts) return
+    const next: Record<string, ConflictChoice> = { ...conflictChoicesRef.current }
+    for (const c of plan.conflicts) {
+      if (c.allowNewer && c.options.includes('keep-newer')) next[c.path] = 'keep-newer'
+    }
+    conflictChoicesRef.current = next
+    setPlan((prev) =>
+      prev && prev.conflicts
+        ? { ...prev, conflicts: prev.conflicts.map((c) => (next[c.path] ? { ...c, choice: next[c.path] } : c)) }
+        : prev,
+    )
+  }
+
+  // Safety-gate dialog (§22): the plan awaiting the user's
+  // three-way choice. Only set when plan.gateTriggered is true.
+  const [gatePlan, setGatePlan] = useState<Plan | null>(null)
 
   // Auto re-compare on any input change (debounced). Never clears the
   // plan on navigation; a stale plan is replaced when the new one lands.
@@ -219,7 +468,7 @@ function SyncJobEditor({
     const t = setTimeout(() => {
       previewJob(buildJob())
         .then((p) => {
-          setPlan(p)
+          setPlan(applyConflictChoices(p))
           setPlanLoading(false)
         })
         .catch((e) => {
@@ -249,43 +498,108 @@ function SyncJobEditor({
     }
   }
 
+  // Executes a plan the user has already confirmed (gate /
+  // checkbox / deferred handling all decided by the caller).
+  // The plan is passed through as-is: confirmDeletes and the
+  // per-item conflict choices travel in it, and the engine
+  // re-checks the delete policy at execution time.
+  const executeRun = async (runPlan: Plan) => {
+    const deferred = runPlan.deferredDeleteCount ?? 0
+    const deferredNote = deferred > 0 ? `${deferred} 个删除已暂挂（删除开关未开）。` : ''
+    if (effectiveRunOn !== 'local') {
+      // Agent job: push the latest config, then start it there.
+      // The plan was previewed on the desktop (both sides are
+      // readable from here); execution + run record live on the
+      // Agent. A gated plan never reaches here with deletes: the
+      // gate dialog only offers the non-delete part for Agent
+      // jobs, and the Agent itself holds gated deletes too.
+      const saved = await save()
+      await api.triggerAgentJob(saved.id)
+      onSaved(saved)
+      onRan()
+      setDoneMsg(`已在 Agent 上开始同步。运行记录在任务卡片的“运行记录”里看；桌面关掉也不影响。${deferredNote}`)
+      return
+    }
+    const saved = await save()
+    const run = await api.runSync(saved, runPlan)
+    if (!run) throw new Error('同步没有返回运行记录')
+    // Record the outcome on the saved job.
+    const done = { ...saved, lastRunAt: new Date().toISOString(), lastRunOk: run.status !== 'failed' }
+    await api.saveSyncJob(done)
+    onSaved(done)
+    onRan()
+    const c = planCounts(runPlan)
+    setDoneMsg(
+      `已开始同步：待上传 ${c.upload} 个 · 待更新 ${c.update} 个${c.del > 0 ? ` · 待删除 ${c.del} 个` : ''}。${deferredNote}进度见右下角传输胶囊。`,
+    )
+  }
+
   const handleRun = async () => {
     setBusy(true)
     setError(null)
     setDoneMsg(null)
     try {
-      if (!plan) {
-        const p = await previewJob(buildJob())
-        setPlan(p)
-        if (!p) throw new Error('未能生成同步计划')
+      let currentPlan = plan
+      if (!currentPlan) {
+        currentPlan = await previewJob(buildJob())
+        setPlan(applyConflictChoices(currentPlan))
       }
-      const currentPlan = plan ?? (await previewJob(buildJob()))
+      currentPlan = applyConflictChoices(currentPlan)
+      // §22 gate first: gateTriggered is the only trigger — never
+      // hasDeletes. The dialog decides; nothing runs yet.
+      if (currentPlan.gateTriggered) {
+        setGatePlan(currentPlan)
+        return
+      }
+      if (currentPlan.items.length === 0) {
+        // No silent "完成 0/0/0": say what happened instead of
+        // running nothing and recording a hollow "completed".
+        if (currentPlan.deletesDeferred) {
+          setDoneMsg(`${currentPlan.deferredDeleteCount ?? 0} 个删除已暂挂（删除开关未开），没有其他要同步的内容；没有运行，也没有记运行记录。`)
+        } else {
+          setDoneMsg('两边已经一致，没有要同步的内容；没有运行，也没有记运行记录。')
+        }
+        return
+      }
+      // Gate not tripped + switch on: the existing confirm flow.
       if (currentPlan.hasDeletes && !confirmDeletes) {
         throw new Error('这个计划包含删除操作，请先勾选“确认删除”再开始同步。')
       }
-      if (effectiveRunOn !== 'local') {
-        // Agent job: push the latest config, then start it there.
-        // The plan was previewed on the desktop (both sides are
-        // readable from here); execution + run record live on the
-        // Agent. A mirror plan with deletes fails on the Agent by
-        // design — deletions must be confirmed and run by hand.
-        const saved = await save()
-        await api.triggerAgentJob(saved.id)
-        onSaved(saved)
-        onRan()
-        setDoneMsg('已在 Agent 上开始同步。运行记录在任务卡片的“运行记录”里看；桌面关掉也不影响。')
-        return
-      }
-      const saved = await save()
-      const run = await api.runSync(saved, currentPlan)
-      if (!run) throw new Error('同步没有返回运行记录')
-      // Record the outcome on the saved job.
-      const done = { ...saved, lastRunAt: new Date().toISOString(), lastRunOk: run.status !== 'failed' }
-      await api.saveSyncJob(done)
-      onSaved(done)
-      onRan()
-      const c = planCounts(currentPlan)
-      setDoneMsg(`已开始同步：待上传 ${c.upload} 个 · 待更新 ${c.update} 个 · 待删除 ${c.del} 个。进度见右下角传输胶囊。`)
+      await executeRun(currentPlan)
+    } catch (e) {
+      setError(friendlyError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // Gate dialog outcomes (§22): confirm = set confirmDeletes and
+  // re-run; non-delete part = strip the deletes and re-run;
+  // cancel = run nothing.
+  const handleGateConfirm = async () => {
+    if (!gatePlan) return
+    const p = { ...gatePlan, confirmDeletes: true }
+    setGatePlan(null)
+    setBusy(true)
+    setError(null)
+    setDoneMsg(null)
+    try {
+      await executeRun(p)
+    } catch (e) {
+      setError(friendlyError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  const handleGateNonDeletes = async () => {
+    if (!gatePlan) return
+    const p = stripDeletes(gatePlan)
+    setGatePlan(null)
+    setBusy(true)
+    setError(null)
+    setDoneMsg(null)
+    try {
+      await executeRun(p)
     } catch (e) {
       setError(friendlyError(e))
     } finally {
@@ -341,6 +655,7 @@ function SyncJobEditor({
             dst: { ...dst, ref: d.ref, label: d.label },
             direction,
             compare,
+            deleteEnabled,
             exclude,
             schedule,
             runOn: effectiveRunOn,
@@ -418,6 +733,19 @@ function SyncJobEditor({
               <option value="size">仅大小</option>
               <option value="checksum">校验值</option>
             </select>
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}>
+            <label>删除目标端文件</label>
+            <select
+              className="select"
+              value={deleteEnabled === null ? 'follow' : deleteEnabled ? 'on' : 'off'}
+              onChange={(e) => setDeleteEnabled(e.target.value === 'follow' ? null : e.target.value === 'on')}
+            >
+              <option value="follow">跟随全局（当前全局：{globalDeleteDefault ? '开' : '关'}）</option>
+              <option value="on">本任务允许删除</option>
+              <option value="off">本任务不删除</option>
+            </select>
+            <div className="hint">关着时同步永远不删文件：目标端删掉的文件，下次同步会从源端拷回来。</div>
           </div>
           <div className="field">
             <label>执行位置</label>
@@ -542,7 +870,15 @@ function SyncJobEditor({
               {plan.items.length > 100 && <p className="muted">…还有 {plan.items.length - 100} 项</p>}
             </div>
           )}
-          {plan.items.length === 0 && <p className="muted">两边已经一致，没有要同步的内容。</p>}
+          {plan.items.length === 0 && !plan.deletesDeferred && <p className="muted">两边已经一致，没有要同步的内容。</p>}
+          {plan.deletesDeferred && (plan.deferredDeleteCount ?? 0) > 0 && (
+            <div className="notice-box" style={{ borderColor: 'var(--brand)', marginTop: 8 }}>
+              {plan.deferredDeleteCount} 个删除已暂挂（删除开关未开）：这些文件不会被删，仍留在目标端。
+            </div>
+          )}
+          {plan.conflicts && plan.conflicts.length > 0 && (
+            <ConflictList conflicts={plan.conflicts} onChoice={setConflictChoice} onApplyNewerAll={applyNewerToAll} />
+          )}
           {deletes.length > 0 && (
             <label className="radio-row" style={{ marginTop: 8 }}>
               <input type="checkbox" checked={confirmDeletes} onChange={(e) => setConfirmDeletes(e.target.checked)} />
@@ -583,6 +919,18 @@ function SyncJobEditor({
           </>
         )}
       </div>
+
+      {gatePlan && (
+        <DeleteGateDialog
+          job={buildJob()}
+          plan={gatePlan}
+          canConfirmDeletes={effectiveRunOn === 'local'}
+          busy={busy}
+          onConfirmDeletes={() => void handleGateConfirm()}
+          onSyncNonDeletes={() => void handleGateNonDeletes()}
+          onCancel={() => setGatePlan(null)}
+        />
+      )}
     </div>
   )
 }
@@ -600,6 +948,9 @@ function RunHistory({ runs, loading, error }: { runs: RunResponse[]; loading: bo
       {runs.map((r) => {
         const run = r.run
         const p = run.plan
+        // Deferred deletes survive both as Run.deferredDeletes and
+        // inside the plan summary — either one is the same number.
+        const deferredShown = p?.deferredDeletes ?? run.deferredDeletes ?? 0
         return (
           <div key={run.id} className="plan-row" style={{ display: 'block' }}>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -612,6 +963,12 @@ function RunHistory({ runs, loading, error }: { runs: RunResponse[]; loading: bo
                 <span className="muted" style={{ fontSize: 12 }}>
                   上传 {p.toUpload} · 更新 {p.toUpdate} · 删除 {p.toDelete}
                   {p.conflicts ? ` · 冲突 ${p.conflicts}` : ''}
+                  {deferredShown > 0 ? ` · 暂挂删除 ${deferredShown} 个` : ''}
+                </span>
+              )}
+              {!p && deferredShown > 0 && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  暂挂删除 {deferredShown} 个
                 </span>
               )}
             </div>
@@ -656,6 +1013,12 @@ export default function SyncJobsPage({
   // New-job compare default, from Settings → 同步默认 (falls back to
   // size+time when settings can't be read, e.g. dev shell).
   const [defaultCompare, setDefaultCompare] = useState<SyncJob['compare']>('size+time')
+  // Global delete default, same source — for the editor's
+  // "跟随全局" label.
+  const [globalDeleteDefault, setGlobalDeleteDefault] = useState(false)
+  // Safety-gate dialog (§22) for "立即同步": the job + plan
+  // awaiting the user's three-way choice.
+  const [gatePending, setGatePending] = useState<{ job: SyncJob; plan: Plan } | null>(null)
   const highlightRef = useRef<Record<string, HTMLDivElement | null>>({})
 
   const load = useCallback(async () => {
@@ -674,7 +1037,10 @@ export default function SyncJobsPage({
     void load()
     void api
       .getSettings()
-      .then((s) => setDefaultCompare(s.syncCompare))
+      .then((s) => {
+        setDefaultCompare(s.syncCompare)
+        setGlobalDeleteDefault(s.syncDeleteDefault ?? false)
+      })
       .catch(() => undefined)
   }, [load])
 
@@ -713,36 +1079,11 @@ export default function SyncJobsPage({
     }
   }
 
-  const runNow = async (job: SyncJob) => {
+  // Executes a confirmed plan for "立即同步" (local jobs only).
+  const doRunNow = async (job: SyncJob, plan: Plan) => {
     if (runningId === job.id) return // re-entry guard: one run per job at a time
-    setError(null)
-    setInfo(null)
     setRunningId(job.id)
     try {
-      if (job.runOn !== 'local') {
-        // Agent job: push latest config + start it there. The run
-        // record lives on the Agent; refresh the history below.
-        await api.triggerAgentJob(job.id)
-        setInfo(`已在 Agent 上开始同步“${job.name}”。运行记录在下方“运行记录”里看；桌面关掉也不影响。`)
-        await loadRuns(job.id)
-        onRan()
-        return
-      }
-      const plan = await previewJob(job)
-      if (plan.hasDeletes) {
-        // Deletions need explicit confirmation in the editor.
-        setExpandedId(job.id)
-        setError('这个计划包含删除操作，请在下方编辑器里勾选确认后再开始同步。')
-        return
-      }
-      if (plan.items.length === 0) {
-        // No silent "完成 0/0/0": the plan is empty because the
-        // source is empty or both sides already match. The plan
-        // alone cannot tell which — say so honestly instead of
-        // running nothing and recording a hollow "completed".
-        setInfo(`“${job.name}”没有需要同步的内容：源目录为空，或两边已经一致。没有运行，也没有记一条空的运行记录。`)
-        return
-      }
       const run = await api.runSync(job, plan)
       if (!run) throw new Error('同步没有返回运行记录')
       const done = { ...job, lastRunAt: new Date().toISOString(), lastRunOk: run.status !== 'failed' }
@@ -752,12 +1093,107 @@ export default function SyncJobsPage({
       setRunsOpenId(job.id) // the record is visible without hunting for it
       onRan()
       const c = planCounts(plan)
-      setInfo(`已完成同步“${job.name}”：上传 ${c.upload} 个 · 更新 ${c.update} 个 · 删除 ${c.del} 个。运行记录已在下方展开。`)
+      const deferred = plan.deferredDeleteCount ?? 0
+      setInfo(
+        `已完成同步“${job.name}”：上传 ${c.upload} 个 · 更新 ${c.update} 个${c.del > 0 ? ` · 删除 ${c.del} 个` : ''}。${deferred > 0 ? `${deferred} 个删除已暂挂（删除开关未开）。` : ''}运行记录已在下方展开。`,
+      )
     } catch (e) {
       setError(friendlyError(e))
     } finally {
       setRunningId(null)
     }
+  }
+
+  const runNow = async (job: SyncJob) => {
+    if (runningId === job.id) return // re-entry guard: one run per job at a time
+    setError(null)
+    setInfo(null)
+    setRunningId(job.id)
+    try {
+      // Preview first (both local and Agent jobs — both sides are
+      // readable from the desktop): the gate and the deferred
+      // deletes are decided here, before anything runs.
+      const plan = await previewJob(job)
+      // §22 gate: gateTriggered is the only trigger — never
+      // hasDeletes. The dialog decides; nothing runs yet. The
+      // switch-off case never reaches here: the preview already
+      // stripped those deletes into deletesDeferred.
+      if (plan.gateTriggered) {
+        setGatePending({ job, plan })
+        return
+      }
+      if (plan.items.length === 0) {
+        // No silent "完成 0/0/0": the plan is empty because the
+        // source is empty or both sides already match — or every
+        // item was a delete held back by the switch. Say which,
+        // instead of running nothing and recording a hollow
+        // "completed".
+        if (plan.deletesDeferred) {
+          setInfo(`“${job.name}”：${plan.deferredDeleteCount ?? 0} 个删除已暂挂（删除开关未开），没有其他要同步的内容。没有运行，也没有记一条空的运行记录。`)
+        } else {
+          setInfo(`“${job.name}”没有需要同步的内容：源目录为空，或两边已经一致。没有运行，也没有记一条空的运行记录。`)
+        }
+        return
+      }
+      if (job.runOn !== 'local') {
+        // Agent job: push latest config + start it there. The run
+        // record lives on the Agent; refresh the history below.
+        // A gated plan never reaches here (dialog above); a
+        // deferred plan runs its non-delete part on the Agent.
+        await api.triggerAgentJob(job.id)
+        const deferred = plan.deferredDeleteCount ?? 0
+        setInfo(
+          `已在 Agent 上开始同步“${job.name}”。${deferred > 0 ? `${deferred} 个删除已暂挂（删除开关未开）。` : ''}运行记录在下方“运行记录”里看；桌面关掉也不影响。`,
+        )
+        await loadRuns(job.id)
+        onRan()
+        return
+      }
+      await doRunNow(job, plan)
+    } catch (e) {
+      setError(friendlyError(e))
+    } finally {
+      setRunningId(null)
+    }
+  }
+
+  // Gate dialog outcomes (§22) for "立即同步": confirm = set
+  // confirmDeletes and re-run; non-delete part = strip the
+  // deletes and re-run; cancel = run nothing.
+  const handleGateConfirm = async () => {
+    if (!gatePending) return
+    const { job, plan } = gatePending
+    setGatePending(null)
+    // Defensive: the dialog hides this option for Agent jobs
+    // (they cannot confirm deletes from here) — never run an
+    // Agent job through the local runner.
+    if (job.runOn !== 'local') {
+      await handleGateNonDeletesFor(job)
+      return
+    }
+    await doRunNow(job, { ...plan, confirmDeletes: true })
+  }
+  const handleGateNonDeletesFor = async (job: SyncJob) => {
+    setError(null)
+    setInfo(null)
+    try {
+      await api.triggerAgentJob(job.id)
+      setInfo(`已在 Agent 上开始同步“${job.name}”（只同步非删除部分，删除已暂挂）。运行记录在下方“运行记录”里看；桌面关掉也不影响。`)
+      await loadRuns(job.id)
+      onRan()
+    } catch (e) {
+      setError(friendlyError(e))
+    }
+  }
+  const handleGateNonDeletes = async () => {
+    if (!gatePending) return
+    const { job, plan } = gatePending
+    setGatePending(null)
+    if (job.runOn !== 'local') {
+      await handleGateNonDeletesFor(job)
+      return
+    }
+    await doRunNow(job, stripDeletes(plan))
   }
 
   // Run history, per job, loaded on demand (and refreshed after a run).
@@ -828,6 +1264,7 @@ export default function SyncJobsPage({
           mounts={mounts}
           agents={agents}
           defaultCompare={defaultCompare}
+          globalDeleteDefault={globalDeleteDefault}
           onSaved={afterSaved}
           onBatchSaved={afterBatchSaved}
           onCancel={() => setCreating(false)}
@@ -869,6 +1306,7 @@ export default function SyncJobsPage({
             <div className="job-title">{job.name}</div>
             <div className="job-meta">
               {srcLabel(job)} → {dstLabel(job)} · {directionLabel(job.direction)} · 比较：{job.compare}
+              {' · '}删除：{job.deleteEnabled == null ? '跟随全局' : job.deleteEnabled ? '开' : '关'}
               {job.exclude && job.exclude.length > 0 ? ` · 排除 ${job.exclude.length} 条规则` : ''}
               {' · '}定时：{scheduleLabel(job.schedule)}
               {' · '}执行：{runOnLabel(job, agents)}
@@ -927,6 +1365,7 @@ export default function SyncJobsPage({
                   mounts={mounts}
                   agents={agents}
                   defaultCompare={defaultCompare}
+                  globalDeleteDefault={globalDeleteDefault}
                   onSaved={afterSaved}
                   onBatchSaved={afterBatchSaved}
                   onCancel={() => setExpandedId(null)}
@@ -947,6 +1386,18 @@ export default function SyncJobsPage({
             </Accordion>
           </div>
         ))
+      )}
+
+      {gatePending && (
+        <DeleteGateDialog
+          job={gatePending.job}
+          plan={gatePending.plan}
+          canConfirmDeletes={gatePending.job.runOn === 'local'}
+          busy={runningId === gatePending.job.id}
+          onConfirmDeletes={() => void handleGateConfirm()}
+          onSyncNonDeletes={() => void handleGateNonDeletes()}
+          onCancel={() => setGatePending(null)}
+        />
       )}
     </div>
   )

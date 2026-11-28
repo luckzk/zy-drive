@@ -265,6 +265,17 @@ var migrations = []string{
 	// (never shipped) have no remote size and compare by
 	// mtime only.
 	`ALTER TABLE mount_cache ADD COLUMN remote_size INTEGER NOT NULL DEFAULT -1`,
+	// v28 (2026-11-28, delete safety §20): per-job delete override
+	// (tri-state: NULL = follow the global sync.delete_default,
+	// 0 = off for this job, 1 = on for this job). Default NULL:
+	// every job saved before this column existed follows the
+	// global default (off), which is exactly the §20 behaviour.
+	`ALTER TABLE sync_jobs ADD COLUMN delete_enabled INTEGER`,
+	// v29 (2026-11-28, delete safety §20/§22): how many deletes a
+	// run held back ("删除已暂挂") — shown in the run history.
+	// Default 0: every run recorded before this column existed
+	// executed its deletes (or had none).
+	`ALTER TABLE runs ADD COLUMN deferred_deletes INTEGER NOT NULL DEFAULT 0`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.

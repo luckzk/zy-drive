@@ -51,3 +51,50 @@ func TestSyncJobsRoundTrip(t *testing.T) {
 		t.Fatalf("expected no jobs after delete, got %d", len(jobs))
 	}
 }
+
+// TestSyncJobsDeleteEnabledRoundTrip: the per-job delete override
+// is tri-state — nil follows the global default, true/false
+// override it — and survives a save/load cycle.
+func TestSyncJobsDeleteEnabledRoundTrip(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("cache.Open: %v", err)
+	}
+	defer db.Close()
+
+	base := &domain.SyncJob{
+		ID: "job-del", Name: "删开关", SrcMount: "m1", SrcRef: "/a",
+		DstMount: "m2", DstRef: "/b", Direction: domain.DirectionMirror,
+		Compare: domain.CompareSizeTime, RunOn: domain.RunOnLocal, Enabled: true,
+	}
+	// nil: follows global.
+	if err := db.SaveSyncJob(base); err != nil {
+		t.Fatalf("SaveSyncJob: %v", err)
+	}
+	jobs, _ := db.ListSyncJobs()
+	if jobs[0].DeleteEnabled != nil {
+		t.Fatalf("nil override must round-trip as nil, got %+v", jobs[0].DeleteEnabled)
+	}
+	// true, then false.
+	for _, v := range []bool{true, false} {
+		j := *base
+		j.DeleteEnabled = domain.BoolPtr(v)
+		if err := db.SaveSyncJob(&j); err != nil {
+			t.Fatalf("SaveSyncJob(%v): %v", v, err)
+		}
+		jobs, _ = db.ListSyncJobs()
+		if jobs[0].DeleteEnabled == nil || *jobs[0].DeleteEnabled != v {
+			t.Fatalf("override %v must round-trip, got %+v", v, jobs[0].DeleteEnabled)
+		}
+	}
+	// Back to nil (clear the override).
+	j := *base
+	j.DeleteEnabled = nil
+	if err := db.SaveSyncJob(&j); err != nil {
+		t.Fatalf("SaveSyncJob(nil): %v", err)
+	}
+	jobs, _ = db.ListSyncJobs()
+	if jobs[0].DeleteEnabled != nil {
+		t.Fatalf("cleared override must round-trip as nil, got %+v", jobs[0].DeleteEnabled)
+	}
+}

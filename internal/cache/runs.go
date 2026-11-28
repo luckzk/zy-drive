@@ -30,13 +30,14 @@ func (db *DB) SaveRun(r *domain.Run) error {
 	if r.EndedAt != nil {
 		ended = r.EndedAt.UTC().Format(time.RFC3339)
 	}
-	if _, err := db.SQL.Exec(`INSERT INTO runs (id, job_id, status, plan_json, started_at, ended_at, error)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+	if _, err := db.SQL.Exec(`INSERT INTO runs (id, job_id, status, plan_json, started_at, ended_at, error, deferred_deletes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET job_id=excluded.job_id, status=excluded.status,
 			plan_json=excluded.plan_json, started_at=excluded.started_at,
-			ended_at=excluded.ended_at, error=excluded.error`,
+			ended_at=excluded.ended_at, error=excluded.error,
+			deferred_deletes=excluded.deferred_deletes`,
 		r.ID, r.JobID, string(r.Status), planJSON,
-		r.StartedAt.UTC().Format(time.RFC3339), ended, r.Error); err != nil {
+		r.StartedAt.UTC().Format(time.RFC3339), ended, r.Error, r.DeferredDeletes); err != nil {
 		return fmt.Errorf("cache: save run: %w", err)
 	}
 	return nil
@@ -44,7 +45,7 @@ func (db *DB) SaveRun(r *domain.Run) error {
 
 // ListRuns returns a job's runs, newest first (limit <= 0 means all).
 func (db *DB) ListRuns(jobID string, limit int) ([]*domain.Run, error) {
-	q := `SELECT id, job_id, status, plan_json, started_at, ended_at, error
+	q := `SELECT id, job_id, status, plan_json, started_at, ended_at, error, deferred_deletes
 		FROM runs WHERE job_id = ? ORDER BY started_at DESC`
 	args := []any{jobID}
 	if limit > 0 {
@@ -61,7 +62,7 @@ func (db *DB) ListRuns(jobID string, limit int) ([]*domain.Run, error) {
 		var r domain.Run
 		var status, planJSON, started string
 		var ended sql.NullString
-		if err := rows.Scan(&r.ID, &r.JobID, &status, &planJSON, &started, &ended, &r.Error); err != nil {
+		if err := rows.Scan(&r.ID, &r.JobID, &status, &planJSON, &started, &ended, &r.Error, &r.DeferredDeletes); err != nil {
 			return nil, fmt.Errorf("cache: list runs: %w", err)
 		}
 		r.Status = domain.RunStatus(status)

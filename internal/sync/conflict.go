@@ -10,11 +10,21 @@ import (
 )
 
 // Conflict is a path both sides changed since the last sync.
-// V0.1 rule, frozen (ADR-6): never silently delete, never silently
-// overwrite the loser's content.
-//   - The newer version keeps the original name.
-//   - The other version is kept as "name (conflict copy from <side>
-//     <date>)" — both copies survive, the user decides later.
+// Rule (roadmap §7, replacing the frozen V0.1 "newer wins the
+// name" rule): never silently delete, never silently overwrite the
+// loser's content, and never let a timestamp decide a winner on its
+// own —
+//   - When either side is a local folder, the conflict goes into
+//     the plan's per-item list for the user to pick per item
+//     (keep left / keep right / keep both, default keep both).
+//     Local OS mtime is incomparable with cloud server time, so
+//     "keep newer" is not even offered.
+//   - Only when both sides are cloud drives is "keep newer"
+//     offered as a batch shortcut — and only as an explicit choice
+//     the user picks in the preview, never a silent automatic.
+//   - The losing side's copy is always preserved under
+//     "name (conflict copy from <side> <date>).ext"; nothing is
+//     quietly deleted.
 type Conflict struct {
 	Path     string
 	SrcMod   time.Time
@@ -22,22 +32,32 @@ type Conflict struct {
 	Decision string // human-readable, shown in the run report
 }
 
-// ResolveConflict applies the frozen V0.1 rule and returns the name the
-// losing side's copy will be stored under.
+// ResolveConflict describes what happens to the losing side's copy
+// once a winner has been chosen (by the user, or keep-both by
+// default): the loser is preserved under its conflict-copy name.
+// It does NOT pick a winner — the V0.1 behaviour of letting
+// ModTime pick one is gone.
 func ResolveConflict(path, losingSide string, losingMod time.Time) Conflict {
 	losingName := ConflictCopyName(path, losingSide, losingMod)
 	return Conflict{
 		Path:     path,
-		Decision: fmt.Sprintf("both sides changed; newer keeps %q, other kept as %q", path, losingName),
+		Decision: fmt.Sprintf("both sides changed; losing copy kept as %q (nothing deleted, winner chosen in preview)", losingName),
 	}
 }
 
-// ConflictCopyName builds the preserved name for the losing copy.
+// ConflictCopyName builds the preserved name for the losing copy:
+// "name (conflict copy from <side> <date>).ext", e.g.
+// "notes (conflict copy from left 2026-11-28).md". <side> is
+// "left"/"right" (or a mount name); <date> is the losing copy's
+// modification date (today when unknown).
 func ConflictCopyName(path, side string, mod time.Time) string {
 	ext := ""
 	base := path
 	if i := strings.LastIndex(path, "."); i > strings.LastIndex(path, "/") {
 		ext, base = path[i:], path[:i]
+	}
+	if mod.IsZero() {
+		mod = time.Now()
 	}
 	return fmt.Sprintf("%s (conflict copy from %s %s)%s",
 		base, side, mod.Format("2006-01-02"), ext)
@@ -46,8 +66,12 @@ func ConflictCopyName(path, side string, mod time.Time) string {
 // BuildBidirectionalPlan merges two change lists (source-vs-baseline and
 // target-vs-baseline) into one plan. Rules:
 //   - Changed on one side only → copy that side's version over.
-//   - Changed on both sides → conflict: newer wins the name, the other
-//     is preserved as a conflict copy (see ResolveConflict).
+//   - Changed on both sides → conflict: NO automatic winner. The
+//     item goes into the plan with ActionConflict plus a
+//     ConflictDetail (both sides' size/modtime, options, default
+//     keep-both). Unattended runs default to keep-both; the
+//     runner preserves the losing copy under its conflict-copy
+//     name and never overwrites silently.
 //   - Deleted on one side, modified on the other → keep the modified
 //     side and flag it loudly in the report; never apply the delete.
 //   - Deleted on both sides → nothing to do.
@@ -55,7 +79,18 @@ func ConflictCopyName(path, side string, mod time.Time) string {
 // Full baseline-aware detection (comparing ModTime against the stored
 // baseline snapshot) is wired through state.go; this merge is the
 // decision table that consumes those change lists.
+//
+// BuildBidirectionalPlan keeps the old signature and assumes both
+// sides are cloud drives (keep-newer offered). Callers that know a
+// local folder is involved must use BuildBidirectionalPlanWithLocal.
 func BuildBidirectionalPlan(jobID string, srcChanges, dstChanges []Change) *Plan {
+	return BuildBidirectionalPlanWithLocal(jobID, srcChanges, dstChanges, false)
+}
+
+// BuildBidirectionalPlanWithLocal is BuildBidirectionalPlan with
+// the local-folder flag: when localInvolved is true, "keep newer"
+// is not offered for any conflict in the plan.
+func BuildBidirectionalPlanWithLocal(jobID string, srcChanges, dstChanges []Change, localInvolved bool) *Plan {
 	p := &Plan{JobID: jobID, Direction: domain.DirectionBidirectional}
 	dstByPath := map[string]Change{}
 	for _, c := range dstChanges {
@@ -71,17 +106,17 @@ func BuildBidirectionalPlan(jobID string, srcChanges, dstChanges []Change) *Plan
 		}
 		switch {
 		case sc.Kind == ChangeModified && dc.Kind == ChangeModified:
-			// Both sides changed: conflict, newer wins the name.
-			newer, loser, loserSide := sc, dc, "target"
-			if dc.Src != nil && sc.Src != nil && dc.Src.ModTime.After(sc.Src.ModTime) {
-				newer, loser, loserSide = dc, sc, "source"
-			}
-			_ = loser
+			// Both sides changed: conflict, no automatic
+			// winner. Default keep-both: the target side keeps
+			// the original name, the source side is preserved
+			// as a conflict copy (see the runner).
+			detail := newConflictDetail(sc, dc, localInvolved)
+			p.Conflicts = append(p.Conflicts, detail)
 			p.Items = append(p.Items, PlanItem{
 				Path:   sc.Path,
 				Action: domain.ActionConflict,
-				Size:   newer.Src.Size,
-				Note:   ResolveConflict(sc.Path, loserSide, time.Now()).Decision,
+				Size:   detail.LeftSize,
+				Note:   "两边都改了：默认保留双方（左侧另存为冲突副本），可在预览里逐项改选",
 			})
 		case sc.Kind == ChangeDeleted && dc.Kind == ChangeModified:
 			// Deleted on source, modified on target: keep the modified
@@ -106,6 +141,33 @@ func BuildBidirectionalPlan(jobID string, srcChanges, dstChanges []Change) *Plan
 		p.Items = append(p.Items, changeToItem(dc, "target")...)
 	}
 	return p
+}
+
+// newConflictDetail builds the per-item conflict entry for the plan
+// preview. Left = source side, Right = target side.
+func newConflictDetail(sc, dc Change, localInvolved bool) ConflictDetail {
+	d := ConflictDetail{
+		Path:          sc.Path,
+		LeftLabel:     "left",
+		RightLabel:    "right",
+		LocalInvolved: localInvolved,
+		AllowNewer:    !localInvolved,
+		DefaultChoice: ConflictKeepBoth,
+	}
+	d.Options = conflictOptions(localInvolved)
+	if sc.Src != nil {
+		d.LeftSize = sc.Src.Size
+		if !sc.Src.ModTime.IsZero() {
+			d.LeftModTime = sc.Src.ModTime.Format(time.RFC3339)
+		}
+	}
+	if dc.Src != nil {
+		d.RightSize = dc.Src.Size
+		if !dc.Src.ModTime.IsZero() {
+			d.RightModTime = dc.Src.ModTime.Format(time.RFC3339)
+		}
+	}
+	return d
 }
 
 func changeToItem(c Change, side string) []PlanItem {

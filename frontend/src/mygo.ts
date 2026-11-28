@@ -198,6 +198,43 @@ export interface Caps {
 export type CompareMode = "size+time" | "size" | "checksum";
 
 /**
+ * ConflictChoice is one per-item conflict resolution, chosen by the
+ * user in the plan preview (roadmap §7). The engine never picks one
+ * on its own — an empty choice means the default, keep-both.
+ */
+export type ConflictChoice = "keep-both" | "keep-left" | "keep-right" | "keep-newer";
+
+/**
+ * ConflictDetail is one entry of the plan's per-item conflict list
+ * (§7): both sides' size + modification time, the available
+ * options, and the user's choice ("" = default keep-both).
+ */
+export interface ConflictDetail {
+  path: string;
+  /** Left is the source side, Right the target side. */
+  leftSize: number;
+  /** RFC3339, "" when unknown */
+  leftModTime?: string;
+  rightSize: number;
+  /** RFC3339, "" when unknown */
+  rightModTime?: string;
+  /** "left" (or the source mount name) */
+  leftLabel: string;
+  /** "right" (or the target mount name) */
+  rightLabel: string;
+  /** either side is a local folder */
+  localInvolved: boolean;
+  /** false when LocalInvolved */
+  allowNewer: boolean;
+  /** keep-left / keep-right / keep-both (+ keep-newer) */
+  options: ConflictChoice[];
+  /** always keep-both */
+  defaultChoice: ConflictChoice;
+  /** user's pick; "" = default */
+  choice?: ConflictChoice;
+}
+
+/**
  * CustomOAuthApp is one provider's user-owned OAuth app. The
  * Secret travels in memory only, from this store to the wizard
  * form to the token exchange; it is never stored in plaintext.
@@ -207,6 +244,22 @@ export interface CustomOAuthApp {
   /** in-memory only */
   clientSecret?: string;
   hasSecret: boolean;
+}
+
+/**
+ * DeletePolicyInfo is the Bind-safe view of the effective delete
+ * policy for one job, so the frontend's gate dialog can show the
+ * live switch state and thresholds without recomputing them.
+ */
+export interface DeletePolicyInfo {
+  /** effective delete switch for this job */
+  allowed: boolean;
+  /** the global sync.delete_default setting */
+  globalDefault: boolean;
+  /** the job's own switch when set (nil = follows global) */
+  jobOverride?: boolean;
+  gateMaxCount: number;
+  gateMaxPercent: number;
 }
 
 /**
@@ -526,6 +579,48 @@ export interface Plan {
    * the deletion list explicitly and require confirmation.
    */
   hasDeletes: boolean;
+  /**
+   * TargetFileCount is how many files the target side holds (used
+   * by the §22 gate's percentage rule; 0 = unknown, the rule is
+   * then skipped). Set by PreviewJob from the target snapshot.
+   */
+  targetFileCount: number;
+  /**
+   * DeleteCount is the number of delete items currently in the
+   * plan (recomputed by ApplyDeletePolicy / the runner — never
+   * trust a stored value without recounting).
+   */
+  deleteCount: number;
+  /**
+   * GateTriggered / GateReason (§22): the safety gate tripped —
+   * deletes exceed the count or percentage threshold. The UI
+   * must show the three-way dialog (confirm deletes / sync
+   * only the non-delete part / cancel); the engine refuses an
+   * unconfirmed triggered plan (see Runner.ExecuteWithPolicy).
+   */
+  gateTriggered: boolean;
+  gateReason?: string;
+  /**
+   * DeletesDeferred (§20/§22): deletes were held back from this
+   * plan — the switch was off, or (Agent runs) the gate tripped
+   * and only the non-delete part was kept. DeferredDeleteCount
+   * is how many were held back; the files are untouched.
+   */
+  deletesDeferred?: boolean;
+  deferredDeleteCount?: number;
+  /**
+   * ConfirmDeletes is set by the frontend when the user picks
+   * "确认删除并执行" in the gate dialog. The engine only honours
+   * it together with a freshly recomputed gate check.
+   */
+  confirmDeletes?: boolean;
+  /**
+   * Conflicts (§7) is the per-item conflict list for the plan
+   * preview: both sides' info, the options, and the user's
+   * per-item choice ("" = default keep-both). Empty when the
+   * plan has no conflicts.
+   */
+  conflicts?: ConflictDetail[];
 }
 
 /** PlanItem is one line of a plan: what will happen to one file. */
@@ -546,6 +641,8 @@ export interface PlanSummary {
   toDelete: number;
   conflicts: number;
   filteredOut: number;
+  /** deletes held back in this plan/run (§20/§22) */
+  deferredDeletes?: number;
 }
 
 /**
@@ -626,6 +723,15 @@ export interface Run {
   startedAt: string;
   endedAt?: string;
   error?: string;
+  /**
+   * DeferredDeletes is how many delete operations this run held
+   * back instead of executing — either because the delete
+   * switch was off (§20) or because the safety gate tripped
+   * (§22, Agent runs: "删除已暂挂，等确认"). The files are
+   * untouched; the count is also mirrored into Plan so it
+   * survives the runs-table round trip (plan_json).
+   */
+  deferredDeletes?: number;
 }
 
 /**
@@ -700,6 +806,18 @@ export interface Settings {
   /** keep-both (only implemented value) */
   syncConflict: string;
   /**
+   * Sync delete safety (roadmap §20/§22, v0.20.0): the delete
+   * switch defaults OFF — a sync never deletes unless the
+   * user turns it on (globally here, or per job). The gate
+   * thresholds are the §22 trip lines (count / % of target
+   * files); both are editable in Settings → 同步默认.
+   */
+  syncDeleteDefault: boolean;
+  /** > this many deletes trips the gate, default 20 */
+  syncDeleteGateMaxCount: number;
+  /** > this % of target files trips the gate, default 10 */
+  syncDeleteGateMaxPercent: number;
+  /**
    * Proxy (Settings -> Network, 2026-11-25): where outbound
    * traffic goes. system (default) = macOS system proxy when
    * detected, else HTTP(S)_PROXY env vars; manual = the two
@@ -757,6 +875,13 @@ export interface SyncJob {
   /** cron expression, empty = manual only */
   schedule?: string;
   runOn: RunOn;
+  /**
+   * DeleteEnabled is the per-job delete switch (roadmap §20): nil
+   * means "follow the global sync.delete_default setting"
+   * (default off); true/false override it for this job alone.
+   * Deletes only ever flow when the effective value is true.
+   */
+  deleteEnabled?: boolean;
   /**
    * AgentID names the specific Agent when RunOn is RunOnAgent (or
    * RunOnServer with an explicit choice). Empty means the default
@@ -978,6 +1103,11 @@ export const DesktopService = {
    * fails itself, the rest still run.
    */
   deleteNodes: bind<[string, string[]], FileOpResult | null>("DesktopService.DeleteNodes", (mountID: string, refs: string[]) => [mountID, refs]),
+  /**
+   * DeletePolicyForJob returns the effective delete policy for a job
+   * (per-job override + global defaults + gate thresholds).
+   */
+  deletePolicyForJob: bind<[SyncJob | null], DeletePolicyInfo>("DesktopService.DeletePolicyForJob", (job: SyncJob | null) => [job]),
   /**
    * DeleteProxy removes one proxy-list entry (v0.18.0). Mounts that
    * referenced it fall back to the global proxy setting; they are

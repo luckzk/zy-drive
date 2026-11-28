@@ -160,8 +160,8 @@ func TestMountCacheManifestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SchemaVersion: %v", err)
 	}
-	if v != 27 {
-		t.Fatalf("schema version = %d, want 27 (v26 mount_cache + v27 remote_size)", v)
+	if v != 29 {
+		t.Fatalf("schema version = %d, want 29 (v26 mount_cache + v27 remote_size + v28 delete_enabled + v29 deferred_deletes)", v)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	if err := db.SaveMountCacheEntry(&cache.MountCacheEntry{

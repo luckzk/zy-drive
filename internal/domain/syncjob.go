@@ -70,6 +70,11 @@ type SyncJob struct {
 	Exclude   []string      `json:"exclude,omitempty"`  // patterns, applied after scan, before compare
 	Schedule  string        `json:"schedule,omitempty"` // cron expression, empty = manual only
 	RunOn     RunOn         `json:"runOn"`
+	// DeleteEnabled is the per-job delete switch (roadmap §20): nil
+	// means "follow the global sync.delete_default setting"
+	// (default off); true/false override it for this job alone.
+	// Deletes only ever flow when the effective value is true.
+	DeleteEnabled *bool `json:"deleteEnabled,omitempty"`
 	// AgentID names the specific Agent when RunOn is RunOnAgent (or
 	// RunOnServer with an explicit choice). Empty means the default
 	// Agent. Ignored when RunOn is RunOnLocal.
@@ -81,6 +86,21 @@ type SyncJob struct {
 	CreatedAt time.Time  `json:"createdAt"`
 	UpdatedAt time.Time  `json:"updatedAt"`
 }
+
+// DeletesAllowed resolves the effective delete switch for this job:
+// the per-job override wins when set, otherwise the global default.
+func (j *SyncJob) DeletesAllowed(globalDefault bool) bool {
+	if j == nil {
+		return globalDefault
+	}
+	if j.DeleteEnabled != nil {
+		return *j.DeleteEnabled
+	}
+	return globalDefault
+}
+
+// BoolPtr is a helper for building a per-job delete override.
+func BoolPtr(b bool) *bool { return &b }
 
 // RunStatus classifies one execution of a SyncJob.
 type RunStatus string
@@ -103,16 +123,24 @@ type Run struct {
 	StartedAt time.Time    `json:"startedAt"`
 	EndedAt   *time.Time   `json:"endedAt,omitempty"`
 	Error     string       `json:"error,omitempty"`
+	// DeferredDeletes is how many delete operations this run held
+	// back instead of executing — either because the delete
+	// switch was off (§20) or because the safety gate tripped
+	// (§22, Agent runs: "删除已暂挂，等确认"). The files are
+	// untouched; the count is also mirrored into Plan so it
+	// survives the runs-table round trip (plan_json).
+	DeferredDeletes int `json:"deferredDeletes,omitempty"`
 }
 
 // PlanSummary is the user-visible summary of a plan. The full item list
 // lives in sync.Plan; this is what the history page reads.
 type PlanSummary struct {
-	ToUpload    int `json:"toUpload"`
-	ToUpdate    int `json:"toUpdate"`
-	ToDelete    int `json:"toDelete"`
-	Conflicts   int `json:"conflicts"`
-	FilteredOut int `json:"filteredOut"`
+	ToUpload        int `json:"toUpload"`
+	ToUpdate        int `json:"toUpdate"`
+	ToDelete        int `json:"toDelete"`
+	Conflicts       int `json:"conflicts"`
+	FilteredOut     int `json:"filteredOut"`
+	DeferredDeletes int `json:"deferredDeletes,omitempty"` // deletes held back in this plan/run (§20/§22)
 }
 
 // RunItemAction is what the plan does with one file.

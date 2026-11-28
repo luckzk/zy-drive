@@ -223,16 +223,40 @@ func (r *Runner) executeJob(ctx context.Context, job domain.SyncJob, runID strin
 	}
 	summary := plan.Summary()
 	run.Plan = &summary
-	// Delete guard: a scheduled run must never delete files on its
-	// own. The plan was previewed by the desktop when the job was
-	// created, but plans drift — a mirror/bidirectional job that
-	// today wants to delete N files stops here with a clear run
-	// record, and the user re-runs it by hand after confirming the
-	// deletion list on the desktop. Copy jobs never delete, so
-	// they are unaffected.
+	// Delete handling for unattended runs (§20/§22, changed in
+	// v0.20.0 — the old code failed the whole run here):
+	//   - Switch off: PreviewJob already stripped the deletes
+	//     (plan.DeletesDeferred, DeferredDeleteCount) — the run
+	//     below executes the non-delete part and completes.
+	//   - Switch on + gate NOT tripped: the deletes are small
+	//     enough to flow; the whole plan runs, deletes included.
+	//   - Switch on + gate tripped: strip the deletes, run only
+	//     the non-delete part, and record the deletes as
+	//     "已暂挂，等确认" — never fail the run, never delete
+	//     unattended, never silently drop the deletes either.
+	// Either way the run record carries DeferredDeletes so the
+	// desktop history shows what was held back.
+	deferred := plan.DeferredDeleteCount
+	// Recompute the gate here from the live policy — the plan
+	// was previewed moments ago, but the thresholds could have
+	// changed since; the runner never trusts a stored flag.
 	if plan.HasDeletes {
-		fail(fmt.Errorf("本次计划包含 %d 个删除操作，定时任务不会自动删除文件，请在桌面端确认删除列表后手动运行", plan.Summary().ToDelete), false)
-		return
+		pol := r.app.DeletePolicyFor(&job)
+		if tripped, reason := pol.GateTripped(plan.CountDeletes(), plan.TargetFileCount); tripped {
+			plan.GateTriggered = true
+			plan.GateReason = reason
+		}
+	}
+	if plan.HasDeletes && plan.GateTriggered {
+		deferred += plan.DeleteCount
+		plan = plan.WithoutDeletes()
+		r.logf("agentrun: job %q: %s — 删除已暂挂，等确认，本次只同步非删除部分", job.Name, plan.GateReason)
+		r.emit(job.ID, agentapi.Event{Type: "plan", RunID: runID, Message: fmt.Sprintf("删除安全闸已触发（%s），删除已暂挂，等确认", plan.GateReason)})
+	}
+	run.DeferredDeletes = deferred
+	if deferred > 0 {
+		summary.DeferredDeletes = deferred
+		run.Plan = &summary
 	}
 	items := planItems(runID, plan)
 	_ = r.db.SaveRunItems(runID, items)
@@ -246,14 +270,19 @@ func (r *Runner) executeJob(ctx context.Context, job domain.SyncJob, runID strin
 	executed.Status = domain.RunCompleted
 	executed.EndedAt = &now
 	executed.Plan = run.Plan
+	executed.DeferredDeletes = deferred
 	_ = r.db.SaveRun(executed)
 	for i := range items {
 		items[i].Done = true
 	}
 	_ = r.db.SaveRunItems(runID, items)
 	r.markJobRun(job, true)
-	r.emit(job.ID, agentapi.Event{Type: "done", RunID: runID, Message: "已完成", Total: int64(len(items))})
-	r.logf("agentrun: job %q completed (%d items)", job.Name, len(items))
+	doneMsg := "已完成"
+	if deferred > 0 {
+		doneMsg = fmt.Sprintf("已完成（%d 个删除已暂挂，等确认）", deferred)
+	}
+	r.emit(job.ID, agentapi.Event{Type: "done", RunID: runID, Message: doneMsg, Total: int64(len(items))})
+	r.logf("agentrun: job %q completed (%d items, %d deletes deferred)", job.Name, len(items), deferred)
 }
 
 // planItems converts a sync plan into persisted run items.

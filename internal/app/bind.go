@@ -106,6 +106,34 @@ func (s *DesktopService) Search(ctx context.Context, mountID, query string) (*Se
 	return &SearchResult{Nodes: nodes, LocalOnly: localOnly}, nil
 }
 
+// DeletePolicyInfo is the Bind-safe view of the effective delete
+// policy for one job, so the frontend's gate dialog can show the
+// live switch state and thresholds without recomputing them.
+type DeletePolicyInfo struct {
+	Allowed        bool  `json:"allowed"`               // effective delete switch for this job
+	GlobalDefault  bool  `json:"globalDefault"`         // the global sync.delete_default setting
+	JobOverride    *bool `json:"jobOverride,omitempty"` // the job's own switch when set (nil = follows global)
+	GateMaxCount   int   `json:"gateMaxCount"`
+	GateMaxPercent int   `json:"gateMaxPercent"`
+}
+
+// DeletePolicyForJob returns the effective delete policy for a job
+// (per-job override + global defaults + gate thresholds).
+func (s *DesktopService) DeletePolicyForJob(job *domain.SyncJob) DeletePolicyInfo {
+	if job == nil {
+		job = &domain.SyncJob{}
+	}
+	p := s.app.DeletePolicyFor(job)
+	global := s.app.DeletePolicy()
+	return DeletePolicyInfo{
+		Allowed:        p.Enabled,
+		GlobalDefault:  global.Enabled,
+		JobOverride:    job.DeleteEnabled,
+		GateMaxCount:   p.GateMaxCount,
+		GateMaxPercent: p.GateMaxPercent,
+	}
+}
+
 // PreviewSync builds a sync plan for confirmation.
 func (s *DesktopService) PreviewSync(ctx context.Context, job *domain.SyncJob) (*sync.Plan, error) {
 	return s.app.PreviewJob(ctx, job)

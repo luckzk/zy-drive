@@ -8,9 +8,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, CacheCleared, CacheInfo, DrimeWorkspace, DriverStatus, ExitState, ExportResult, FileOpResult, FlushResult, Mount, MountEntryStatus, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo, VolumeStatus } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, CacheCleared, CacheInfo, ConflictChoice, ConflictDetail, DeletePolicyInfo, DrimeWorkspace, DriverStatus, ExitState, ExportResult, FileOpResult, FlushResult, Mount, MountEntryStatus, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo, VolumeStatus } from '../mygo'
 
-export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, CacheCleared, CacheInfo, DrimeWorkspace, DriverStatus, ExitState, ExportResult, FileOpResult, FlushResult, Mount, MountEntryStatus, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo, VolumeStatus }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, CacheCleared, CacheInfo, ConflictChoice, ConflictDetail, DeletePolicyInfo, DrimeWorkspace, DriverStatus, ExitState, ExportResult, FileOpResult, FlushResult, Mount, MountEntryStatus, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo, VolumeStatus }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -72,6 +72,10 @@ export const api = {
   search: (mountID: string, query: string) => DesktopService.search(mountID, query),
   previewSync: (job: SyncJob) => DesktopService.previewSync(job),
   runSync: (job: SyncJob, plan: Plan) => DesktopService.runSync(job, plan),
+  // v0.20.0: the effective delete policy for a job (per-job
+  // override + global default + gate thresholds), read live for
+  // the safety-gate dialog — the frontend never recomputes it.
+  deletePolicyForJob: (job: SyncJob) => DesktopService.deletePolicyForJob(job),
   transfers: async () => nonNull(await DesktopService.transfers()),
   uploadFiles: async (mountID: string, ref: string, paths: string[]): Promise<{ transfers: Transfer[]; skipped: UploadSkipped[] }> => {
     const r = await DesktopService.uploadFiles(mountID, ref, paths)

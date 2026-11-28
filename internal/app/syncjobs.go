@@ -74,11 +74,49 @@ func (a *App) PreviewJob(ctx context.Context, job *domain.SyncJob) (*sync.Plan, 
 	case domain.DirectionBidirectional:
 		srcChanges := sync.Compare(srcSnap, dstSnap, job.Compare, job.Exclude)
 		dstChanges := sync.Compare(dstSnap, srcSnap, job.Compare, job.Exclude)
-		return sync.BuildBidirectionalPlan(job.ID, srcChanges, dstChanges), nil
+		plan := sync.BuildBidirectionalPlanWithLocal(job.ID, srcChanges, dstChanges, a.jobInvolvesLocal(job))
+		plan.ApplyDeletePolicy(a.DeletePolicyFor(job), countFiles(dstSnap))
+		return plan, nil
 	default:
 		changes := sync.Compare(srcSnap, dstSnap, job.Compare, job.Exclude)
-		return sync.BuildPlan(job.ID, job.Direction, changes), nil
+		plan := sync.BuildPlan(job.ID, job.Direction, changes)
+		plan.ApplyDeletePolicy(a.DeletePolicyFor(job), countFiles(dstSnap))
+		return plan, nil
 	}
+}
+
+// countFiles counts the files (not directories) in a snapshot —
+// the §22 gate's percentage rule is measured against the target's
+// file count.
+func countFiles(snap *sync.Snapshot) int {
+	n := 0
+	for _, node := range snap.Nodes {
+		if !node.IsDir {
+			n++
+		}
+	}
+	return n
+}
+
+// jobInvolvesLocal reports whether either side of the job is a
+// local folder — the pseudo-mount "local" or a mount whose
+// provider is local. §7: a local side's OS mtime cannot be
+// compared with cloud server time, so its conflicts never offer
+// "keep newer".
+func (a *App) jobInvolvesLocal(job *domain.SyncJob) bool {
+	return a.mountIsLocal(job.SrcMount) || a.mountIsLocal(job.DstMount)
+}
+
+func (a *App) mountIsLocal(mountID string) bool {
+	if mountID == domain.LocalMountID {
+		return true
+	}
+	for _, m := range a.ListMounts() {
+		if m.ID == mountID {
+			return m.Provider == domain.ProviderLocal
+		}
+	}
+	return false
 }
 
 // RunJob executes a previously confirmed plan. The caller is
@@ -135,7 +173,10 @@ func (a *App) runJob(ctx context.Context, job *domain.SyncJob, plan *sync.Plan, 
 	src = sync.RootedProvider(ctx, src, job.SrcRef)
 	dst = sync.RootedProvider(ctx, dst, job.DstRef)
 	runner := sync.NewRunner(a.Queue, conc, lim)
-	run, err := runner.Execute(ctx, plan, src, dst, job.SrcMount, job.DstMount)
+	// The policy is resolved here, at execution time — not taken
+	// from the plan — so a plan built before the switch was turned
+	// off cannot smuggle deletes past it (see Runner).
+	run, err := runner.ExecuteWithPolicy(ctx, plan, a.DeletePolicyFor(job), src, dst, job.SrcMount, job.DstMount)
 	if persist {
 		a.recordRun(job, plan, run)
 	}
@@ -158,6 +199,10 @@ func (a *App) recordRun(job *domain.SyncJob, plan *sync.Plan, run *domain.Run) {
 	}
 	summary := plan.Summary()
 	run.Plan = &summary
+	// The deferred-delete count survives in the run record both
+	// as Run.DeferredDeletes and inside the plan summary
+	// (plan_json), so the history page can show "删除已暂挂".
+	run.DeferredDeletes = plan.DeferredDeleteCount
 	_ = a.DB.SaveRun(run)
 	items := make([]domain.RunItem, 0, len(plan.Items))
 	for _, it := range plan.Items {

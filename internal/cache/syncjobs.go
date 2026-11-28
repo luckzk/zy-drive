@@ -28,11 +28,20 @@ func (db *DB) SaveSyncJob(j *domain.SyncJob) error {
 		s := j.NextRunAt.UTC().Format(time.RFC3339)
 		nextRun = &s
 	}
+	var deleteEnabled *int
+	if j.DeleteEnabled != nil {
+		v := 0
+		if *j.DeleteEnabled {
+			v = 1
+		}
+		deleteEnabled = &v
+	}
 	if _, err := db.SQL.Exec(`INSERT INTO sync_jobs
 		(id, name, src_mount, src_ref, dst_mount, dst_ref, direction,
 		 compare, exclude_json, schedule, run_on, agent_id, enabled,
-		 last_run_at, last_run_ok, next_run_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 last_run_at, last_run_ok, next_run_at, created_at, updated_at,
+		 delete_enabled)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name=excluded.name, src_mount=excluded.src_mount,
 			src_ref=excluded.src_ref, dst_mount=excluded.dst_mount,
@@ -41,11 +50,12 @@ func (db *DB) SaveSyncJob(j *domain.SyncJob) error {
 			schedule=excluded.schedule, run_on=excluded.run_on,
 			agent_id=excluded.agent_id, enabled=excluded.enabled,
 			last_run_at=excluded.last_run_at, last_run_ok=excluded.last_run_ok,
-			next_run_at=excluded.next_run_at, updated_at=excluded.updated_at`,
+			next_run_at=excluded.next_run_at, updated_at=excluded.updated_at,
+			delete_enabled=excluded.delete_enabled`,
 		j.ID, j.Name, j.SrcMount, j.SrcRef, j.DstMount, j.DstRef,
 		string(j.Direction), string(j.Compare), string(excludeJSON),
 		j.Schedule, string(j.RunOn), j.AgentID, boolToInt(j.Enabled),
-		lastRun, boolToInt(j.LastRunOK), nextRun, now, now); err != nil {
+		lastRun, boolToInt(j.LastRunOK), nextRun, now, now, deleteEnabled); err != nil {
 		return fmt.Errorf("cache: save sync job: %w", err)
 	}
 	return nil
@@ -56,7 +66,7 @@ func (db *DB) ListSyncJobs() ([]*domain.SyncJob, error) {
 	rows, err := db.SQL.Query(`SELECT id, name, src_mount, src_ref,
 		dst_mount, dst_ref, direction, compare, exclude_json, schedule,
 		run_on, agent_id, enabled, last_run_at, last_run_ok, next_run_at,
-		created_at, updated_at FROM sync_jobs ORDER BY created_at ASC`)
+		created_at, updated_at, delete_enabled FROM sync_jobs ORDER BY created_at ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("cache: list sync jobs: %w", err)
 	}
@@ -66,12 +76,16 @@ func (db *DB) ListSyncJobs() ([]*domain.SyncJob, error) {
 		var j domain.SyncJob
 		var direction, compare, runOn, excludeJSON string
 		var enabled, lastRunOK int
+		var deleteEnabled *int
 		var lastRun, nextRun, created, updated *string
 		if err := rows.Scan(&j.ID, &j.Name, &j.SrcMount, &j.SrcRef,
 			&j.DstMount, &j.DstRef, &direction, &compare, &excludeJSON,
 			&j.Schedule, &runOn, &j.AgentID, &enabled, &lastRun,
-			&lastRunOK, &nextRun, &created, &updated); err != nil {
+			&lastRunOK, &nextRun, &created, &updated, &deleteEnabled); err != nil {
 			return nil, err
+		}
+		if deleteEnabled != nil {
+			j.DeleteEnabled = domain.BoolPtr(*deleteEnabled != 0)
 		}
 		j.Direction = domain.SyncDirection(direction)
 		j.Compare = domain.CompareMode(compare)

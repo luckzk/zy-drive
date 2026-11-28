@@ -37,6 +37,29 @@ func TestMigrateBackfillsSortOrder(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("create mounts: %v", err)
 	}
+	// Minimal v23 sync_jobs / runs tables: a real v23 database
+	// has them (created by the v1 migration); the v28/v29
+	// migrations ALTER them, so the fixture needs the tables to
+	// exist even though no rows are seeded.
+	if _, err := raw.Exec(`CREATE TABLE sync_jobs (
+		id TEXT PRIMARY KEY, name TEXT NOT NULL,
+		src_mount TEXT NOT NULL, src_ref TEXT NOT NULL DEFAULT '',
+		dst_mount TEXT NOT NULL, dst_ref TEXT NOT NULL DEFAULT '',
+		direction TEXT NOT NULL, compare TEXT NOT NULL DEFAULT 'size+time',
+		exclude_json TEXT NOT NULL DEFAULT '[]', schedule TEXT NOT NULL DEFAULT '',
+		run_on TEXT NOT NULL DEFAULT 'local', enabled INTEGER NOT NULL DEFAULT 1,
+		last_run_at TEXT, last_run_ok INTEGER NOT NULL DEFAULT 0,
+		next_run_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create sync_jobs: %v", err)
+	}
+	if _, err := raw.Exec(`CREATE TABLE runs (
+		id TEXT PRIMARY KEY, job_id TEXT NOT NULL, status TEXT NOT NULL,
+		plan_json TEXT NOT NULL DEFAULT '{}', started_at TEXT NOT NULL,
+		ended_at TEXT, error TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		t.Fatalf("create runs: %v", err)
+	}
 	if _, err := raw.Exec(`CREATE TABLE schema_migrations (
 		version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
 		t.Fatalf("create schema_migrations: %v", err)
@@ -72,8 +95,8 @@ func TestMigrateBackfillsSortOrder(t *testing.T) {
 		t.Fatalf("cache.Open: %v", err)
 	}
 	defer db.Close()
-	if v, err := db.SchemaVersion(); err != nil || v != 27 {
-		t.Fatalf("schema version = %d, err = %v, want 27", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 29 {
+		t.Fatalf("schema version = %d, err = %v, want 29", v, err)
 	}
 	got, err := db.ListMounts()
 	if err != nil {
