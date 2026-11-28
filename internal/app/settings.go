@@ -54,6 +54,13 @@ type Settings struct {
 	// main runs it after App.Run returns); default off.
 	PreviewCacheLimitMB     int  `json:"previewCacheLimitMB"`
 	PreviewCacheClearOnExit bool `json:"previewCacheClearOnExit"`
+	// Mount cache (Settings → 挂载， v0.19.0): the cap for the
+	// FUSE write-back cache (~/ZyDrive working set), in GB —
+	// one of 2 / 5 / 10 / 20, default 5. Stored as the
+	// "mount.cache_gb" key; the preview cache keeps its own
+	// MB-denominated key and directory — the two caches never
+	// share a limit, a table or a folder.
+	MountCacheLimitGB int `json:"mountCacheLimitGB"`
 }
 
 // DefaultSettings is what a fresh install (or a missing key) gets.
@@ -71,6 +78,7 @@ func DefaultSettings() Settings {
 		ProxySOCKS5:             "",
 		PreviewCacheLimitMB:     previewCacheLimitDefaultMB,
 		PreviewCacheClearOnExit: false,
+		MountCacheLimitGB:       5,
 	}
 }
 
@@ -144,6 +152,14 @@ func (a *App) GetSettings() (Settings, error) {
 	if v, ok := a.getSetting("preview.cache_clear_on_exit"); ok {
 		s.PreviewCacheClearOnExit = v == "1"
 	}
+	if v, ok := a.getSetting("mount.cache_gb"); ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			switch n {
+			case 2, 5, 10, 20:
+				s.MountCacheLimitGB = n
+			}
+		}
+	}
 	return s, nil
 }
 
@@ -179,6 +195,15 @@ func (a *App) SaveSettings(s Settings) error {
 	case 512, 1024, 2048, 5120:
 	default:
 		return fmt.Errorf("app: 预览缓存上限只能是 500 MB、1 GB、2 GB 或 5 GB")
+	}
+	switch s.MountCacheLimitGB {
+	case 0:
+		// An empty value (old clients, hand-built structs) is the
+		// default, not an error.
+		s.MountCacheLimitGB = 5
+	case 2, 5, 10, 20:
+	default:
+		return fmt.Errorf("app: 挂载缓存上限只能是 2 GB、5 GB、10 GB 或 20 GB")
 	}
 	// An empty mode (old clients, hand-built structs) is the
 	// system default, not an error.
@@ -224,6 +249,7 @@ func (a *App) SaveSettings(s Settings) error {
 		"proxy.http":             s.ProxyHTTP,
 		"proxy.socks5":           s.ProxySOCKS5,
 		"preview.cache_limit_mb": strconv.Itoa(s.PreviewCacheLimitMB),
+		"mount.cache_gb":         strconv.Itoa(s.MountCacheLimitGB),
 		"preview.cache_clear_on_exit": func() string {
 			if s.PreviewCacheClearOnExit {
 				return "1"
@@ -254,6 +280,10 @@ func (a *App) SaveSettings(s Settings) error {
 		_ = pc.trimLocked(s.PreviewCacheLimitMB)
 		pc.mu.Unlock()
 	}
+	// And the mount cache (v0.19.0): same rule, own cap — a
+	// shrink trims to the new GB cap right away, dirty and open
+	// files are never evicted by the trim.
+	a.trimMountCacheBestEffort()
 	return nil
 }
 
@@ -391,6 +421,50 @@ func (a *App) PickFiles(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("app: 文件选择器在当前运行方式下不可用（需要在 ZyDrive 桌面窗口里打开）")
 	}
 	return a.pickFiles(ctx)
+}
+
+// --- Exit confirmation (mygo, v0.19.0) ---
+//
+// Same hook shape as the picker above: internal/app must not
+// import mygo, so cmd/desktop installs a hook that calls
+// mygo.App.Quit, and registers OnBeforeQuit (plus the main
+// window's OnClose, for the red-X close — the window is gone
+// before OnBeforeQuit runs) to ask the frontend first
+// (cmd/desktop/mygo.go). The flow: Quit requested ->
+// OnBeforeQuit prevents it and emits "zydrive:exit-request" ->
+// the frontend shows the exit dialog -> the user's decision
+// comes back through DesktopService.ConfirmExit below.
+func (a *App) SetQuitHook(quit func()) {
+	a.quitHook = quit
+}
+
+// ConfirmExit receives the exit dialog's decision. quit=false
+// ("留在应用里" / "不退出，继续等待") does nothing — the dialog
+// is already closed on the frontend side. quit=true sets the
+// exit-confirmed flag FIRST and then quits: without the flag the
+// second Quit would trip OnBeforeQuit again and be blocked by
+// its own interception. Without a hook (dev shell, tests) a true
+// decision only sets the flag and does nothing.
+func (a *App) ConfirmExit(quit bool) {
+	if !quit {
+		return
+	}
+	a.exitMu.Lock()
+	a.exitConfirmed = true
+	hook := a.quitHook
+	a.exitMu.Unlock()
+	if hook != nil {
+		hook()
+	}
+}
+
+// ExitConfirmed reports whether ConfirmExit(true) has run in this
+// process. cmd/desktop's OnBeforeQuit reads it to let a confirmed
+// quit through instead of intercepting it a second time.
+func (a *App) ExitConfirmed() bool {
+	a.exitMu.Lock()
+	defer a.exitMu.Unlock()
+	return a.exitConfirmed
 }
 
 // --- Open at login (mygo) ---

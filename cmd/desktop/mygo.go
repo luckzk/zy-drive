@@ -41,6 +41,14 @@ import (
 	"github.com/luckzk/zy-drive/internal/version"
 )
 
+// exitRequestEvent asks the main window to show the exit dialog
+// (v0.19.0, FUSE mount volume): the frontend subscribes with
+// mygoEvent('zydrive:exit-request') and answers through the
+// ConfirmExit Bind. Declared once here — NewEvent panics on a
+// duplicate name — with an empty payload; the frontend reads the
+// dirty/open counts itself via GetMountExitState.
+var exitRequestEvent = mygo.NewEvent[struct{}]("zydrive:exit-request")
+
 // runDesktop starts the mygo window, or the dev shell when mygo
 // cannot run here. It blocks until the app quits (mygo) or the
 // context is cancelled (dev shell).
@@ -131,6 +139,9 @@ func runMygo(application *app.App, frontendDir string, generate bool) error {
 		})
 	})
 	mygo.Bind(application.BindService())
+	// Exit confirmation (v0.19.0): the hook ConfirmExit calls
+	// back into when the user chose "直接退出" in the dialog.
+	application.SetQuitHook(func() { mygo.App.Quit() })
 
 	// File preview (v0.9.1): the loopback preview proxy is served
 	// as the "zydrive-preview" custom scheme, not http://127.0.0.1
@@ -144,6 +155,15 @@ func runMygo(application *app.App, frontendDir string, generate bool) error {
 	}
 
 	var mainWin *mygo.Window
+	// emitExitRequest asks the frontend to show the exit dialog
+	// (the same event both intercept points use, so the frontend
+	// needs no second subscription). Callers decide first whether
+	// the exit is interceptable at all — this only sends.
+	emitExitRequest := func() {
+		if err := exitRequestEvent.Emit(mainWin, struct{}{}); err != nil {
+			log.Printf("desktop: exit-request: %v", err)
+		}
+	}
 	// The menu-bar tray icon and the Dock icon come from the same
 	// PNG (the user's cloud). Both are best-effort: on a machine
 	// without resources/icon.png the app still runs — the tray
@@ -178,9 +198,55 @@ func runMygo(application *app.App, frontendDir string, generate bool) error {
 			Width: 1280, Height: 800, MinWidth: 960, MinHeight: 600,
 			StateKey: "main",
 		})
-		_ = mainWin
+		// Red-X close (v0.19.0): the window is destroyed before
+		// OnBeforeQuit ever runs — close() -> destroy() ->
+		// lastWindowClosed -> OnWindowAllClosed -> Quit() — so by
+		// the time OnBeforeQuit fires there is no window left to
+		// ask, and the quit sails through with dirty files
+		// unasked. Intercept here instead, while the window is
+		// still alive: PreventDefault keeps it open and the same
+		// exit-request event asks the frontend (which reuses its
+		// "no dirty/open, quit at once" fast path, so a clean
+		// close costs the user nothing). A confirmed exit
+		// (ExitConfirmed, set by ConfirmExit(true) before the
+		// quit hook runs) passes straight through — otherwise
+		// the Quit that follows the user's "直接退出" would close
+		// the window, trip OnClose again and pop the dialog a
+		// second time instead of quitting. Session ending needs
+		// no check here: CloseEvent carries no SessionEnding
+		// field, and mygo ignores PreventDefault then anyway
+		// (see Window.OnClose, window.go:2100).
+		mainWin.OnClose(func(e *mygo.CloseEvent) {
+			if application.ExitConfirmed() {
+				return
+			}
+			e.PreventDefault()
+			emitExitRequest()
+		})
 	})
 	mygo.App.OnWindowAllClosed(func() { mygo.App.Quit() })
+	// Exit dialog (v0.19.0, FUSE mount volume): intercept Quit,
+	// ask the frontend, and only quit on the user's word. The
+	// frontend shows the dialog (dirty/open counts from
+	// GetMountExitState) and answers through the ConfirmExit Bind.
+	mygo.App.OnBeforeQuit(func(e *mygo.QuitEvent) {
+		// 系统登出/关机不可取消，直接放行；已确认的退出也不
+		// 再拦，否则 ConfirmExit(true) 触发的第二次 Quit 会
+		// 被自己的拦截挡下。
+		if e.SessionEnding || application.ExitConfirmed() {
+			return
+		}
+		// 没有可问的主窗口（还没打开，或窗口已被 OnClose 拦不住
+		// 的路径销毁——系统登出/关机时 PreventDefault 无效，
+		// 见 mainWin.OnClose 的注释）：问无可问，直接放行，
+		// 行为与改动前一致——ShutdownMounts 仍会 30 秒刷盘。
+		// 点红叉不再走这里：OnClose 在窗口销毁前就拦下了。
+		if mainWin == nil || mainWin.IsDestroyed() {
+			return
+		}
+		e.PreventDefault()
+		emitExitRequest()
+	})
 	return mygo.App.Run()
 }
 

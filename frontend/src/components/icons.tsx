@@ -73,10 +73,12 @@ export function IconCheck({ size = 16 }: { size?: number }) {
 // synchronize, Agent → services, about → info. Network has no
 // globe/wifi in the installed flat-color-icons set, so it uses
 // the neutral line globe (IconGlobe) below; cache likewise uses a
-// neutral line database cylinder (IconDatabase).
-export function SectionIcon({ section, size = 20 }: { section: 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network' | 'cache'; size?: number }) {
+// neutral line database cylinder (IconDatabase), mount a neutral
+// line hard drive (IconHardDrive).
+export function SectionIcon({ section, size = 20 }: { section: 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network' | 'cache' | 'mount'; size?: number }) {
   if (section === 'network') return <IconGlobe size={size} />
   if (section === 'cache') return <IconDatabase size={size} />
+  if (section === 'mount') return <IconHardDrive size={size} />
   const data =
     section === 'general'
       ? settingsIcon
@@ -96,6 +98,19 @@ export function IconDatabase({ size = 20 }: { size?: number }) {
       <ellipse cx="12" cy="5" rx="8" ry="3" />
       <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
       <path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3" />
+    </svg>
+  )
+}
+
+// Neutral line hard-drive glyph for the Mount settings section
+// (same 1.8px stroke, currentColor, 24×24 grid as IconGlobe /
+// IconDatabase above).
+export function IconHardDrive({ size = 20 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="7" width="18" height="10" rx="2" />
+      <circle cx="7.5" cy="12" r="1" fill="currentColor" stroke="none" />
+      <path d="M12 12h6" />
     </svg>
   )
 }

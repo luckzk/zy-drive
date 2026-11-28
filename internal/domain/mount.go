@@ -103,6 +103,13 @@ type Mount struct {
 	// Persisted in the mount's config map as "proxy_ref", never
 	// as a mounts-table column.
 	ProxyRef string `json:"proxyRef"`
+	// MountEnabled is the FUSE mount switch (v0.19.0): whether
+	// this mount is exposed as a folder under ~/ZyDrive.
+	// Persisted in the mount's config map as "mount_enabled"
+	// ("1"/"0", missing = off), never as a mounts-table
+	// column — the same precedent as ProxyRef / "proxy_ref".
+	// Memory-only, filled from the config map on load.
+	MountEnabled bool `json:"mountEnabled"`
 	// Verified is whether the mount passed a connection probe at
 	// least once (C, one-page form): mounts saved from the wizard
 	// after a passed test are verified; mounts saved without a

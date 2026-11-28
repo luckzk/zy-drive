@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/luckzk/zy-drive/internal/app"
 	"github.com/luckzk/zy-drive/internal/auth"
@@ -136,6 +137,28 @@ func main() {
 	// failed with its reason, never dropped.
 	go application.LoadMountsAsync()
 
+	// FUSE mount volume ~/ZyDrive (v0.19.0): reconcile the
+	// write-back cache with disk and start its upload worker.
+	// A failure is only logged — a stale cache must never block
+	// startup, and the volume itself only mounts on demand
+	// (at least one switch on).
+	if err := application.InitMountService(); err != nil {
+		log.Printf("desktop: mount service: %v", err)
+	}
+
+	// Restore the persisted mount switches once the background
+	// load finishes: startup order is window → mounts loaded →
+	// switches restored → volume mounted. A switch whose mount
+	// failed to load stays on (card red, human reason) — the
+	// restore never silently switches a mount off.
+	go func() {
+		deadline := time.Now().Add(150 * time.Second)
+		for application.MountsLoading() && time.Now().Before(deadline) {
+			time.Sleep(500 * time.Millisecond)
+		}
+		application.RestoreMounts()
+	}()
+
 	// Preview cache (v0.9.1): reconcile the manifest with disk
 	// and trim to the configured limit. A stale cache must never
 	// block startup, so a failure is only logged.
@@ -167,6 +190,16 @@ func main() {
 	// when no system webview is available. Blocks until quit (mygo)
 	// or signal (dev shell).
 	runDesktop(application, *addr, *devShell, *frontendDir, ctx)
+
+	// FUSE volume shutdown (v0.19.0): flush dirty mount-cache
+	// files (30s best-effort — leftovers stay cached for next
+	// start) and unmount ~/ZyDrive. When files are still open
+	// the unmount is refused and the error names the count;
+	// the process exit then leaves a stale volume, which the
+	// next start force-unmounts before re-mounting.
+	if err := application.ShutdownMounts(); err != nil {
+		log.Printf("desktop: shutdown mounts: %v", err)
+	}
 
 	// "退出时清理缓存" (Settings → 缓存): mygo has no OnExit
 	// hook, so the cleanup runs here, after the window loop

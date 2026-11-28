@@ -23,6 +23,11 @@ type Caps struct {
 	SupportsEncryption      bool `json:"supportsEncryption"` // SSE / SSE-KMS / SSE-C (S3)
 	SupportsStorageClass    bool `json:"supportsStorageClass"`
 	SupportsPresignedURL    bool `json:"supportsPresignedUrl"`
+	// SupportsMount is whether the mount can be exposed as a
+	// folder in the FUSE volume ~/ZyDrive (v0.19.0, P0: only
+	// Drive, Dropbox and OneDrive set it — the rest get the
+	// switch hidden, never greyed-out, per project rules).
+	SupportsMount bool `json:"supportsMount"`
 
 	IDBased bool `json:"idBased"` // true for Drive / OneDrive
 

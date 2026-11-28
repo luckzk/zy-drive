@@ -12,7 +12,7 @@
 // backend, and update check is honestly marked "not wired yet"
 // (no update feed is configured in this repo).
 //
-// Layout (v0.17.0, Drime 式)：七节排进顶栏 pill 组，一次只显示一节，
+// Layout (v0.17.0, Drime 式)：八节排进顶栏 pill 组，一次只显示一节，
 // 切 tab 时内容按方向左右滑入/滑出（transform + opacity，350ms，40px，
 // 基础曲线；220ms 太快看不到过渡，v0.17.1 放慢加长）。节内行为原样不动；所有 state 都在页面级，切 tab 不
 // 卸载任何内容，未保存的编辑原样保留。滚动 Reveal 已去掉——节不再
@@ -20,7 +20,7 @@
 // （tokens.css），否则每次回切都会重播。加载态是 skeleton 块
 // （no "加载中…" text, no spinner）。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Agent, Mount, MountQuota, ProxyEntry, Settings, SystemProxyInfo, VersionInfo } from '../mygo'
+import type { Agent, CacheInfo, Mount, MountQuota, ProxyEntry, Settings, SystemProxyInfo, VersionInfo, VolumeStatus } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { formatSize, formatTime, mountStatusLabel, newId } from '../lib/format'
 import { t, type Lang } from '../lib/i18n'
@@ -28,7 +28,7 @@ import { FRONTEND_VERSION } from '../version'
 import { Skeleton, staggerStyle, useClosing } from '../components/motion'
 import { SectionIcon } from '../components/icons'
 
-type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network' | 'cache'
+type SettingsSection = 'general' | 'drives' | 'sync' | 'agent' | 'about' | 'network' | 'cache' | 'mount'
 
 // SectionHead — one Settings section's title row: flat-color-icons
 // glyph + 18px title (weight stays 400) + one-line description,
@@ -354,6 +354,68 @@ export default function SettingsPage({
     }
   }
 
+  // ---- 挂载（v0.19.0 FUSE 卷 ~/ZyDrive） ----
+  // volumeStatus 是卷快照（驱动 + 每盘状态），mountCacheInfo
+  // 是写回缓存的占用 / 未上传数；两者都只在进设置页时读一次、
+  // 操作后重读——开关本身在左侧网盘列表里，状态由 App 的 2 秒
+  // 轮询驱动，这里不另起轮询。
+  const [volumeStatus, setVolumeStatus] = useState<VolumeStatus | null>(null)
+  const [volumeLoading, setVolumeLoading] = useState(false)
+  const [mountCacheInfo, setMountCacheInfo] = useState<CacheInfo | null>(null)
+  const [mountCacheLoading, setMountCacheLoading] = useState(false)
+  const [mountMsg, setMountMsg] = useState<string | null>(null)
+  const [clearingMountCache, setClearingMountCache] = useState(false)
+
+  const loadVolumeStatus = useCallback(async () => {
+    setVolumeLoading(true)
+    try {
+      setVolumeStatus(await api.getMountStatus())
+    } catch {
+      setVolumeStatus(null)
+    } finally {
+      setVolumeLoading(false)
+    }
+  }, [])
+
+  const loadMountCacheInfo = useCallback(async () => {
+    setMountCacheLoading(true)
+    try {
+      setMountCacheInfo(await api.getMountCacheInfo())
+    } catch {
+      setMountCacheInfo(null)
+    } finally {
+      setMountCacheLoading(false)
+    }
+  }, [])
+
+  const clearMountCache = async () => {
+    setClearingMountCache(true)
+    setMountMsg(null)
+    try {
+      const r = await api.clearMountCache()
+      setMountMsg(`已清理挂载缓存，释放了 ${formatSize(r.freedBytes)}（${r.fileCount} 个文件）。还没上传的文件和正在打开的文件不受影响。`)
+      await loadMountCacheInfo()
+    } catch (e) {
+      setMountMsg(friendlyError(e))
+    } finally {
+      setClearingMountCache(false)
+    }
+  }
+
+  const mountStateLabel = (state: string): string =>
+    state === 'mounted'
+      ? '已挂载'
+      : state === 'mounting'
+        ? '挂载中…'
+        : state === 'unmounting'
+          ? '卸载中…'
+          : state === 'failed'
+            ? '挂载失败'
+            : '未挂载'
+
+  const driverLabel = (kind: string): string =>
+    kind === 'fuse-t' ? 'FUSE-T' : kind === 'macfuse' ? 'macFUSE' : kind === 'fuse' ? 'FUSE' : '未安装'
+
   const loadSystemProxy = useCallback(async () => {
     try {
       setSystemProxy(await api.getSystemProxy())
@@ -394,6 +456,8 @@ export default function SettingsPage({
     void loadSystemProxy()
     void loadCacheInfo()
     void loadProxies()
+    void loadVolumeStatus()
+    void loadMountCacheInfo()
     void api
       .getVersions()
       .then(setVersions)
@@ -410,7 +474,7 @@ export default function SettingsPage({
         setOpenAtLogin(null)
         setLoginNote(friendlyError(e))
       })
-  }, [loadSettings, loadMounts, loadSystemProxy, loadCacheInfo, loadProxies])
+  }, [loadSettings, loadMounts, loadSystemProxy, loadCacheInfo, loadProxies, loadVolumeStatus, loadMountCacheInfo])
 
   const saveDraft = async (next: Settings) => {
     setBusy(true)
@@ -856,7 +920,7 @@ export default function SettingsPage({
   }
 
   // ---- 顶栏 tabs（Drime 式，v0.17.0） ----
-  // 七节按原顺序排进顶栏 pill 组；同一时间只显示一节。切 tab 时
+  // 八节按原顺序排进顶栏 pill 组；同一时间只显示一节。切 tab 时
   // 新内容按移动方向滑入（向右切：从右侧进；向左切：从左侧进），
   // 旧内容向反方向滑出；transform + opacity，350ms，40px，基础曲线
   // （220ms 太快看不到过渡，v0.17.1 放慢加长）。
@@ -869,6 +933,7 @@ export default function SettingsPage({
     { id: 'drives', label: t(lang, 'drives') },
     { id: 'sync', label: t(lang, 'syncDefaults') },
     { id: 'cache', label: '缓存' },
+    { id: 'mount', label: '挂载' },
     { id: 'agent', label: t(lang, 'agent') },
     { id: 'about', label: t(lang, 'about') },
   ]
@@ -909,7 +974,7 @@ export default function SettingsPage({
         </div>
       )}
 
-      {/* 顶栏 tabs（Drime 式 pill 组）：七节按原顺序排；切 tab 只换
+      {/* 顶栏 tabs（Drime 式 pill 组）：八节按原顺序排；切 tab 只换
           下面一节的内容，节内行为（保存/测试/清理/Agent 操作）原样不动。 */}
       <div className="settings-tabs" role="tablist" aria-label="设置分类">
         {TABS.map((tb) => (
@@ -1570,6 +1635,139 @@ export default function SettingsPage({
             {cacheMsg && <div className="notice-box">{cacheMsg}</div>}
             <p className="muted" style={{ marginBottom: 0 }}>
               “清理缓存”只清预览缓存，不碰挂载、同步任务和本地索引。
+            </p>
+          </>
+        )}
+        </section>
+      </div>
+
+      {/* ---- 挂载（v0.19.0 FUSE 卷 ~/ZyDrive） ---- */}
+      <div
+        className={panelClass('mount')}
+        role="tabpanel"
+        id="settings-panel-mount"
+        aria-labelledby="settings-tab-mount"
+        aria-hidden={activeTab !== 'mount'}
+      >
+        <section className="settings-card">
+        <SectionHead section="mount" title="挂载" desc="把网盘挂到 Finder 里：~/ZyDrive 下每个网盘一个文件夹，像本地文件夹一样打开、编辑，改动会自动传回云端。开关在左侧网盘列表里，每张可挂载的卡片上都有。" />
+        {settingsLoading || !draft ? (
+          <div style={{ display: 'grid', gap: 12 }} aria-label="正在加载挂载设置">
+            <Skeleton height={36} width="60%" />
+            <Skeleton height={36} width="40%" />
+          </div>
+        ) : (
+          <>
+            <Row
+              title="挂载点"
+              desc="在 Finder 边栏能看到 ZyDrive，点开就是已挂载的网盘；没开开关的网盘不在里面。"
+              control={<span>~/ZyDrive</span>}
+            />
+            <Row
+              title="卷状态"
+              desc={
+                volumeLoading
+                  ? '正在读取挂载状态…'
+                  : volumeStatus
+                    ? volumeStatus.state === 'failed'
+                      ? `挂载失败：${volumeStatus.error ?? '原因未知'}`
+                      : `卷${mountStateLabel(volumeStatus.state)}。`
+                    : '挂载状态暂不可用（后端没返回）。'
+              }
+            >
+              {volumeStatus && volumeStatus.mounts.length > 0 && (
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {volumeStatus.mounts.map((e) => (
+                    <div key={e.mountId} style={{ fontSize: 13, display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+                      <span className={e.state === 'mounted' ? 'dot dot-green' : e.state === 'failed' ? 'dot dot-red' : 'dot dot-grey'} />
+                      <span>{e.displayName}</span>
+                      <span className="muted">
+                        {mountStateLabel(e.state)}
+                        {e.state === 'mounted' && e.folderName ? ` · ~/ZyDrive/${e.folderName}` : ''}
+                        {e.state === 'failed' && e.error ? `：${e.error}` : ''}
+                        {e.notice ? ` · ${e.notice}` : ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {volumeStatus && volumeStatus.mounts.length === 0 && (
+                <p className="muted" style={{ margin: 0 }}>
+                  还没有可挂载的网盘：目前只有 Drive、Dropbox、OneDrive 能挂载。
+                </p>
+              )}
+            </Row>
+            <Row
+              title="FUSE 驱动"
+              desc={
+                volumeStatus
+                  ? volumeStatus.driver.installed
+                    ? '驱动已装好，挂载能正常用。'
+                    : '驱动还没装：挂载打不开，先装一个。推荐 FUSE-T，备选 macFUSE。'
+                  : '驱动状态暂不可用（后端没返回）。'
+              }
+              control={
+                <span>
+                  {volumeStatus ? `${driverLabel(volumeStatus.driver.kind)}${volumeStatus.driver.installed ? '（已安装）' : '（未安装）'}` : '—'}
+                </span>
+              }
+            >
+              {volumeStatus && !volumeStatus.driver.installed && (
+                <div style={{ fontSize: 13 }}>
+                  <div style={{ marginBottom: 4 }}>
+                    推荐装 FUSE-T（轻量，不用另外装内核扩展）：
+                  </div>
+                  <code>brew install --cask fuse-t</code>
+                  <div className="muted" style={{ marginTop: 8 }}>
+                    备选 macFUSE：去 macFUSE 官网下载安装包，装完重启 ZyDrive。{volumeStatus.driver.detail ? ` ${volumeStatus.driver.detail}` : ''}
+                  </div>
+                </div>
+              )}
+            </Row>
+            <Row
+              title="缓存占用"
+              desc={
+                mountCacheLoading
+                  ? '正在读取缓存大小…'
+                  : mountCacheInfo
+                    ? `${formatSize(mountCacheInfo.sizeBytes)}（${mountCacheInfo.fileCount} 个文件），上限 ${mountCacheInfo.limitGB} GB。${mountCacheInfo.dirtyCount > 0 ? `其中 ${mountCacheInfo.dirtyCount} 个文件还没上传（${formatSize(mountCacheInfo.dirtyBytes)}）。` : '没有未上传的文件。'}`
+                    : '缓存信息暂不可用（后端没返回）。'
+              }
+            />
+            <Row
+              title="缓存上限"
+              desc="超上限时先清最久没用的文件；还没上传的文件和正在打开的文件不会被清掉。改小上限保存后立即裁剪。"
+              control={
+                <Segmented
+                  ariaLabel="挂载缓存上限"
+                  value={String(draft.mountCacheLimitGB ?? 5)}
+                  onChange={(v) => setDraft({ ...draft, mountCacheLimitGB: Number(v) })}
+                  options={[
+                    { value: '2', label: '2 GB' },
+                    { value: '5', label: '5 GB' },
+                    { value: '10', label: '10 GB' },
+                    { value: '20', label: '20 GB' },
+                  ]}
+                />
+              }
+            />
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <button
+                className="btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  void saveDraft(draft).then(() => void loadMountCacheInfo())
+                }}
+              >
+                {t(lang, 'save')}
+              </button>
+              <button className="btn" disabled={clearingMountCache} onClick={() => void clearMountCache()}>
+                {clearingMountCache ? '清理中…' : '清理缓存'}
+              </button>
+            </div>
+            {mountMsg && <div className="notice-box">{mountMsg}</div>}
+            <p className="muted" style={{ marginBottom: 0 }}>
+              “清理缓存”只清挂载缓存里已传完、没打开的文件，不碰预览缓存、挂载开关和同步任务。
             </p>
           </>
         )}

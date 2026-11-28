@@ -188,6 +188,12 @@ func (db *DB) ListMounts() ([]PersistedMount, error) {
 		if cfg == nil {
 			cfg = map[string]string{}
 		}
+		// FUSE mount switch (v0.19.0): persisted in the config
+		// map as "mount_enabled" ("1"/"0", missing = off) —
+		// the ProxyRef / "proxy_ref" precedent. Filled here
+		// so every load path (startup, TestMount, timeout
+		// copies) sees the same value.
+		m.MountEnabled = cfg["mount_enabled"] == "1"
 		m.CreatedAt, _ = time.Parse(time.RFC3339, created)
 		m.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
 		out = append(out, PersistedMount{Mount: &m, Config: cfg})

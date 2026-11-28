@@ -15,7 +15,7 @@
 // cloud files are never touched.
 import { useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import type { AgentStatus, Mount, MountQuota } from '../mygo'
+import type { AgentStatus, Mount, MountEntryStatus, MountQuota, VolumeStatus } from '../mygo'
 import { api, friendlyError } from '../api/client'
 import { t, type Lang } from '../lib/i18n'
 import { Skeleton, staggerStyle } from '../components/motion'
@@ -44,6 +44,12 @@ export default function Sidebar({
   onRefreshQuota,
   onMountsReordered,
   syncJobCount,
+  // v0.19.0：FUSE 挂载卷状态（App 每 2 秒轮询 GetMountStatus）。
+  // 为 null 时（开发壳里没后端）开关按 Mount.mountEnabled 的
+  // 保存值显示，轮询恢复后以卷状态为准。
+  volumeStatus,
+  onToast,
+  onVolumeStatusRefresh,
 }: {
   page: Page
   lang: Lang
@@ -69,6 +75,9 @@ export default function Sidebar({
   // v0.15.0：已保存同步任务数（Demo v8 .navitem .cnt）。0 时
   // 不渲染——绝不编一个数字。
   syncJobCount?: number
+  volumeStatus?: VolumeStatus | null
+  onToast?: (message: string) => void
+  onVolumeStatusRefresh?: () => void
 }) {
   const [extraGroups, setExtraGroups] = useState<string[]>([])
   const [newGroupName, setNewGroupName] = useState('')
@@ -423,7 +432,7 @@ export default function Sidebar({
 
   const onMountPointerDown = (m: Mount) => (e: React.PointerEvent) => {
     if (e.button !== 0) return
-    if ((e.target as HTMLElement).closest('.mount-hover-actions')) return
+    if ((e.target as HTMLElement).closest('.mount-side-actions')) return
     if (dragRef.current) return
     const startX = e.clientX
     const startY = e.clientY
@@ -562,6 +571,36 @@ export default function Sidebar({
   const [newMigrateGroup, setNewMigrateGroup] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  // v0.19.0 挂载开关：每张可挂载卡片上常显一个缩小版 Switch
+  // （开 = 品牌绿）。开关显隐只看 Mount.caps.supportsMount
+  // （后端只在 Drive / Dropbox / OneDrive 置 true），前端绝
+  // 不按 provider 名自己判断；能力缺失就隐藏，不置灰。
+  // toggling 是正在点开关的那一盘：后端没回之前开关禁用，
+  // 绝不出现点了没反应的静默状态；entry.state 是卷状态里
+  // 的 live 状态（mounting / unmounting 时同样转圈禁用）。
+  const [toggling, setToggling] = useState<Record<string, boolean>>({})
+  const mountEntry = (id: string): MountEntryStatus | undefined =>
+    volumeStatus?.mounts?.find((e) => e.mountId === id)
+  const toggleMount = async (m: Mount, next: boolean) => {
+    if (toggling[m.id]) return
+    setToggling((prev) => ({ ...prev, [m.id]: true }))
+    try {
+      // SetMountEnabled 拒绝时（盘还没加载好、授权过期）后端
+      // 给人话原因：Toast + 卡片红字（下一轮轮询把 error 写
+      // 进卡片），不静默失败。
+      await api.setMountEnabled(m.id, next)
+      onVolumeStatusRefresh?.()
+    } catch (e) {
+      onToast?.(friendlyError(e))
+    } finally {
+      setToggling((prev) => {
+        const nextToggling = { ...prev }
+        delete nextToggling[m.id]
+        return nextToggling
+      })
+    }
+  }
 
   const groupsInUse = Array.from(new Set(mounts.map((m) => m.group ?? '')))
   const allGroups = Array.from(new Set([...groupsInUse, ...extraGroups]))
@@ -806,6 +845,32 @@ export default function Sidebar({
             )}
             {members.map((m, mi) => {
               const st = mountStatusLabel(m.status)
+              // v0.19.0：卷状态里的这一盘（没有卷状态时为
+              // undefined，开关按保存值 mountEnabled 显示）。
+              const entry = mountEntry(m.id)
+              const mountable = m.caps.supportsMount
+              const switchOn = entry ? entry.enabled : m.mountEnabled
+              const mountBusy = Boolean(toggling[m.id]) || entry?.state === 'mounting' || entry?.state === 'unmounting'
+              // v0.19.0 meta 行的挂载状态：可挂载的盘只写一个状态
+              // 词——授权过期时写它（要去重新授权），其余写挂载态；
+              // 失败原因太长，放下面单独的红字行。meta 绝不因挂载
+              // 文案换行，卡片高度与 Demo v8 一致（换行会让侧栏变
+              // 长，拖拽目标掉进底部自动滚动区，见 2k 回归）。
+              let mountMetaSuffix: React.ReactNode = null
+              if (mountable && entry) {
+                if (m.status === 'auth_expired' && st) mountMetaSuffix = ` · ${st}`
+                else if (entry.state === 'mounted')
+                  mountMetaSuffix = (
+                    <>
+                      {' · '}
+                      <span className="dot dot-green" style={{ marginRight: 0 }} />
+                      已挂载
+                    </>
+                  )
+                else if (entry.state === 'mounting') mountMetaSuffix = ' · 挂载中…'
+                else if (entry.state === 'unmounting') mountMetaSuffix = ' · 卸载中…'
+                else if (entry.state !== 'failed') mountMetaSuffix = ' · 未挂载'
+              }
               return (
                 <div key={m.id}>
                   <div
@@ -824,14 +889,14 @@ export default function Sidebar({
                     onPointerDown={onMountPointerDown(m)}
                   >
                     <BrandLogo provider={m.provider} endpointHost={m.endpointHost} />
-                    <div style={{ flex: 1, minWidth: 0, paddingRight: 28 }}>
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: mountable ? 44 : 28 }}>
                       <div className="mount-name" title={m.displayName}>
                         {m.displayName}
                       </div>
                       <div className="mount-meta">
                         {m.provider}
                         {m.workspaceLabel ? ` · ${m.workspaceLabel}` : ''}
-                        {st ? ` · ${st}` : ''}
+                        {mountable && entry ? mountMetaSuffix : st ? ` · ${st}` : ''}
                         {!m.verified && (
                           <span className="badge badge-amber" style={{ marginLeft: 6 }}>
                             未验证
@@ -846,14 +911,61 @@ export default function Sidebar({
                           加载失败：{m.loadError}
                         </div>
                       )}
+                      {/* v0.19.0 挂载失败：红字人话原因写在卡片上
+                          （开关保持开位，重试就是关→开）；只有失败
+                          态才多这一行，平时卡片高度不变。 */}
+                      {entry?.state === 'failed' && (
+                        <div
+                          style={{ fontSize: 12, marginTop: 2, color: 'var(--danger)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={entry.error ?? '原因未知'}
+                        >
+                          挂载失败：{entry.error ?? '原因未知'}
+                        </div>
+                      )}
+                      {entry?.notice && (
+                        <div
+                          style={{ fontSize: 12, marginTop: 2, color: 'var(--ink-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={entry.notice}
+                        >
+                          {entry.notice}
+                        </div>
+                      )}
+                      {entry?.failedUploads && entry.failedUploads.length > 0 && (
+                        <div
+                          style={{ fontSize: 12, marginTop: 2, color: 'var(--danger)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                          title={entry.failedUploads.join('、')}
+                        >
+                          {entry.failedUploads.length} 个文件没传上去：{entry.failedUploads.slice(0, 2).join('、')}
+                          {entry.failedUploads.length > 2 ? '…' : ''}
+                        </div>
+                      )}
                       <QuotaBar quota={quotas?.[m.id]} compact />
                     </div>
-                    {/* v0.13.0：悬停才出现的操作列——刷新容量 +
-                        移除网盘。两个按钮共用一个绝对定位容器，
-                        位置见 tokens.css .mount-hover-actions。 */}
-                    <div className="mount-hover-actions">
+                    {/* v0.19.0 右端操作列（tokens.css
+                        .mount-side-actions）：挂载开关常显在上
+                        （缩小版 Switch，开关本身就是操作，旁边
+                        不另加“挂载”按钮；挂载中/卸载中转圈并禁
+                        用）；刷新容量 + 移除在下、悬停才出现。
+                        点按不选中卡片、不触发长按拖拽。 */}
+                    <div className="mount-side-actions" onPointerDown={(e) => e.stopPropagation()}>
+                      {mountable && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={switchOn}
+                          aria-label={`${m.displayName}挂载开关`}
+                          className={`switch switch-sm${switchOn ? ' switch-on' : ''}${mountBusy ? ' switch-busy' : ''}`}
+                          disabled={mountBusy}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void toggleMount(m, !switchOn)
+                          }}
+                        >
+                          <span className="switch-knob" />
+                        </button>
+                      )}
                       <button
-                        className="icon-btn mount-refresh"
+                        className="icon-btn mount-refresh mount-side-hover"
                         title="刷新全部容量"
                         aria-label="刷新全部容量"
                         onClick={(e) => {
@@ -864,7 +976,7 @@ export default function Sidebar({
                         <IconRefresh />
                       </button>
                       <button
-                        className="icon-btn mount-remove"
+                        className="icon-btn mount-remove mount-side-hover"
                         title="移除网盘"
                         aria-label="移除网盘"
                         onClick={(e) => {

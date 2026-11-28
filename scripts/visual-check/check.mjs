@@ -40,6 +40,9 @@ const CAPS = {
   supportsResumableUpload: true, supportsEncryption: false, supportsStorageClass: false,
   supportsPresignedUrl: false, idBased: false, maxFileSize: 0, minPartSize: 0, maxPathLen: 0, illegalChars: '',
 }
+// v0.19.0: 只有 Drive / Dropbox / OneDrive 可挂载（supportsMount）
+// —— 桩里同样只给这三家置 true，S3 / Drime / 本地没有开关。
+const CAPS_MOUNT = { ...CAPS, supportsMount: true }
 const MOCK_MOUNTS = [
   // S3 根是 ""（provider root），桶名只活在 rootLabel 里作显示；
   // 旧数据 rootRef "test-bucket" 会让浏览列出桶内同名文件夹。
@@ -47,14 +50,14 @@ const MOCK_MOUNTS = [
   // 其他 → AWS S3 标（display-only，后端从非敏感配置派生）。
   { id: 'm-s3', displayName: '我的 R2', provider: 's3', accountId: 'a1', rootRef: '', rootLabel: 'test-bucket', endpointHost: 'abc123.r2.cloudflarestorage.com', group: '工作', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
   { id: 'm-s3aws', displayName: 'AWS 备份', provider: 's3', accountId: 'a4', rootRef: '', rootLabel: 'backup-bucket', endpointHost: 's3.ap-northeast-1.amazonaws.com', group: '存储 / 备份', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', proxyRef: '', caps: { ...CAPS, idBased: true }, status: 'auth_expired', verified: true, createdAt: '', updatedAt: '' },
-  { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: { ...CAPS, idBased: true }, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-db', displayName: 'Dropbox', provider: 'dropbox', accountId: 'a2', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: CAPS_MOUNT, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-dr', displayName: '工作 Drive', provider: 'drive', accountId: 'a3', rootRef: '', rootLabel: '', group: '工作', proxyRef: '', caps: { ...CAPS_MOUNT, idBased: true }, status: 'auth_expired', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-od', displayName: 'OneDrive', provider: 'onedrive', accountId: 'a5', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: { ...CAPS_MOUNT, idBased: true }, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
   { id: 'm-drime', displayName: 'Drime', provider: 'drime', accountId: 'a6', rootRef: '', rootLabel: '', workspaceLabel: '工作区 8762', group: '个人', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
   { id: 'm-local', displayName: '本地照片', provider: 'local', accountId: 'a7', rootRef: '/Users/zy/照片', rootLabel: '/Users/zy/照片', group: '存储 / 备份', proxyRef: '', caps: CAPS, status: 'ok', verified: false, createdAt: '', updatedAt: '' },
   // 超长网盘名（30 个汉字）：悬停删除按钮时名字必须仍是单行
   // 省略、不换行；它的容量查询失败，侧栏应显示“容量暂不可用”。
-  { id: 'm-long', displayName: '这是一个特别特别长的网盘名字用来测试省略号是否正常工作啊啊啊', provider: 'dropbox', accountId: 'a8', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: CAPS, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
+  { id: 'm-long', displayName: '这是一个特别特别长的网盘名字用来测试省略号是否正常工作啊啊啊', provider: 'dropbox', accountId: 'a8', rootRef: '', rootLabel: '', group: '个人', proxyRef: '', caps: CAPS_MOUNT, status: 'ok', verified: true, createdAt: '', updatedAt: '' },
 ]
 const GB = 1024 ** 3
 const TB = 1024 ** 4
@@ -124,6 +127,11 @@ const STUB = `(() => {
   // TestMount 把 verified 翻成 true，后面的步骤（设置页重新测试）
   // 才能看到状态变化——静态列表做不到。
   let __mockMounts = ${STUB_MOUNTS}
+  // v0.19.0：桩里的挂载开关位（跨调用持久化；GetMountStatus /
+  // SetMountEnabled / RetryMount 共用）。__mockMountPending 记
+  // 延迟探针进行中的挂载方向（mounting/unmounting）。
+  const __mockMountEnabled = {}
+  const __mockMountPending = {}
   const listeners = {}
   window.mygo = {
     locale: 'zh-CN', dir: 'ltr',
@@ -190,7 +198,7 @@ const STUB = `(() => {
         const mount = (${STUB_MOUNTS}).find((m) => m.id === args[0]) ?? (${STUB_MOUNTS})[0]
         return { ...mount, rootRef: '', rootLabel: args[1] + (args[2] ? '/' + args[2] : '') }
       }
-      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '/tmp/zy-downloads', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '', previewCacheLimitMB: 2048, previewCacheClearOnExit: false }
+      if (method === 'DesktopService.GetSettings') return { theme: 'light', language: 'zh', downloadDir: '/tmp/zy-downloads', syncCompare: 'size+time', syncConcurrency: 4, syncSpeedLimitKBps: 0, syncConflict: 'keep-both', proxyMode: 'system', proxyHttp: '', proxySocks5: '', previewCacheLimitMB: 2048, previewCacheClearOnExit: false, mountCacheLimitGB: 5 }
       // V0.9.1 预览桩：PreviewURL 按后缀给直链（图片用 240×120
       // 品牌绿块 PNG data URL，真能渲染、肉眼可见；PDF 用最小合法
       // PDF 的 data URL，真能渲染；视频/音频给 data-URL 的无效字
@@ -314,6 +322,53 @@ const STUB = `(() => {
       // v0.18.0: 异步启动加载（桩里加载瞬间完成，返回 false）、
       // 代理列表的新增/改名/删除、每盘代理改值（改 live 网盘）。
       if (method === 'DesktopService.MountsLoading') return false
+      // v0.19.0 挂载桩：默认未挂载态（开关全关）。SetMountEnabled
+      // 改 live 开关位；没加载好（status 不是 ok，如 auth_expired
+      // 的工作 Drive）拒绝并给人话原因，与后端一致。GetMountExitState
+      // / FlushMountDirty 可用 window.__stubExitState /
+      // window.__stubFlushResult 覆盖，供测试 agent 演练对话框。
+      // 另两个探针（只在检查脚本里用）：window.__stubMountDelayMs
+      // （SetMountEnabled 延迟这么多毫秒才生效，期间 GetMountStatus
+      // 报 mounting/unmounting，供 2z 看中间态）与
+      // window.__stubMountFailed = { mountId, error }（该盘在
+      // GetMountStatus 里报 failed、开关保持开位，供 2z 看失败态）。
+      if (method === 'DesktopService.GetMountStatus') {
+        const mounts = __mockMounts.filter((m) => m.caps.supportsMount).map((m) => {
+          const failed = window.__stubMountFailed?.mountId === m.id ? window.__stubMountFailed : null
+          if (failed) return { mountId: m.id, displayName: m.displayName, folderName: m.displayName, enabled: true, state: 'failed', error: failed.error ?? '原因未知', openFiles: 0 }
+          const pend = __mockMountPending[m.id]
+          if (pend) return { mountId: m.id, displayName: m.displayName, folderName: m.displayName, enabled: true, state: pend, openFiles: 0 }
+          const enabled = Boolean(__mockMountEnabled[m.id])
+          return { mountId: m.id, displayName: m.displayName, folderName: enabled ? m.displayName : '', enabled, state: enabled ? 'mounted' : 'unmounted', openFiles: 0 }
+        })
+        return { state: mounts.some((m) => m.enabled) ? 'mounted' : 'unmounted', mountPoint: '~/ZyDrive', driver: { kind: 'fuse-t', installed: true }, mounts, openFiles: 0 }
+      }
+      if (method === 'DesktopService.SetMountEnabled') {
+        const m = __mockMounts.find((x) => x.id === args[0])
+        if (!m) throw new Error('stub: unknown mount')
+        if (m.status !== 'ok') throw new Error('stub: 这个网盘还没加载好，挂载打不开（先在设置里重新测试 / 重新授权）')
+        const delay = Number(window.__stubMountDelayMs || 0)
+        if (delay > 0) {
+          __mockMountPending[args[0]] = args[1] ? 'mounting' : 'unmounting'
+          await new Promise((r) => setTimeout(r, delay))
+          delete __mockMountPending[args[0]]
+        }
+        __mockMountEnabled[args[0]] = args[1]
+        m.mountEnabled = args[1]
+        return null
+      }
+      if (method === 'DesktopService.RetryMount') {
+        const m = __mockMounts.find((x) => x.id === args[0])
+        if (!m) throw new Error('stub: unknown mount')
+        if (m.status !== 'ok') throw new Error('stub: 这个网盘还没加载好，挂载打不开（先在设置里重新测试 / 重新授权）')
+        __mockMountEnabled[args[0]] = true
+        m.mountEnabled = true
+        return null
+      }
+      if (method === 'DesktopService.GetMountCacheInfo') return { sizeBytes: 12345678, fileCount: 4, limitGB: 5, dirtyCount: 0, dirtyBytes: 0, dir: '/Users/zy/Library/Caches/com.luckzk.zy-drive/mount' }
+      if (method === 'DesktopService.ClearMountCache') return { freedBytes: 1234567, fileCount: 2 }
+      if (method === 'DesktopService.GetMountExitState') return window.__stubExitState ?? { dirtyCount: 0, dirtyBytes: 0, openFiles: 0 }
+      if (method === 'DesktopService.FlushMountDirty') return window.__stubFlushResult ?? { flushed: 0, remaining: 0, timedOut: false }
       if (method === 'DesktopService.ListProxies') return __mockProxies
       if (method === 'DesktopService.SaveProxy') {
         const p = { ...(args[0] || {}) }
@@ -358,6 +413,11 @@ const STUB = `(() => {
   }
   // 测试用：模拟一次 mygo 文件拖放（FileBrowser 用 onFileDrop 接）。
   window.__fireFileDrop = (paths, x = 700, y = 400) => { (listeners['mygo:file-drop'] ?? []).forEach((fn) => fn({ paths, x, y })) }
+  // v0.19.0 测试用：模拟 Go 侧发出的退出请求（mygo 事件
+  // "zydrive:exit-request"），演练退出 dirty 对话框；配合
+  // window.__stubExitState（未上传数）与 window.__stubFlushResult
+  // （刷盘结果）使用。
+  window.__fireExitRequest = () => { (listeners['zydrive:exit-request'] ?? []).forEach((fn) => fn({})) }
 })()`
 
 function serve() {
@@ -1119,22 +1179,27 @@ try {
     if (sidebar2) await sidebar2.screenshot({ path: path.join(SHOTS, '02c-sidebar-group-hover.png') })
   }
 
-  // 2e. 网盘卡片的悬停操作列（VISUAL_MOUNTS，v0.13.0：刷新容量
-  // + 删除共用一个 .mount-hover-actions 容器，平时隐藏，悬停
-  // 卡片才出现；两个按钮都是内联 SVG 图标，不是 emoji；hover
-  // 变危险红）。容器本身是绝对定位（不占布局）。
+  // 2e. 网盘卡片的右侧操作列（VISUAL_MOUNTS，v0.13.0 悬停列 +
+  // v0.19.0 挂载开关合并为一个 .mount-side-actions 容器：开关常
+  // 显在上，刷新容量 + 删除在下、平时 visibility 隐藏、悬停卡片
+  // 才出现；两个按钮都是内联 SVG 图标，不是 emoji；hover 变危险
+  // 红）。容器本身是绝对定位（不占布局），列高恒定、开关不跳动。
   if (process.env.VISUAL_MOUNTS) {
     const mountRemove = await page.evaluate(() => {
       const card = document.querySelector('.mount-card')
-      const col = card?.querySelector('.mount-hover-actions')
+      const col = card?.querySelector('.mount-side-actions')
       const btn = card?.querySelector('.mount-remove')
       const refresh = card?.querySelector('.mount-refresh')
+      const mountSwitch = card?.querySelector('[role="switch"]')
       if (!card || !col || !btn || !refresh) return { found: false }
       const cs = getComputedStyle(col)
       return {
         found: true,
         displayBefore: cs.display,
         colAbsolute: cs.position === 'absolute',
+        btnHiddenBefore: getComputedStyle(btn).visibility === 'hidden',
+        refreshHiddenBefore: getComputedStyle(refresh).visibility === 'hidden',
+        hasSwitch: !!mountSwitch,
         hasSvg: !!btn.querySelector('svg'),
         text: btn.textContent.trim(),
         title: btn.getAttribute('title'),
@@ -1143,8 +1208,11 @@ try {
       }
     })
     console.log('mount remove (before hover):', JSON.stringify(mountRemove))
-    if (!mountRemove.found) failures.push('找不到网盘卡片的悬停操作列（.mount-hover-actions，内含 .mount-remove + .mount-refresh）')
-    if (mountRemove.found && mountRemove.displayBefore !== 'none') failures.push(`网盘悬停操作列平时应隐藏，实测 display=${mountRemove.displayBefore}`)
+    if (!mountRemove.found) failures.push('找不到网盘卡片的右侧操作列（.mount-side-actions，内含开关 + .mount-remove + .mount-refresh）')
+    if (mountRemove.found && mountRemove.displayBefore === 'none') failures.push('网盘右侧操作列平时不应 display:none（开关常显）')
+    if (mountRemove.found && !mountRemove.btnHiddenBefore) failures.push('网盘删除按钮平时应 visibility 隐藏（悬停才出现）')
+    if (mountRemove.found && !mountRemove.refreshHiddenBefore) failures.push('网盘刷新容量按钮平时应 visibility 隐藏（悬停才出现）')
+    if (mountRemove.found && !mountRemove.hasSwitch) failures.push('可挂载的网盘卡片上没有挂载开关（[role="switch"]）')
     if (mountRemove.found && !mountRemove.colAbsolute) failures.push('网盘悬停操作列应为绝对定位（不占布局）')
     if (mountRemove.found && !mountRemove.hasSvg) failures.push('网盘删除按钮应是内联 SVG 图标，不是 emoji/文字')
     if (mountRemove.found && mountRemove.text !== '') failures.push(`网盘删除按钮里不应有文字/emoji，实测 ${JSON.stringify(mountRemove.text)}`)
@@ -1156,13 +1224,15 @@ try {
     await page.hover('.mount-card').catch(() => failures.push('悬停网盘卡片失败'))
     await page.waitForTimeout(300)
     const mountRemoveHover = await page.evaluate(() => {
-      const col = document.querySelector('.mount-card .mount-hover-actions')
-      if (!col) return { found: false }
-      const cs = getComputedStyle(col)
-      return { found: true, displayAfter: cs.display }
+      const card = document.querySelector('.mount-card')
+      const btn = card?.querySelector('.mount-remove')
+      const refresh = card?.querySelector('.mount-refresh')
+      if (!btn || !refresh) return { found: false }
+      return { found: true, btnVisible: getComputedStyle(btn).visibility === 'visible', refreshVisible: getComputedStyle(refresh).visibility === 'visible' }
     })
     console.log('mount remove (on hover):', JSON.stringify(mountRemoveHover))
-    if (mountRemoveHover.found && mountRemoveHover.displayAfter === 'none') failures.push('悬停网盘卡片后悬停操作列没有出现')
+    if (mountRemoveHover.found && !mountRemoveHover.btnVisible) failures.push('悬停网盘卡片后删除按钮没有出现')
+    if (mountRemoveHover.found && !mountRemoveHover.refreshVisible) failures.push('悬停网盘卡片后刷新容量按钮没有出现')
     const sidebar3 = await page.$('.sidebar')
     if (sidebar3) await sidebar3.screenshot({ path: path.join(SHOTS, '02e-sidebar-mount-hover.png') })
   }
@@ -1222,8 +1292,9 @@ try {
         const card = [...document.querySelectorAll('.mount-card')][idx]
         if (!card) return { found: false }
         const name = card.querySelector('.mount-name')
-        const col = card.querySelector('.mount-hover-actions')
-        if (!name || !col) return { found: false }
+        const col = card.querySelector('.mount-side-actions')
+        const removeBtn = card.querySelector('.mount-remove')
+        if (!name || !col || !removeBtn) return { found: false }
         const nr = name.getBoundingClientRect()
         const cs = getComputedStyle(name)
         const ccs = getComputedStyle(col)
@@ -1232,7 +1303,7 @@ try {
           singleLine: nr.height <= 22,
           ellipsis: cs.textOverflow === 'ellipsis' && cs.whiteSpace === 'nowrap' && cs.overflow === 'hidden',
           clipped: name.scrollWidth > name.clientWidth,
-          removeVisible: ccs.display !== 'none',
+          removeVisible: getComputedStyle(removeBtn).visibility === 'visible',
           removeAbsolute: ccs.position === 'absolute',
           title: name.getAttribute('title'),
           nameLen: name.textContent?.length ?? 0,
@@ -2253,6 +2324,183 @@ try {
     await page.waitForTimeout(400)
   }
 
+  // 2z. FUSE 挂载开关 + 失败态 + 退出对话框（v0.19.0，VISUAL_MOUNTS）：
+  // a) 开关只在 P0 三家（Drive/Dropbox/OneDrive）的卡片上——桩里
+  //    是 m-db、m-dr、m-od、m-long（两个 Dropbox），S3/Drime/本地
+  //    盘（m-s3、m-s3aws、m-drime、m-local）无开关；
+  // b) 拨 OneDrive 开关：延迟探针下先看到“挂载中…”（开关 busy），
+  //    再看到“已挂载”（aria-checked=true）；
+  // c) 失败探针下卡片标红“挂载失败：原因”，开关保持开位；
+  // d) __fireExitRequest 弹出退出对话框，“不退出，继续等待”刷盘
+  //    后如实报结果（全传完 → “留在应用里”；还剩 → 报剩余数）。
+  if (process.env.VISUAL_MOUNTS) {
+    const switchInventory = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll('.mount-card')].map((c) => ({
+        id: c.getAttribute('data-mount-id'),
+        name: c.querySelector('.mount-name')?.textContent?.trim() ?? '',
+        hasSwitch: !!c.querySelector('[role="switch"]'),
+      }))
+      return cards
+    })
+    console.log('mount switch inventory:', JSON.stringify(switchInventory))
+    const expectSwitch = ['m-db', 'm-dr', 'm-od', 'm-long']
+    const expectNoSwitch = ['m-s3', 'm-s3aws', 'm-drime', 'm-local']
+    for (const id of expectSwitch) {
+      const card = switchInventory.find((c) => c.id === id)
+      if (!card) failures.push(`侧栏找不到网盘卡片 ${id}（挂载开关盘点）`)
+      else if (!card.hasSwitch) failures.push(`P0 可挂载盘 ${card.name}（${id}）的卡片上没有挂载开关`)
+    }
+    for (const id of expectNoSwitch) {
+      const card = switchInventory.find((c) => c.id === id)
+      if (!card) failures.push(`侧栏找不到网盘卡片 ${id}（挂载开关盘点）`)
+      else if (card.hasSwitch) failures.push(`非 P0 盘 ${card.name}（${id}）的卡片上不应有挂载开关`)
+    }
+    // b) 拨开关：延迟 2500ms（> 2 秒轮询间隔，轮询必有一次落在
+    // 延迟窗内，才能看到 mounting 中间态），先等“挂载中…”再等
+    // “已挂载”。
+    await page.evaluate(() => { window.__stubMountDelayMs = 2500 })
+    await page.locator('[data-mount-id="m-od"] [role="switch"]').click()
+    try {
+      await page.waitForFunction(() => {
+        const card = document.querySelector('[data-mount-id="m-od"]')
+        return (card?.textContent ?? '').includes('挂载中…')
+      }, { timeout: 4000 })
+    } catch {
+      failures.push('拨 OneDrive 开关后没有出现“挂载中…”中间态（延迟探针 2500ms 内应被轮询看到）')
+    }
+    const mountingMid = await page.evaluate(() => {
+      const sw = document.querySelector('[data-mount-id="m-od"] [role="switch"]')
+      return { busy: sw?.classList.contains('switch-busy') ?? false, disabled: sw?.disabled ?? false }
+    })
+    console.log('mount switch mid-flight:', JSON.stringify(mountingMid))
+    if (!mountingMid.busy && !mountingMid.disabled) failures.push('挂载中时开关应转圈/禁用（switch-busy 或 disabled），实测两者皆无')
+    try {
+      await page.waitForFunction(() => {
+        const card = document.querySelector('[data-mount-id="m-od"]')
+        return (card?.textContent ?? '').includes('已挂载')
+      }, { timeout: 6000 })
+    } catch {
+      failures.push('拨 OneDrive 开关后没有变成“已挂载”')
+    }
+    const mounted = await page.evaluate(() => {
+      const sw = document.querySelector('[data-mount-id="m-od"] [role="switch"]')
+      return { checked: sw?.getAttribute('aria-checked') ?? '' }
+    })
+    if (mounted.checked !== 'true') failures.push(`挂载后 OneDrive 开关 aria-checked 应为 true，实测 ${JSON.stringify(mounted.checked)}`)
+    await page.evaluate(() => { window.__stubMountDelayMs = 0 })
+    await page.screenshot({ path: path.join(SHOTS, '02z-mount-mounted.png') })
+    // c) 失败态：桩报 failed，卡片出红字原因、开关保持开位；清
+    // 掉探针后下一轮轮询回到已挂载。
+    await page.evaluate(() => { window.__stubMountFailed = { mountId: 'm-od', error: 'FUSE-T 没装好，挂载打不开' } })
+    try {
+      await page.waitForFunction(() => {
+        const card = document.querySelector('[data-mount-id="m-od"]')
+        return (card?.textContent ?? '').includes('挂载失败：FUSE-T 没装好，挂载打不开')
+      }, { timeout: 5000 })
+    } catch {
+      failures.push('失败探针下 OneDrive 卡片没有出现“挂载失败：FUSE-T 没装好，挂载打不开”')
+    }
+    const failedCard = await page.evaluate(() => {
+      const card = document.querySelector('[data-mount-id="m-od"]')
+      const row = [...(card?.querySelectorAll('div') ?? [])].find((d) => (d.textContent ?? '').startsWith('挂载失败：'))
+      const sw = card?.querySelector('[role="switch"]')
+      // 用探针 span 把 var(--danger) 解析成 rgb，再与红字行比对。
+      const probe = document.createElement('span')
+      probe.style.color = 'var(--danger)'
+      document.body.appendChild(probe)
+      const dangerRgb = getComputedStyle(probe).color
+      probe.remove()
+      return {
+        hasRow: !!row,
+        color: row ? getComputedStyle(row).color : '',
+        isDangerRed: !!row && getComputedStyle(row).color === dangerRgb,
+        checked: sw?.getAttribute('aria-checked') ?? '',
+      }
+    })
+    console.log('mount failed card:', JSON.stringify(failedCard))
+    if (!failedCard.hasRow) failures.push('失败态卡片上没有“挂载失败”红字行')
+    if (failedCard.hasRow && !failedCard.isDangerRed) failures.push(`失败态红字行颜色应为 --danger（${failedCard.color}），不是危险红`)
+    if (failedCard.checked !== 'true') failures.push(`失败态下 OneDrive 开关应保持开位（aria-checked=true），实测 ${JSON.stringify(failedCard.checked)}`)
+    await page.evaluate(() => { window.__stubMountFailed = null })
+    try {
+      await page.waitForFunction(() => {
+        const card = document.querySelector('[data-mount-id="m-od"]')
+        return (card?.textContent ?? '').includes('已挂载')
+      }, { timeout: 5000 })
+    } catch {
+      failures.push('清掉失败探针后 OneDrive 卡片没有回到“已挂载”')
+    }
+    // d) 退出对话框：两轮——全传完；还剩 2 个。
+    await page.evaluate(() => {
+      window.__stubExitState = { dirtyCount: 2, dirtyBytes: 2048, openFiles: 1 }
+      window.__stubFlushResult = { flushed: 2, remaining: 0, timedOut: false }
+      window.__fireExitRequest()
+    })
+    try {
+      await page.waitForFunction(() => {
+        const dlg = document.querySelector('.dialog')
+        return !!dlg && (dlg.textContent ?? '').includes('还有 2 个文件没上传') && (dlg.textContent ?? '').includes('1 个文件正打开着')
+      }, { timeout: 4000 })
+    } catch {
+      failures.push('__fireExitRequest 后退出对话框没有弹出（应写清 2 个未上传 + 1 个正打开）')
+    }
+    await page.screenshot({ path: path.join(SHOTS, '02z-exit-dialog.png') })
+    const waitBtn = page.locator('.dialog .btn-primary', { hasText: '不退出，继续等待' })
+    await waitBtn.click().catch(() => failures.push('退出对话框里找不到“不退出，继续等待”按钮'))
+    try {
+      await page.waitForFunction(() => {
+        const dlg = document.querySelector('.dialog')
+        return !!dlg && (dlg.textContent ?? '').includes('都传上去了（这次传了 2 个）')
+      }, { timeout: 4000 })
+    } catch {
+      failures.push('点“不退出，继续等待”后没有报“都传上去了（这次传了 2 个）”')
+    }
+    const stayLabel = await page.evaluate(() => document.querySelector('.dialog .btn-primary')?.textContent?.trim() ?? '')
+    if (stayLabel !== '留在应用里') failures.push(`全传完后主按钮应变“留在应用里”，实测 ${JSON.stringify(stayLabel)}`)
+    await page.locator('.dialog .btn-primary', { hasText: '留在应用里' }).click().catch(() => failures.push('全传完后找不到“留在应用里”按钮'))
+    await page.waitForTimeout(600)
+    const dialogGone1 = await page.evaluate(() => !document.querySelector('.dialog'))
+    if (!dialogGone1) failures.push('点“留在应用里”后退出对话框没有关闭')
+    // 第二轮：还剩 2 个，报剩余数；点“直接退出”关闭。
+    await page.evaluate(() => {
+      window.__stubExitState = { dirtyCount: 3, dirtyBytes: 3072, openFiles: 0 }
+      window.__stubFlushResult = { flushed: 1, remaining: 2, timedOut: false }
+      window.__fireExitRequest()
+    })
+    try {
+      await page.waitForFunction(() => {
+        const dlg = document.querySelector('.dialog')
+        return !!dlg && (dlg.textContent ?? '').includes('还有 3 个文件没上传')
+      }, { timeout: 4000 })
+    } catch {
+      failures.push('第二轮退出对话框没有弹出（3 个未上传）')
+    }
+    await page.locator('.dialog .btn-primary', { hasText: '不退出，继续等待' }).click().catch(() => failures.push('第二轮退出对话框里找不到“不退出，继续等待”按钮'))
+    try {
+      await page.waitForFunction(() => {
+        const dlg = document.querySelector('.dialog')
+        return !!dlg && (dlg.textContent ?? '').includes('已传上去 1 个，还剩 2 个没传上去')
+      }, { timeout: 4000 })
+    } catch {
+      failures.push('第二轮刷盘后没有报“已传上去 1 个，还剩 2 个没传上去”')
+    }
+    await page.locator('.dialog .btn', { hasText: '直接退出，下次续传' }).click().catch(() => failures.push('退出对话框里找不到“直接退出，下次续传”按钮'))
+    await page.waitForTimeout(600)
+    const dialogGone2 = await page.evaluate(() => !document.querySelector('.dialog'))
+    if (!dialogGone2) failures.push('点“直接退出，下次续传”后退出对话框没有关闭')
+    // 收尾：关掉 OneDrive 开关，恢复默认未挂载态，免得影响后面
+    // 的设置页等步骤。
+    await page.locator('[data-mount-id="m-od"] [role="switch"]').click().catch(() => failures.push('收尾关 OneDrive 开关失败'))
+    try {
+      await page.waitForFunction(() => {
+        const card = document.querySelector('[data-mount-id="m-od"]')
+        return (card?.textContent ?? '').includes('未挂载')
+      }, { timeout: 5000 })
+    } catch {
+      failures.push('收尾关 OneDrive 开关后没有回到“未挂载”')
+    }
+  }
+
   // 2b. 导航结构（v0.17.1）：顶部导航只剩文件浏览 / 同步任务；
   // 设置在左下角、Agent 卡片下方。点它仍能打开设置页由 §4 的
   // '.nav-item' hasText '设置' 点击覆盖。
@@ -2614,7 +2862,7 @@ try {
     }
   })
   console.log('settings cards:', JSON.stringify(settingsCards))
-  if (settingsCards.cardCount < 7) failures.push(`设置页分组卡片应至少 7 张（通用/网络/网盘/同步默认/缓存/Agent/关于），实测 ${settingsCards.cardCount} 张`)
+  if (settingsCards.cardCount < 8) failures.push(`设置页分组卡片应至少 8 张（通用/网络/网盘/同步默认/缓存/挂载/Agent/关于），实测 ${settingsCards.cardCount} 张`)
   for (const c of settingsCards.cardInfo) {
     if (c.bg !== 'rgb(245, 245, 245)') failures.push(`设置卡片背景应为 --card #F5F5F5，实测 ${c.bg}`)
     if (c.radius !== '16px') failures.push(`设置卡片圆角应为 16px，实测 ${c.radius}`)
@@ -2639,7 +2887,7 @@ try {
     if (!g.activeShadow || g.activeShadow === 'none') failures.push(`分段选择“${g.label}”激活段应有轻阴影`)
   }
 
-  // 4b2t. 设置页顶栏 tabs（Drime 式，v0.17.0）：七节横排 pill 组，
+  // 4b2t. 设置页顶栏 tabs（Drime 式，v0.17.0；v0.19.0 加挂载为八节）：八节横排 pill 组，
   // 激活项是白色 pill（边框 + 轻阴影）；一次只显示一节；切 tab
   // 时新内容按方向滑入（向右切从右侧进）、旧内容向反方向滑出；
   // 未保存的编辑切走再切回还在；缓存开关是 Drime 式 switch。
@@ -2662,12 +2910,12 @@ try {
   })
   console.log('settings tabs:', JSON.stringify(tabsInfo))
   if (!tabsInfo.hasList) failures.push('设置页没有顶栏 tab 组（.settings-tabs[role="tablist"]）')
-  const EXPECT_TABS = ['通用', '网络', '网盘', '同步默认', '缓存', 'Agent', '关于']
-  if (JSON.stringify(tabsInfo.labels) !== JSON.stringify(EXPECT_TABS)) failures.push(`设置顶栏应为七节 ${EXPECT_TABS.join('/')}，实测 ${JSON.stringify(tabsInfo.labels)}`)
+  const EXPECT_TABS = ['通用', '网络', '网盘', '同步默认', '缓存', '挂载', 'Agent', '关于']
+  if (JSON.stringify(tabsInfo.labels) !== JSON.stringify(EXPECT_TABS)) failures.push(`设置顶栏应为八节 ${EXPECT_TABS.join('/')}，实测 ${JSON.stringify(tabsInfo.labels)}`)
   if (tabsInfo.activeLabel !== '通用') failures.push(`默认激活的 tab 应为“通用”，实测 ${tabsInfo.activeLabel}`)
   if (tabsInfo.activeBg !== 'rgb(255, 255, 255)') failures.push(`激活 tab 应是白色 pill，实测背景 ${tabsInfo.activeBg}`)
   if (!tabsInfo.activeShadow || tabsInfo.activeShadow === 'none') failures.push('激活 tab 应有轻阴影')
-  if (tabsInfo.panelCount !== 7) failures.push(`设置面板应为 7 个（七节各一），实测 ${tabsInfo.panelCount}`)
+  if (tabsInfo.panelCount !== 8) failures.push(`设置面板应为 8 个（八节各一），实测 ${tabsInfo.panelCount}`)
   if (tabsInfo.visiblePanelCount !== 1 || tabsInfo.visiblePanelId !== 'settings-panel-general') failures.push(`一次只应显示一节（通用），实测可见 ${tabsInfo.visiblePanelCount} 个（${tabsInfo.visiblePanelId}）`)
   // 未保存的编辑：在通用填下载文件夹（不保存），切走再切回还在。
   await page.locator('#settings-panel-general .input').first().fill('/tmp/zy-drive-draft-keep')
@@ -2927,14 +3175,14 @@ try {
     if (cacheCard.found && !cacheCard.hasClearBtn) failures.push('缓存卡里没有“清理缓存”按钮')
     if (cacheCard.found && !cacheCard.hasExitToggle) failures.push('缓存卡里没有“退出时清理缓存”开关')
     if (cacheCard.found && cacheCard.hasClearBtn) {
-      await page.locator('.settings-card', { hasText: '缓存' }).getByRole('button', { name: '清理缓存', exact: true }).click()
+      await page.locator('#settings-panel-cache .settings-card').getByRole('button', { name: '清理缓存', exact: true }).click()
       await page.waitForTimeout(500)
       const cleared = await page.evaluate(() => {
         const card = [...document.querySelectorAll('.settings-card')].find((c) => c.querySelector('h2')?.textContent?.trim() === '缓存')
         return card?.textContent ?? ''
       })
       if (!cleared.includes('已清理预览缓存，释放了 1.2 MB（3 个文件）')) failures.push(`点“清理缓存”后没有释放提示，实测 ${JSON.stringify(cleared.slice(0, 200))}`)
-      await page.locator('.settings-card', { hasText: '缓存' }).screenshot({ path: path.join(SHOTS, '04b2a-settings-cache.png') })
+      await page.locator('#settings-panel-cache .settings-card').screenshot({ path: path.join(SHOTS, '04b2a-settings-cache.png') })
     }
   }
 

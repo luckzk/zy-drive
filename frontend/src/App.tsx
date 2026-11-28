@@ -18,7 +18,8 @@
 // (base curve) via .page-enter, keyed by page; loading states are
 // skeleton blocks shaped like the real content, never "加载中…" text.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { Agent, AgentStatus, Mount, MountQuota, Settings, Transfer } from './mygo'
+import type { Agent, AgentStatus, ExitState, FlushResult, Mount, MountQuota, Settings, Transfer, VolumeStatus } from './mygo'
+import { event as mygoEvent } from 'mygo-runtime'
 import { api, friendlyError } from './api/client'
 import { t, type Lang } from './lib/i18n'
 import { Skeleton } from './components/motion'
@@ -28,6 +29,7 @@ import TransferDock from './components/TransferDock'
 import ToastHost, { type ToastItem } from './components/Toasts'
 import CommandPalette from './components/CommandPalette'
 import AddMountDialog from './components/AddMountDialog'
+import ExitDialog from './components/ExitDialog'
 import SyncJobsPage from './pages/SyncJobs'
 import SettingsPage from './pages/Settings'
 
@@ -72,6 +74,137 @@ export default function App() {
   const dismissToast = useCallback((id: number) => {
     setToasts((prev) => prev.filter((t) => t.id !== id))
   }, [])
+  // v0.19.0：FUSE 卷状态（GetMountStatus），每 2 秒轮询，驱动
+  // 侧栏挂载开关与状态行。某盘由非失败变为失败时发一个 Toast
+  // （卡片上同时有红字人话原因）；轮询失败（开发壳里没后端）
+  // 静默保留旧状态，侧栏按保存值显示开关。
+  const [volumeStatus, setVolumeStatus] = useState<VolumeStatus | null>(null)
+  const volumeStatusRef = useRef<VolumeStatus | null>(null)
+  const loadVolumeStatus = useCallback(async () => {
+    try {
+      const vs = await api.getMountStatus()
+      const prev = volumeStatusRef.current
+      if (prev) {
+        for (const e of vs.mounts ?? []) {
+          const p = (prev.mounts ?? []).find((x) => x.mountId === e.mountId)
+          if (p && p.state !== 'failed' && e.state === 'failed') {
+            pushToast(`“${e.displayName}”挂载失败：${e.error ?? '原因未知'}，开关还开着，关掉再打开可以重试。`)
+          }
+        }
+      }
+      volumeStatusRef.current = vs
+      setVolumeStatus(vs)
+    } catch {
+      // 没接上后端时不报错、不清旧状态。
+    }
+  }, [pushToast])
+  useEffect(() => {
+    void loadVolumeStatus()
+    const t = setInterval(() => void loadVolumeStatus(), 2000)
+    return () => clearInterval(t)
+  }, [loadVolumeStatus])
+
+  // v0.19.0：退出 dirty 对话框。触发源是 Go 侧的退出拦截
+  // （mygo 事件 "zydrive:exit-request"，见 ExitDialog.tsx 头注；
+  // 另有同名 DOM 事件与 window.__zydriveRequestExit 备用入口）。
+  // 前端只负责问用户 + 刷盘；“退出”本身由 Go 侧执行：用户的
+  // 选择经 __zydriveExitDecision(quit) 回调或
+  // "zydrive:exit-decision" DOM 事件回传 Go，Go 再调 App.Quit()。
+  // __zydriveExitDecision 的落点在下面那个 useEffect 里，接
+  // 的是 api.confirmExit（ConfirmExit Bind）。
+  const [exitDialog, setExitDialog] = useState<ExitState | null>(null)
+  const [exitFlushing, setExitFlushing] = useState(false)
+  const [exitFlush, setExitFlush] = useState<FlushResult | null>(null)
+  const [exitFlushError, setExitFlushError] = useState<string | null>(null)
+  const exitDialogOpenRef = useRef(false)
+  const notifyExitDecision = useCallback((quit: boolean) => {
+    try {
+      const w = window as unknown as { __zydriveExitDecision?: (quit: boolean) => void }
+      w.__zydriveExitDecision?.(quit)
+    } catch {
+      // 回调未安装（不在 mygo 窗口里）：决定发不出去。
+    }
+    window.dispatchEvent(new CustomEvent('zydrive:exit-decision', { detail: { quit } }))
+  }, [])
+  const closeExitDialog = useCallback(
+    (quit: boolean) => {
+      exitDialogOpenRef.current = false
+      setExitDialog(null)
+      setExitFlush(null)
+      setExitFlushError(null)
+      notifyExitDecision(quit)
+    },
+    [notifyExitDecision],
+  )
+  const requestExit = useCallback(async () => {
+    if (exitDialogOpenRef.current) return
+    let st: ExitState
+    try {
+      st = await api.getMountExitState()
+    } catch {
+      // 读不到退出状态（没接后端）：不拦退出，决定权交回 Go。
+      closeExitDialog(true)
+      return
+    }
+    if (st.dirtyCount === 0 && st.openFiles === 0) {
+      closeExitDialog(true)
+      return
+    }
+    exitDialogOpenRef.current = true
+    setExitFlush(null)
+    setExitFlushError(null)
+    setExitDialog(st)
+  }, [closeExitDialog])
+  useEffect(() => {
+    let off: (() => void) | undefined
+    try {
+      // mygo 事件：Go 侧 mygo.NewEvent("zydrive:exit-request")。
+      off = mygoEvent<unknown>('zydrive:exit-request').on(() => void requestExit())
+    } catch {
+      // 不在 mygo 窗口里（开发壳 / 纯浏览器）：没有这个事件源。
+    }
+    const onDom = () => void requestExit()
+    window.addEventListener('zydrive:exit-request', onDom)
+    const w = window as unknown as { __zydriveRequestExit?: () => void; __zydriveExitDecision?: (quit: boolean) => void }
+    w.__zydriveRequestExit = () => void requestExit()
+    // 决定回传的落点：调 ConfirmExit Bind，Go 侧收到 quit=true
+    // 才真的退出（quit=false 是留在应用里，什么都不做）。
+    w.__zydriveExitDecision = (quit: boolean) => {
+      void api.confirmExit(quit).catch(() => {
+        // 不在 mygo 窗口里（开发壳 / 纯浏览器）：没有后端可回传，忽略。
+      })
+    }
+    return () => {
+      off?.()
+      window.removeEventListener('zydrive:exit-request', onDom)
+      if (w.__zydriveRequestExit) delete w.__zydriveRequestExit
+      if (w.__zydriveExitDecision) delete w.__zydriveExitDecision
+    }
+  }, [requestExit])
+  const handleExitWait = useCallback(async () => {
+    // 都传完了再点“继续等待”就是留在应用里，不再刷一次。
+    if (exitFlush && exitFlush.remaining === 0) {
+      closeExitDialog(false)
+      return
+    }
+    if (exitFlushing) return
+    setExitFlushing(true)
+    setExitFlushError(null)
+    try {
+      const r = await api.flushMountDirty()
+      setExitFlush(r)
+      // 刷新剩余数：如实告诉用户还剩多少。
+      try {
+        setExitDialog(await api.getMountExitState())
+      } catch {
+        // 保留刷盘前的数字，不编新数。
+      }
+    } catch (e) {
+      setExitFlushError(friendlyError(e))
+    } finally {
+      setExitFlushing(false)
+    }
+  }, [exitFlush, exitFlushing, closeExitDialog])
   // Settings live here because theme/language apply app-wide the
   // moment they change (Settings page edits them through these
   // handlers, which save + apply immediately).
@@ -285,6 +418,9 @@ export default function App() {
           // 内部算好新数组直接 setMounts），再调后端确认。
           onMountsReordered={(next) => setMounts(next)}
           syncJobCount={syncJobCount}
+          volumeStatus={volumeStatus}
+          onToast={pushToast}
+          onVolumeStatusRefresh={() => void loadVolumeStatus()}
         />
 
         <main style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
@@ -377,6 +513,17 @@ export default function App() {
             setReauthMount(null)
             void loadMounts().then(() => setActiveMount(m.id))
           }}
+        />
+      )}
+      {exitDialog && (
+        <ExitDialog
+          state={exitDialog}
+          flushing={exitFlushing}
+          flush={exitFlush}
+          flushError={exitFlushError}
+          onWait={() => void handleExitWait()}
+          onQuitNow={() => closeExitDialog(true)}
+          onStay={() => closeExitDialog(false)}
         />
       )}
     </div>

@@ -40,6 +40,9 @@ func TestSettingsRoundTripAcrossRestart(t *testing.T) {
 		// round-trip actually covers them. (A limit of 0 is not a
 		// valid value — SaveSettings turns it into the 2 GB default.)
 		PreviewCacheLimitMB: 1024, PreviewCacheClearOnExit: true,
+		// Mount cache (v0.19.0): same rule — a non-default
+		// tier, so the round-trip covers the new key too.
+		MountCacheLimitGB: 10,
 	}
 	if err := a.SaveSettings(want); err != nil {
 		t.Fatalf("SaveSettings: %v", err)

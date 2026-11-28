@@ -268,6 +268,7 @@ func (p *Provider) Caps() domain.Caps {
 		SupportsEncryption:      false,
 		SupportsStorageClass:    false,
 		SupportsPresignedURL:    true, // @microsoft.graph.downloadUrl
+		SupportsMount:           true, // v0.19.0, FUSE P0
 		IDBased:                 true,
 		MaxFileSize:             maxFileSize,
 		MinPartSize:             chunkSize,

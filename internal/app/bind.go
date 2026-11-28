@@ -6,6 +6,7 @@ import (
 
 	"github.com/luckzk/zy-drive/internal/agentapi"
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/mount"
 	"github.com/luckzk/zy-drive/internal/sync"
 )
 
@@ -487,4 +488,82 @@ func (s *DesktopService) ExportAgentBundle(ctx context.Context, agentID, passphr
 // master key. An empty token clears the saved one.
 func (s *DesktopService) SaveAgentToken(agentID, token string) error {
 	return s.app.SaveAgentToken(agentID, token)
+}
+
+// --- FUSE mount volume ~/ZyDrive (v0.19.0, P0) ---
+//
+// The frontend polls GetMountStatus (same 2s rhythm as
+// MountsLoading) and renders the volume + per-mount states from
+// it. Every method below is JSON-safe for `mygo generate`.
+// Mounting is free — no Pro gate on this path.
+
+// GetMountStatus snapshots the volume state, the FUSE driver
+// state and every mountable mount (Drive / Dropbox / OneDrive
+// in P0 — other mounts have no switch).
+func (s *DesktopService) GetMountStatus() mount.VolumeStatus {
+	return s.app.GetMountStatus()
+}
+
+// SetMountEnabled flips one mount's FUSE switch. Enabling a
+// mount that is not loaded (or auth-expired) is refused with a
+// human reason; disabling removes its folder from the volume
+// at once (already-open files keep working until closed).
+func (s *DesktopService) SetMountEnabled(ctx context.Context, mountID string, enabled bool) error {
+	return s.app.SetMountEnabled(ctx, mountID, enabled)
+}
+
+// GetMountCacheInfo reports the mount cache (size, file count,
+// dirty files/bytes, limit) for Settings → 挂载.
+func (s *DesktopService) GetMountCacheInfo() (*mount.CacheInfo, error) {
+	info, err := s.app.GetMountCacheInfo()
+	if err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// ClearMountCache deletes cached files that are neither dirty
+// nor pinned and reports the freed bytes.
+func (s *DesktopService) ClearMountCache() (*mount.CacheCleared, error) {
+	cleared, err := s.app.ClearMountCache()
+	if err != nil {
+		return nil, err
+	}
+	return &cleared, nil
+}
+
+// RetryMount re-enables a mount ("关→开": same validation and
+// mount path as a switch tap).
+func (s *DesktopService) RetryMount(ctx context.Context, mountID string) error {
+	return s.app.RetryMount(ctx, mountID)
+}
+
+// GetMountExitState reports dirty files/bytes + open files for
+// the exit dialog ("仍有 N 个文件没上传 / M 个文件正打开").
+func (s *DesktopService) GetMountExitState() mount.ExitState {
+	return s.app.GetMountExitState()
+}
+
+// FlushMountDirty uploads dirty files within 30s (exit path:
+// best-effort, leftovers stay cached for next start).
+func (s *DesktopService) FlushMountDirty(ctx context.Context) (*mount.FlushResult, error) {
+	res, err := s.app.FlushMountDirty(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// ConfirmExit receives the exit dialog's decision (v0.19.0):
+// quit=true means the user chose "直接退出，下次续传" — or
+// there was nothing dirty/open, so the frontend decided at
+// once — and the app then quits for real. quit=false means
+// "留在应用里": nothing happens, the dialog is already closed
+// on the frontend side. The quit itself runs through the hook
+// cmd/desktop installs (mygo.App.Quit); without it (dev shell,
+// tests) a true decision is a no-op. The "exit confirmed"
+// flag is set before quitting so the second Quit does not trip
+// OnBeforeQuit again.
+func (s *DesktopService) ConfirmExit(quit bool) {
+	s.app.ConfirmExit(quit)
 }

@@ -296,6 +296,26 @@ button {
 .switch-on .switch-knob { transform: translateX(20px); }
 .switch:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* 挂载开关（v0.19.0）：设置页 Switch 的缩小版，36×20，常显在
+   侧栏卡片右端——不沿用删除按钮的“悬停才出现”规则。开 = 品牌绿。
+   挂载中 / 卸载中：开关禁用，外面一圈转动的绿环（.switch-busy），
+   不占布局、不增高卡片。 */
+.switch-sm { width: 36px; height: 20px; }
+.switch-sm .switch-knob { width: 16px; height: 16px; }
+.switch-sm.switch-on .switch-knob { transform: translateX(16px); }
+.switch-busy { position: relative; }
+.switch-busy::after { content: ''; position: absolute; inset: -4px; border-radius: 999px; border: 2px solid transparent; border-top-color: var(--brand); animation: spin 800ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+/* 侧栏卡片右端的操作列（v0.19.0）：挂载开关常显在上，刷新容量 /
+   移除在下、悬停才出现（visibility 占位不跳动：列高恒定，开关
+   在悬停时不上下跳）。列宽 36px，卡片文字列给可挂载的盘预留
+   44px 右边距。 */
+.mount-side-actions { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.mount-side-actions .icon-btn { padding: 2px; }
+.mount-side-actions .mount-side-hover { visibility: hidden; }
+.mount-card:hover .mount-side-actions .mount-side-hover, .mount-card:focus-within .mount-side-actions .mount-side-hover { visibility: visible; }
+@media (hover: none) { .mount-side-actions .mount-side-hover { visibility: visible; } }
+
 /* ---- 徽章 / 状态 ---- */
 .badge {
   display: inline-block;
@@ -370,24 +390,18 @@ button {
   border: 1px solid var(--border); border-radius: 12px; background: var(--paper);
 }
 .mount-card:hover { background: var(--card); }
-/* The per-mount hover actions only appear on hover (or keyboard
-   focus inside the card): trash cans on every row are visual noise.
-   The two buttons (refresh capacity + remove) share ONE
-   absolutely-positioned column on the right (v0.13.0; previously
-   only the remove button, positioned on its own) so they never
-   drift apart; the text column reserves 28px on the right
-   (Sidebar inline style) so a long name never slides under the
-   column. The column holds the vertical centering (translateY),
-   not the buttons — so the global button hover lift can't make
-   them jump. Touch devices have no hover, so the column stays
-   visible there. */
-.mount-card .mount-hover-actions {
-  display: none; flex-direction: column; gap: 2px;
-  position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
-}
-.mount-card:hover .mount-hover-actions, .mount-card:focus-within .mount-hover-actions { display: flex; }
-@media (hover: none) { .mount-card .mount-hover-actions { display: flex; } }
-.mount-card .mount-hover-actions .icon-btn { padding: 2px; }
+/* The per-mount side column (v0.13.0 hover actions + v0.19.0
+   mount switch, merged): one absolutely-positioned column on the
+   right so the buttons never drift apart; the text column reserves
+   28px on the right (44px when the mount has a switch — Sidebar
+   inline style) so a long name never slides under the column. The
+   column holds the vertical centering (translateY), not the buttons
+   — so the global button hover lift can't make them jump. Refresh
+   + remove only appear on hover (or keyboard focus inside the
+   card): trash cans on every row are visual noise; the switch
+   above them is always visible. Touch devices have no hover, so
+   the whole column stays visible there. Rules live with the switch
+   styles above (.mount-side-actions). */
 .mount-card.active { border-color: var(--brand); box-shadow: 0 0 0 1px var(--brand); }
 /* Long names stay on one line with an ellipsis; the full name is
    on the title attribute (Sidebar sets it). */

@@ -10,9 +10,11 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.116.1
 	github.com/aws/smithy-go v1.28.10
 	github.com/egoist/mygo v0.10.0
+	github.com/hanwen/go-fuse/v2 v2.12.1
 	github.com/t3rm1n4l/go-mega v0.0.0-20260717075258-c6acd6a5bd04
 	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.62.0
+	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
 	modernc.org/sqlite v1.63.0
 )
@@ -37,7 +39,6 @@ require (
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.1.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	modernc.org/libc v1.80.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

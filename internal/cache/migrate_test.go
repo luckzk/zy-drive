@@ -72,8 +72,8 @@ func TestMigrateBackfillsSortOrder(t *testing.T) {
 		t.Fatalf("cache.Open: %v", err)
 	}
 	defer db.Close()
-	if v, err := db.SchemaVersion(); err != nil || v != 25 {
-		t.Fatalf("schema version = %d, err = %v, want 25", v, err)
+	if v, err := db.SchemaVersion(); err != nil || v != 27 {
+		t.Fatalf("schema version = %d, err = %v, want 27", v, err)
 	}
 	got, err := db.ListMounts()
 	if err != nil {

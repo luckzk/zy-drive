@@ -109,6 +109,7 @@ func (p *Provider) Caps() domain.Caps {
 		SupportsEncryption:      false,
 		SupportsStorageClass:    false,
 		SupportsPresignedURL:    false,   // Dropbox uses temporary links instead
+		SupportsMount:           true,    // v0.19.0, FUSE P0
 		IDBased:                 false,   // path-based
 		MaxFileSize:             2 << 40, // 2 TB via upload sessions
 		MinPartSize:             chunkSize,

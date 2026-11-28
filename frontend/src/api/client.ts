@@ -8,9 +8,9 @@
 // human error, never fake data. The UI never calls a cloud API
 // directly.
 import { DesktopService } from '../mygo'
-import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo } from '../mygo'
+import type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, CacheCleared, CacheInfo, DrimeWorkspace, DriverStatus, ExitState, ExportResult, FileOpResult, FlushResult, Mount, MountEntryStatus, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo, VolumeStatus } from '../mygo'
 
-export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, DrimeWorkspace, ExportResult, FileOpResult, Mount, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo }
+export type { AddMountInput, Agent, AgentStatus, AgentTestResult, BatchResult, CacheCleared, CacheInfo, DrimeWorkspace, DriverStatus, ExitState, ExportResult, FileOpResult, FlushResult, Mount, MountEntryStatus, MountQuota, Node, OAuthStart, OAuthTokens, Plan, ProviderKind, ProxyEntry, Run, RunResponse, SearchResult, Settings, SyncJob, Transfer, UploadResult, UploadSkipped, VersionInfo, VolumeStatus }
 
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -174,4 +174,16 @@ export const api = {
   getOpenAtLogin: () => DesktopService.getOpenAtLogin(),
   setOpenAtLogin: (on: boolean) => DesktopService.setOpenAtLogin(on),
   getVersions: () => DesktopService.getVersions(),
+  // v0.19.0: FUSE 挂载 ~/ZyDrive — 开关、卷状态、缓存、退出。
+  // GetMountStatus / GetMountExitState 返回非指针（后端直接给
+  // 值，null 只表示没接上后端）；其余返回指针 + error，null
+  // 是后端没返回数据，按 bug 处理。
+  getMountStatus: () => DesktopService.getMountStatus(),
+  setMountEnabled: (mountID: string, enabled: boolean) => DesktopService.setMountEnabled(mountID, enabled),
+  retryMount: (mountID: string) => DesktopService.retryMount(mountID),
+  getMountCacheInfo: async () => nonNullOne(await DesktopService.getMountCacheInfo()),
+  clearMountCache: async () => nonNullOne(await DesktopService.clearMountCache()),
+  getMountExitState: () => DesktopService.getMountExitState(),
+  flushMountDirty: async () => nonNullOne(await DesktopService.flushMountDirty()),
+  confirmExit: (quit: boolean) => DesktopService.confirmExit(quit),
 }

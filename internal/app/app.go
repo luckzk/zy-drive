@@ -16,6 +16,7 @@ import (
 	"github.com/luckzk/zy-drive/internal/auth"
 	"github.com/luckzk/zy-drive/internal/cache"
 	"github.com/luckzk/zy-drive/internal/domain"
+	"github.com/luckzk/zy-drive/internal/mount"
 	"github.com/luckzk/zy-drive/internal/storage"
 	"github.com/luckzk/zy-drive/internal/transfer"
 )
@@ -62,6 +63,17 @@ type App struct {
 	// PickFiles then reports honestly that the picker is
 	// unavailable in this run mode.
 	pickFiles func(ctx context.Context) ([]string, error)
+	// quitHook is installed by cmd/desktop (mygo shell) and quits
+	// the app (mygo.App.Quit). Nil anywhere else (dev shell,
+	// tests, Agent): ConfirmExit(true) then only sets the flag
+	// below and does nothing, instead of pretending to quit.
+	quitHook func()
+	// exitConfirmed is set by ConfirmExit(true) before the quit
+	// hook runs, so the second Quit does not trip OnBeforeQuit
+	// again (cmd/desktop reads it via ExitConfirmed). Guarded by
+	// exitMu; never reset — one confirmed exit per process run.
+	exitMu        sync.Mutex
+	exitConfirmed bool
 	// localProv is the on-demand local-filesystem provider for the
 	// "local" pseudo-mount, rooted at "/" so absolute local:// paths
 	// resolve. Built lazily; local jobs never leave this machine.
@@ -75,6 +87,12 @@ type App struct {
 	// for "open with system app". Created lazily by
 	// previewCacheManager(); never nil after first use.
 	pcache *previewCache
+	// mountSvc is the FUSE volume service (v0.19.0): the
+	// ~/ZyDrive volume, per-mount switches, write-back cache
+	// and upload worker. Built lazily by mountService() so
+	// tests and the Agent (which never mounts) pay nothing.
+	mountSvc   *mount.Service
+	mountSvcMu sync.Mutex
 	// transferLimiter is the single shared rate limiter for the
 	// whole app (Settings speed limit is a global cap, not
 	// per-transfer: 4 transfers at 1 MB/s each would otherwise

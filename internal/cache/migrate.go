@@ -226,6 +226,45 @@ var migrations = []string{
 		  AND (m2.created_at < mounts.created_at
 		    OR (m2.created_at = mounts.created_at AND m2.id < mounts.id))
 	)`,
+	// v26 (2026-11-27, FUSE mount cache): the manifest of the
+	// write-back mount cache (~/ZyDrive), separate from the
+	// read-only preview cache (preview_cache) — different
+	// lifetime, different directory, never shared. One row per
+	// cached file: key is sha256(mount_id + "\x00" + ref),
+	// filename keeps the original name (sanitized) after the
+	// key, size + remote_mtime describe the remote file the
+	// copy was made from (reuse only when both still match),
+	// local_mtime is the cached copy's own mtime, dirty marks
+	// a local change not yet uploaded (never evicted, never
+	// cleared by "清理缓存"), last_access is the LRU clock,
+	// pinned is reserved for explicit pinning (P1; P0 only
+	// ever writes 0, the implicit open/recent guard lives in
+	// code, not in this column).
+	`CREATE TABLE IF NOT EXISTS mount_cache (
+		key TEXT PRIMARY KEY,
+		mount_id TEXT NOT NULL,
+		ref TEXT NOT NULL,
+		filename TEXT NOT NULL,
+		size INTEGER NOT NULL DEFAULT -1,
+		remote_mtime TEXT NOT NULL DEFAULT '',
+		local_mtime TEXT NOT NULL DEFAULT '',
+		dirty INTEGER NOT NULL DEFAULT 0,
+		last_access TEXT NOT NULL,
+		pinned INTEGER NOT NULL DEFAULT 0,
+		updated_at TEXT NOT NULL
+	)`,
+	// v27 (2026-11-27, FUSE mount cache fix): remote_size —
+	// the remote file's size at download time. Size alone
+	// cannot serve the upload compare: markDirty overwrites
+	// Size with the LOCAL size after an edit, so comparing
+	// remote.Size against Size would report "remote changed"
+	// for every edited file and route every write-back to a
+	// conflict copy. The uploader compares remote.Size
+	// against RemoteSize (and remote.ModTime against
+	// RemoteMtime) instead. Default -1: rows written by v26
+	// (never shipped) have no remote size and compare by
+	// mtime only.
+	`ALTER TABLE mount_cache ADD COLUMN remote_size INTEGER NOT NULL DEFAULT -1`,
 }
 
 // Migrate applies pending migrations in a transaction per migration.
